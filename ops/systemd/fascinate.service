@@ -1,0 +1,17 @@
+[Unit]
+Description=fascinate control plane
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/fascinate
+EnvironmentFile=-/etc/fascinate/fascinate.env
+Environment=FASCINATE_DATA_DIR=/var/lib/fascinate
+ExecStart=/opt/fascinate/bin/fascinate serve
+Restart=on-failure
+RestartSec=2s
+
+[Install]
+WantedBy=multi-user.target
