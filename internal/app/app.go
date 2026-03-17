@@ -6,19 +6,24 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"time"
+
+	"golang.org/x/crypto/ssh"
 
 	"fascinate/internal/config"
 	"fascinate/internal/controlplane"
 	"fascinate/internal/database"
 	"fascinate/internal/httpapi"
 	"fascinate/internal/runtime/incus"
+	"fascinate/internal/sshfrontdoor"
 )
 
 type App struct {
 	cfg        config.Config
 	db         *database.Store
 	httpServer *http.Server
+	sshServer  *sshfrontdoor.Server
 }
 
 func New(ctx context.Context, cfg config.Config) (*App, error) {
@@ -39,6 +44,11 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 	runtimeClient := incus.NewCLI(cfg.IncusBinary)
 	controlPlane := controlplane.New(cfg, store, runtimeClient)
 	handler := httpapi.New(cfg, store, runtimeClient, controlPlane)
+	sshServer, err := sshfrontdoor.New(cfg, store, controlPlane)
+	if err != nil {
+		store.Close()
+		return nil, err
+	}
 
 	httpServer := &http.Server{
 		Addr:              cfg.HTTPAddr,
@@ -50,11 +60,12 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 		cfg:        cfg,
 		db:         store,
 		httpServer: httpServer,
+		sshServer:  sshServer,
 	}, nil
 }
 
 func (a *App) Run(ctx context.Context) error {
-	errCh := make(chan error, 1)
+	errCh := make(chan error, 2)
 
 	go func() {
 		err := a.httpServer.ListenAndServe()
@@ -63,6 +74,10 @@ func (a *App) Run(ctx context.Context) error {
 			return
 		}
 		errCh <- nil
+	}()
+
+	go func() {
+		errCh <- a.sshServer.Run(ctx)
 	}()
 
 	select {
@@ -93,10 +108,54 @@ func RunMigrations(ctx context.Context, cfg config.Config) error {
 	return store.Migrate(ctx)
 }
 
+func SeedSSHKey(ctx context.Context, cfg config.Config, email, name, publicKey string) (database.SSHKeyRecord, error) {
+	if err := os.MkdirAll(cfg.DataDir, 0o755); err != nil {
+		return database.SSHKeyRecord{}, err
+	}
+
+	store, err := database.Open(ctx, cfg.DBPath)
+	if err != nil {
+		return database.SSHKeyRecord{}, err
+	}
+	defer store.Close()
+
+	if err := store.Migrate(ctx); err != nil {
+		return database.SSHKeyRecord{}, err
+	}
+
+	user, err := store.UpsertUser(ctx, email, isAdminEmail(cfg.AdminEmails, email))
+	if err != nil {
+		return database.SSHKeyRecord{}, err
+	}
+
+	authorizedKey, _, _, _, err := ssh.ParseAuthorizedKey([]byte(publicKey))
+	if err != nil {
+		return database.SSHKeyRecord{}, err
+	}
+
+	return store.CreateSSHKey(ctx, database.CreateSSHKeyParams{
+		UserID:      user.ID,
+		Name:        name,
+		PublicKey:   strings.TrimSpace(publicKey),
+		Fingerprint: ssh.FingerprintSHA256(authorizedKey),
+	})
+}
+
 func logRequests(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		next.ServeHTTP(w, r)
 		log.Printf("%s %s %s", r.Method, r.URL.Path, time.Since(start))
 	})
+}
+
+func isAdminEmail(adminEmails []string, email string) bool {
+	email = strings.ToLower(strings.TrimSpace(email))
+	for _, candidate := range adminEmails {
+		if strings.ToLower(strings.TrimSpace(candidate)) == email {
+			return true
+		}
+	}
+
+	return false
 }

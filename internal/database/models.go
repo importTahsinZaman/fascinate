@@ -28,3 +28,13 @@ type CreateMachineParams struct {
 	State       string
 	PrimaryPort int
 }
+
+type SSHKeyRecord struct {
+	ID          string `json:"id"`
+	UserID      string `json:"user_id"`
+	UserEmail   string `json:"user_email"`
+	Name        string `json:"name"`
+	PublicKey   string `json:"public_key"`
+	Fingerprint string `json:"fingerprint"`
+	CreatedAt   string `json:"created_at"`
+}

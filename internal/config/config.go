@@ -9,6 +9,7 @@ import (
 
 type Config struct {
 	HTTPAddr           string
+	SSHAddr            string
 	DataDir            string
 	DBPath             string
 	BaseDomain         string
@@ -19,6 +20,7 @@ type Config struct {
 	DefaultMachineCPU  string
 	DefaultMachineRAM  string
 	DefaultPrimaryPort int
+	SSHHostKeyPath     string
 }
 
 func Load() Config {
@@ -30,6 +32,7 @@ func Load() Config {
 
 	return Config{
 		HTTPAddr:           getenv("FASCINATE_HTTP_ADDR", "127.0.0.1:8080"),
+		SSHAddr:            getenv("FASCINATE_SSH_ADDR", "127.0.0.1:2222"),
 		DataDir:            dataDir,
 		DBPath:             dbPath,
 		BaseDomain:         getenv("FASCINATE_BASE_DOMAIN", ""),
@@ -40,6 +43,7 @@ func Load() Config {
 		DefaultMachineCPU:  getenv("FASCINATE_DEFAULT_MACHINE_CPU", "1"),
 		DefaultMachineRAM:  getenv("FASCINATE_DEFAULT_MACHINE_RAM", "2GiB"),
 		DefaultPrimaryPort: getenvInt("FASCINATE_DEFAULT_PRIMARY_PORT", 3000),
+		SSHHostKeyPath:     getenv("FASCINATE_SSH_HOST_KEY_PATH", filepath.Join(dataDir, "ssh_host_ed25519_key")),
 	}
 }
 

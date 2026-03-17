@@ -7,6 +7,7 @@ This repo now contains:
 - a minimal Go control plane under [`cmd/fascinate/main.go`](/Users/tahsin/Desktop/vmcloud/cmd/fascinate/main.go)
 - SQLite migrations for the first platform tables
 - an Incus runtime wrapper and health endpoints
+- a minimal SSH frontdoor backed by SQLite-stored public keys
 
 ## Current Scope
 
@@ -31,6 +32,11 @@ It now includes a first machine API slice:
 - `GET /v1/machines/{name}`
 - `DELETE /v1/machines/{name}`
 - `POST /v1/machines/{name}/clone`
+
+It also includes a first SSH slice:
+- `fascinate seed-ssh-key --email ... --name ... --public-key-file ...`
+- a DB-backed SSH server on `FASCINATE_SSH_ADDR`
+- command handling for `help`, `whoami`, and `machines`
 
 For now, machine ownership is bootstrapped by passing `owner_email` in the API request. This is temporary until the SSH auth flow is wired in.
 
@@ -87,6 +93,7 @@ Useful env vars:
 
 ```bash
 export FASCINATE_HTTP_ADDR=127.0.0.1:8080
+export FASCINATE_SSH_ADDR=127.0.0.1:2222
 export FASCINATE_DATA_DIR=./data
 export FASCINATE_DB_PATH=./data/fascinate.db
 export FASCINATE_BASE_DOMAIN=fascinate.dev
@@ -97,11 +104,28 @@ export FASCINATE_DEFAULT_IMAGE=images:ubuntu/24.04
 export FASCINATE_DEFAULT_MACHINE_CPU=1
 export FASCINATE_DEFAULT_MACHINE_RAM=2GiB
 export FASCINATE_DEFAULT_PRIMARY_PORT=3000
+export FASCINATE_SSH_HOST_KEY_PATH=./data/ssh_host_ed25519_key
+```
+
+Seed an SSH key into the local SQLite DB:
+
+```bash
+./bin/fascinate seed-ssh-key \
+  --email you@example.com \
+  --name laptop \
+  --public-key-file ~/.ssh/id_ed25519.pub
+```
+
+Then connect to the local SSH frontdoor:
+
+```bash
+ssh -p 2222 localhost machines
 ```
 
 ## Next Milestones
 
-1. Add SSH key lookup and terminal signup flow.
+1. Add terminal signup and unknown-key verification flow.
 2. Add the Bubble Tea dashboard and machine detail screens.
-3. Replace the static host Caddy config with control-plane-managed routing.
-4. Enforce per-user quotas and approval rules.
+3. Replace the placeholder SSH dashboard output with the real terminal UI flow.
+4. Replace the static host Caddy config with control-plane-managed routing.
+5. Enforce per-user quotas and approval rules.

@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	"fascinate/internal/app"
@@ -40,6 +42,10 @@ func main() {
 		}
 	case "version":
 		fmt.Println("fascinate dev")
+	case "seed-ssh-key":
+		if err := runSeedSSHKey(ctx, cfg, os.Args[2:]); err != nil {
+			log.Fatal(err)
+		}
 	default:
 		log.Fatalf("unknown command %q", command)
 	}
@@ -67,5 +73,38 @@ func runRuntimeMachines(ctx context.Context, cfg config.Config) error {
 		fmt.Printf("%s\t%s\t%s\n", machine.Name, machine.Type, machine.State)
 	}
 
+	return nil
+}
+
+func runSeedSSHKey(ctx context.Context, cfg config.Config, args []string) error {
+	flags := flag.NewFlagSet("seed-ssh-key", flag.ContinueOnError)
+
+	email := flags.String("email", "", "user email")
+	name := flags.String("name", "", "ssh key name")
+	publicKeyFile := flags.String("public-key-file", "", "path to OpenSSH public key")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+
+	if *email == "" || *name == "" || *publicKeyFile == "" {
+		return fmt.Errorf("usage: fascinate seed-ssh-key --email <email> --name <name> --public-key-file <path>")
+	}
+
+	publicKeyPath := *publicKeyFile
+	if !filepath.IsAbs(publicKeyPath) {
+		publicKeyPath = filepath.Clean(publicKeyPath)
+	}
+
+	body, err := os.ReadFile(publicKeyPath)
+	if err != nil {
+		return err
+	}
+
+	record, err := app.SeedSSHKey(ctx, cfg, *email, *name, string(body))
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("seeded ssh key %s for %s (%s)\n", record.Name, record.UserEmail, record.Fingerprint)
 	return nil
 }
