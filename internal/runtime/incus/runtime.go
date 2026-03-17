@@ -11,9 +11,15 @@ import (
 	"strings"
 )
 
+var ErrMachineNotFound = errors.New("machine not found")
+
 type Runtime interface {
 	HealthCheck(context.Context) error
 	ListMachines(context.Context) ([]Machine, error)
+	GetMachine(context.Context, string) (Machine, error)
+	CreateMachine(context.Context, CreateMachineRequest) (Machine, error)
+	DeleteMachine(context.Context, string) error
+	CloneMachine(context.Context, CloneMachineRequest) (Machine, error)
 }
 
 type CLI struct {
@@ -26,6 +32,20 @@ type Machine struct {
 	State string   `json:"state"`
 	IPv4  []string `json:"ipv4"`
 	IPv6  []string `json:"ipv6"`
+}
+
+type CreateMachineRequest struct {
+	Name        string
+	Image       string
+	StoragePool string
+	CPU         string
+	Memory      string
+	PrimaryPort int
+}
+
+type CloneMachineRequest struct {
+	SourceName string
+	TargetName string
 }
 
 func NewCLI(binary string) *CLI {
@@ -64,6 +84,125 @@ func (c *CLI) ListMachines(ctx context.Context) ([]Machine, error) {
 	return machines, nil
 }
 
+func (c *CLI) GetMachine(ctx context.Context, name string) (Machine, error) {
+	output, err := c.run(ctx, "list", strings.TrimSpace(name), "--format", "json")
+	if err != nil {
+		return Machine{}, err
+	}
+
+	var instances []rawInstance
+	if err := json.Unmarshal(output, &instances); err != nil {
+		return Machine{}, fmt.Errorf("decode incus list output: %w", err)
+	}
+	if len(instances) == 0 {
+		return Machine{}, ErrMachineNotFound
+	}
+
+	return machineFromRaw(instances[0]), nil
+}
+
+func (c *CLI) CreateMachine(ctx context.Context, req CreateMachineRequest) (Machine, error) {
+	name := strings.TrimSpace(req.Name)
+	image := strings.TrimSpace(req.Image)
+	if name == "" || image == "" {
+		return Machine{}, fmt.Errorf("machine name and image are required")
+	}
+
+	args := []string{"init", image, name}
+	if pool := strings.TrimSpace(req.StoragePool); pool != "" {
+		args = append(args, "-s", pool)
+	}
+	if _, err := c.run(ctx, args...); err != nil {
+		return Machine{}, err
+	}
+
+	cleanup := true
+	defer func() {
+		if !cleanup {
+			return
+		}
+		_, _ = c.run(context.Background(), "delete", "--force", name)
+	}()
+
+	configValues := map[string]string{
+		"boot.autostart":                          "true",
+		"security.nesting":                        "true",
+		"security.syscalls.intercept.mknod":       "true",
+		"security.syscalls.intercept.setxattr":    "true",
+		"linux.kernel_modules":                    "overlay,br_netfilter",
+		"user.fascinate.primary_port":             fmt.Sprintf("%d", req.PrimaryPort),
+		"user.fascinate.managed_by_control_plane": "true",
+	}
+	if value := strings.TrimSpace(req.CPU); value != "" {
+		configValues["limits.cpu"] = value
+	}
+	if value := strings.TrimSpace(req.Memory); value != "" {
+		configValues["limits.memory"] = value
+	}
+
+	for key, value := range configValues {
+		if _, err := c.run(ctx, "config", "set", name, key, value); err != nil {
+			return Machine{}, err
+		}
+	}
+
+	if _, err := c.run(ctx, "start", name); err != nil {
+		return Machine{}, err
+	}
+
+	machine, err := c.GetMachine(ctx, name)
+	if err != nil {
+		return Machine{}, err
+	}
+
+	cleanup = false
+	return machine, nil
+}
+
+func (c *CLI) DeleteMachine(ctx context.Context, name string) error {
+	_, err := c.run(ctx, "delete", "--force", strings.TrimSpace(name))
+	if err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			return ErrMachineNotFound
+		}
+		return err
+	}
+
+	return nil
+}
+
+func (c *CLI) CloneMachine(ctx context.Context, req CloneMachineRequest) (Machine, error) {
+	source := strings.TrimSpace(req.SourceName)
+	target := strings.TrimSpace(req.TargetName)
+	if source == "" || target == "" {
+		return Machine{}, fmt.Errorf("source and target names are required")
+	}
+
+	if _, err := c.run(ctx, "copy", source, target); err != nil {
+		return Machine{}, err
+	}
+
+	cleanup := true
+	defer func() {
+		if !cleanup {
+			return
+		}
+		_, _ = c.run(context.Background(), "delete", "--force", target)
+	}()
+
+	if _, err := c.run(ctx, "start", target); err != nil {
+		return Machine{}, err
+	}
+
+	machine, err := c.GetMachine(ctx, target)
+	if err != nil {
+		return Machine{}, err
+	}
+
+	cleanup = false
+	return machine, nil
+}
+
 func (c *CLI) run(ctx context.Context, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, c.binary, args...)
 
@@ -78,7 +217,11 @@ func (c *CLI) run(ctx context.Context, args ...string) ([]byte, error) {
 		}
 
 		if stderr.Len() > 0 {
-			return nil, fmt.Errorf("%w: %s", err, strings.TrimSpace(stderr.String()))
+			stderrValue := strings.TrimSpace(stderr.String())
+			if strings.Contains(stderrValue, "not found") {
+				return nil, fmt.Errorf("%w: %s", ErrMachineNotFound, stderrValue)
+			}
+			return nil, fmt.Errorf("%w: %s", err, stderrValue)
 		}
 
 		return nil, err

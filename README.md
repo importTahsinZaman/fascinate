@@ -23,8 +23,16 @@ This is the first real scaffold, not the full product yet. It gives us:
 It does not yet include:
 - SSH auth flow
 - Bubble Tea TUI
-- machine create/delete/clone APIs
 - dynamic Caddy routing from the control plane
+
+It now includes a first machine API slice:
+- `GET /v1/machines`
+- `POST /v1/machines`
+- `GET /v1/machines/{name}`
+- `DELETE /v1/machines/{name}`
+- `POST /v1/machines/{name}/clone`
+
+For now, machine ownership is bootstrapped by passing `owner_email` in the API request. This is temporary until the SSH auth flow is wired in.
 
 ## Repo Layout
 
@@ -72,6 +80,7 @@ Then check:
 curl http://127.0.0.1:8080/healthz
 curl http://127.0.0.1:8080/readyz
 curl http://127.0.0.1:8080/v1/runtime/machines
+curl http://127.0.0.1:8080/v1/machines
 ```
 
 Useful env vars:
@@ -83,11 +92,16 @@ export FASCINATE_DB_PATH=./data/fascinate.db
 export FASCINATE_BASE_DOMAIN=fascinate.dev
 export FASCINATE_ADMIN_EMAILS=you@example.com,ops@example.com
 export FASCINATE_INCUS_BINARY=incus
+export FASCINATE_INCUS_STORAGE_POOL=machines
+export FASCINATE_DEFAULT_IMAGE=images:ubuntu/24.04
+export FASCINATE_DEFAULT_MACHINE_CPU=1
+export FASCINATE_DEFAULT_MACHINE_RAM=2GiB
+export FASCINATE_DEFAULT_PRIMARY_PORT=3000
 ```
 
 ## Next Milestones
 
-1. Add machine CRUD and clone operations backed by Incus and SQLite.
-2. Add SSH key lookup and terminal signup flow.
-3. Add the Bubble Tea dashboard and machine detail screens.
-4. Replace the static host Caddy config with control-plane-managed routing.
+1. Add SSH key lookup and terminal signup flow.
+2. Add the Bubble Tea dashboard and machine detail screens.
+3. Replace the static host Caddy config with control-plane-managed routing.
+4. Enforce per-user quotas and approval rules.

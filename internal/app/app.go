@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"fascinate/internal/config"
+	"fascinate/internal/controlplane"
 	"fascinate/internal/database"
 	"fascinate/internal/httpapi"
 	"fascinate/internal/runtime/incus"
@@ -36,7 +37,8 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 	}
 
 	runtimeClient := incus.NewCLI(cfg.IncusBinary)
-	handler := httpapi.New(cfg, store, runtimeClient)
+	controlPlane := controlplane.New(cfg, store, runtimeClient)
+	handler := httpapi.New(cfg, store, runtimeClient, controlPlane)
 
 	httpServer := &http.Server{
 		Addr:              cfg.HTTPAddr,
