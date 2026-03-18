@@ -79,6 +79,7 @@ Notes:
 - the bootstrap script assumes a fresh host or a host you are willing to standardize
 - it installs `Incus` from Zabbly's stable repo
 - it creates an Incus storage pool named `machines` by default
+- it opens `incusbr0` in `ufw` so new machines can receive DHCP and talk to the host bridge
 - it does not manage DNS or Cloudflare for you
 
 Build the default agent-ready image alias:

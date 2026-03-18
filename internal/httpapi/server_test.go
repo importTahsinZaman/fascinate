@@ -274,6 +274,58 @@ func TestMachineSubdomainShowsStatusPageWhenNoRuntimeAddress(t *testing.T) {
 	}
 }
 
+func TestMachineSubdomainProxiesToRuntimeIPv6Fallback(t *testing.T) {
+	t.Parallel()
+
+	upstream := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Host != "habits.fascinate.dev" {
+			t.Fatalf("unexpected host: %q", r.Host)
+		}
+		_, _ = io.WriteString(w, "proxied-ipv6")
+	}))
+
+	listener, err := net.Listen("tcp", "[::1]:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	upstream.Listener = listener
+	upstream.Start()
+	defer upstream.Close()
+
+	host, port, err := net.SplitHostPort(strings.TrimPrefix(upstream.URL, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	primaryPort, err := strconv.Atoi(port)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	handler := newTestHandler(t, &fakeRuntime{}, &fakeMachineManager{
+		getResult: controlplane.Machine{
+			Name:        "habits",
+			OwnerEmail:  "dev@example.com",
+			PrimaryPort: primaryPort,
+			Runtime: &incus.Machine{
+				Name: "habits",
+				IPv6: []string{host},
+			},
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "http://habits.fascinate.dev/", nil)
+	req.Host = "habits.fascinate.dev"
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	if body := rec.Body.String(); body != "proxied-ipv6" {
+		t.Fatalf("unexpected body: %q", body)
+	}
+}
+
 func TestMachineSubdomainReturnsNotFoundForUnknownMachine(t *testing.T) {
 	t.Parallel()
 

@@ -75,6 +75,16 @@ maybe_open_firewall_port() {
   ufw allow "${port}/tcp" >/dev/null
 }
 
+maybe_allow_incus_bridge() {
+  if ! command -v ufw >/dev/null 2>&1; then
+    return 0
+  fi
+
+  if ip link show incusbr0 >/dev/null 2>&1; then
+    ufw allow in on incusbr0 >/dev/null
+  fi
+}
+
 main() {
   require_root
   install_binary
@@ -90,6 +100,7 @@ main() {
   set +a
 
   maybe_open_firewall_port "${FASCINATE_SSH_ADDR}"
+  maybe_allow_incus_bridge
   bash "${REPO_ROOT}/ops/host/write-caddyfile.sh"
 
   systemctl daemon-reload

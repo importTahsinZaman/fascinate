@@ -71,6 +71,12 @@ configure_firewall() {
   ufw --force enable
 }
 
+allow_incus_bridge_firewall() {
+  if ip link show incusbr0 >/dev/null 2>&1; then
+    ufw allow in on incusbr0 >/dev/null
+  fi
+}
+
 ensure_services() {
   systemctl enable --now fail2ban
   systemctl enable --now caddy
@@ -125,5 +131,6 @@ configure_firewall
 ensure_services
 ensure_incus_initialized
 ensure_incus_network
+allow_incus_bridge_firewall
 ensure_incus_pool
 print_summary

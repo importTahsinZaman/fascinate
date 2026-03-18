@@ -2,6 +2,7 @@
 .agents/
 /bin/
 /data/
+/fascinate
 *.db
 *.db-shm
 *.db-wal
