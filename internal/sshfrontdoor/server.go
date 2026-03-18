@@ -50,7 +50,10 @@ type Server struct {
 	tutorialRunner func(ssh.Channel, <-chan *ssh.Request, windowSize, string) error
 }
 
-const tutorialPrompt = "Build a polished Flappy Bird clone in Next.js and run it on port 3000. Keep everything in the current directory, install whatever dependencies you need, and leave the app ready to open in the browser."
+const (
+	tutorialWorkspace = "/root/fascinate-tutorial"
+	tutorialPrompt    = "Build a polished Flappy Bird clone in Next.js and run it on port 3000. Create the project in a new subdirectory named flappy-bird-app instead of using the current directory. Use fully non-interactive scaffolding commands so nothing blocks on prompts, install whatever dependencies you need, and leave the app ready to open in the browser."
+)
 
 type signupManager interface {
 	Enabled() bool
@@ -567,9 +570,12 @@ func (s *Server) runIncusShell(channel ssh.Channel, requests <-chan *ssh.Request
 }
 
 func (s *Server) runIncusTutorial(channel ssh.Channel, requests <-chan *ssh.Request, size windowSize, machineName string) error {
+	return s.runIncusCommand(channel, requests, size, machineName, tutorialShellCommand())
+}
+
+func tutorialShellCommand() string {
 	safePrompt := shellQuoteSingle(tutorialPrompt)
-	command := "mkdir -p /root/fascinate-tutorial/flappy-bird && cd /root/fascinate-tutorial/flappy-bird && if ! command -v claude >/dev/null 2>&1; then echo \"Claude Code is not installed on this machine.\"; exec bash -l; fi && exec claude '" + safePrompt + "'"
-	return s.runIncusCommand(channel, requests, size, machineName, command)
+	return "mkdir -p " + tutorialWorkspace + " && cd " + tutorialWorkspace + " && if ! command -v claude >/dev/null 2>&1; then echo \"Claude Code is not installed on this machine.\"; exec bash -l; fi && exec claude '" + safePrompt + "'"
 }
 
 func (s *Server) runIncusCommand(channel ssh.Channel, requests <-chan *ssh.Request, size windowSize, machineName, shellCommand string) error {

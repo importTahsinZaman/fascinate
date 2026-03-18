@@ -375,6 +375,24 @@ func TestRunCommandTutorialMachine(t *testing.T) {
 	}
 }
 
+func TestTutorialShellCommandUsesParentWorkspace(t *testing.T) {
+	t.Parallel()
+
+	command := tutorialShellCommand()
+	if !bytes.Contains([]byte(command), []byte("cd "+tutorialWorkspace)) {
+		t.Fatalf("expected tutorial command to cd into %s, got %q", tutorialWorkspace, command)
+	}
+	if bytes.Contains([]byte(command), []byte("cd "+tutorialWorkspace+"/flappy-bird")) {
+		t.Fatalf("expected tutorial command to avoid the final app directory, got %q", command)
+	}
+	if !bytes.Contains([]byte(command), []byte("flappy-bird-app")) {
+		t.Fatalf("expected tutorial prompt to mention the new app folder, got %q", command)
+	}
+	if !bytes.Contains([]byte(command), []byte("non-interactive")) {
+		t.Fatalf("expected tutorial prompt to require non-interactive scaffolding, got %q", command)
+	}
+}
+
 func TestRunCommandShellMachineRejectsWrongOwner(t *testing.T) {
 	t.Parallel()
 
