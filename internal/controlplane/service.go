@@ -84,12 +84,25 @@ func (s *Service) ListMachines(ctx context.Context, ownerEmail string) ([]Machin
 	return out, nil
 }
 
-func (s *Service) GetMachine(ctx context.Context, name string) (Machine, error) {
+func (s *Service) GetPublicMachine(ctx context.Context, name string) (Machine, error) {
 	record, err := s.store.GetMachineByName(ctx, normalizeMachineName(name))
 	if err != nil {
 		return Machine{}, err
 	}
 
+	return s.machineFromRecordWithRuntime(ctx, record)
+}
+
+func (s *Service) GetMachine(ctx context.Context, name, ownerEmail string) (Machine, error) {
+	record, err := s.ownedMachineRecord(ctx, name, ownerEmail)
+	if err != nil {
+		return Machine{}, err
+	}
+
+	return s.machineFromRecordWithRuntime(ctx, record)
+}
+
+func (s *Service) machineFromRecordWithRuntime(ctx context.Context, record database.MachineRecord) (Machine, error) {
 	liveMachine, err := s.runtime.GetMachine(ctx, record.IncusName)
 	if err != nil {
 		if errors.Is(err, incus.ErrMachineNotFound) {
@@ -142,8 +155,8 @@ func (s *Service) CreateMachine(ctx context.Context, input CreateMachineInput) (
 	return s.machineFromRecord(ctx, record, liveMachine), nil
 }
 
-func (s *Service) DeleteMachine(ctx context.Context, name string) error {
-	record, err := s.store.GetMachineByName(ctx, normalizeMachineName(name))
+func (s *Service) DeleteMachine(ctx context.Context, name, ownerEmail string) error {
+	record, err := s.ownedMachineRecord(ctx, name, ownerEmail)
 	if err != nil {
 		return err
 	}
@@ -169,14 +182,17 @@ func (s *Service) CloneMachine(ctx context.Context, input CloneMachineInput) (Ma
 		return Machine{}, fmt.Errorf("source and target machine names must differ")
 	}
 
+	ownerEmail := normalizeEmail(input.OwnerEmail)
+	if ownerEmail == "" {
+		return Machine{}, fmt.Errorf("owner email is required")
+	}
+
 	sourceRecord, err := s.store.GetMachineByName(ctx, sourceName)
 	if err != nil {
 		return Machine{}, err
 	}
-
-	ownerEmail := normalizeEmail(input.OwnerEmail)
-	if ownerEmail == "" {
-		ownerEmail = sourceRecord.OwnerEmail
+	if normalizeEmail(sourceRecord.OwnerEmail) != ownerEmail {
+		return Machine{}, database.ErrNotFound
 	}
 
 	user, err := s.ensureUser(ctx, ownerEmail)
@@ -206,6 +222,23 @@ func (s *Service) CloneMachine(ctx context.Context, input CloneMachineInput) (Ma
 	}
 
 	return s.machineFromRecord(ctx, record, liveMachine), nil
+}
+
+func (s *Service) ownedMachineRecord(ctx context.Context, name, ownerEmail string) (database.MachineRecord, error) {
+	ownerEmail = normalizeEmail(ownerEmail)
+	if ownerEmail == "" {
+		return database.MachineRecord{}, fmt.Errorf("owner email is required")
+	}
+
+	record, err := s.store.GetMachineByName(ctx, normalizeMachineName(name))
+	if err != nil {
+		return database.MachineRecord{}, err
+	}
+	if normalizeEmail(record.OwnerEmail) != ownerEmail {
+		return database.MachineRecord{}, database.ErrNotFound
+	}
+
+	return record, nil
 }
 
 func (s *Service) machineFromRecord(ctx context.Context, record database.MachineRecord, live incus.Machine) Machine {

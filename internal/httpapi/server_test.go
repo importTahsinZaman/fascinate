@@ -41,12 +41,14 @@ type fakeMachineManager struct {
 	listOwnerEmail string
 	listResult     []controlplane.Machine
 	listErr        error
+	getOwnerEmail  string
 	getResult      controlplane.Machine
 	getErr         error
 	createInput    controlplane.CreateMachineInput
 	createResult   controlplane.Machine
 	createErr      error
 	deleteName     string
+	deleteOwner    string
 	deleteErr      error
 	cloneInput     controlplane.CloneMachineInput
 	cloneResult    controlplane.Machine
@@ -61,7 +63,15 @@ func (f *fakeMachineManager) ListMachines(_ context.Context, ownerEmail string) 
 	return f.listResult, nil
 }
 
-func (f *fakeMachineManager) GetMachine(context.Context, string) (controlplane.Machine, error) {
+func (f *fakeMachineManager) GetMachine(_ context.Context, _ string, ownerEmail string) (controlplane.Machine, error) {
+	f.getOwnerEmail = ownerEmail
+	if f.getErr != nil {
+		return controlplane.Machine{}, f.getErr
+	}
+	return f.getResult, nil
+}
+
+func (f *fakeMachineManager) GetPublicMachine(context.Context, string) (controlplane.Machine, error) {
 	if f.getErr != nil {
 		return controlplane.Machine{}, f.getErr
 	}
@@ -76,8 +86,9 @@ func (f *fakeMachineManager) CreateMachine(_ context.Context, input controlplane
 	return f.createResult, nil
 }
 
-func (f *fakeMachineManager) DeleteMachine(_ context.Context, name string) error {
+func (f *fakeMachineManager) DeleteMachine(_ context.Context, name, ownerEmail string) error {
 	f.deleteName = name
+	f.deleteOwner = ownerEmail
 	return f.deleteErr
 }
 
@@ -112,6 +123,20 @@ func TestListMachinesEndpointPassesOwnerEmail(t *testing.T) {
 	}
 	if len(body.Machines) != 1 || body.Machines[0].Name != "habits" {
 		t.Fatalf("unexpected machine list: %+v", body.Machines)
+	}
+}
+
+func TestListMachinesEndpointRequiresOwnerEmail(t *testing.T) {
+	t.Parallel()
+
+	handler := newTestHandler(t, &fakeRuntime{}, &fakeMachineManager{})
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/machines", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", rec.Code)
 	}
 }
 
@@ -156,7 +181,7 @@ func TestCloneMachineEndpointReturnsNotFound(t *testing.T) {
 
 	handler := newTestHandler(t, &fakeRuntime{}, &fakeMachineManager{cloneErr: database.ErrNotFound})
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/machines/habits/clone", bytes.NewBufferString(`{"target_name":"habits-v2"}`))
+	req := httptest.NewRequest(http.MethodPost, "/v1/machines/habits/clone", bytes.NewBufferString(`{"target_name":"habits-v2","owner_email":"dev@example.com"}`))
 	req.Header.Set("Content-Type", "application/json")
 
 	rec := httptest.NewRecorder()
@@ -173,7 +198,7 @@ func TestDeleteMachineEndpointCallsManager(t *testing.T) {
 	manager := &fakeMachineManager{}
 	handler := newTestHandler(t, &fakeRuntime{}, manager)
 
-	req := httptest.NewRequest(http.MethodDelete, "/v1/machines/habits", nil)
+	req := httptest.NewRequest(http.MethodDelete, "/v1/machines/habits?owner_email=dev@example.com", nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -182,6 +207,29 @@ func TestDeleteMachineEndpointCallsManager(t *testing.T) {
 	}
 	if manager.deleteName != "habits" {
 		t.Fatalf("expected delete of habits, got %q", manager.deleteName)
+	}
+	if manager.deleteOwner != "dev@example.com" {
+		t.Fatalf("expected delete owner dev@example.com, got %q", manager.deleteOwner)
+	}
+}
+
+func TestRootEndpointDoesNotLeakAdminEmails(t *testing.T) {
+	t.Parallel()
+
+	handler := newTestHandlerWithConfig(t, config.Config{
+		BaseDomain:  "fascinate.dev",
+		AdminEmails: []string{"admin@example.com"},
+	}, &fakeRuntime{}, &fakeMachineManager{})
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	if strings.Contains(rec.Body.String(), "admin@example.com") {
+		t.Fatalf("unexpected admin email leak: %q", rec.Body.String())
 	}
 }
 
@@ -346,6 +394,11 @@ func TestMachineSubdomainReturnsNotFoundForUnknownMachine(t *testing.T) {
 
 func newTestHandler(t *testing.T, runtime *fakeRuntime, machines *fakeMachineManager) http.Handler {
 	t.Helper()
+	return newTestHandlerWithConfig(t, config.Config{BaseDomain: "fascinate.dev"}, runtime, machines)
+}
+
+func newTestHandlerWithConfig(t *testing.T, cfg config.Config, runtime *fakeRuntime, machines *fakeMachineManager) http.Handler {
+	t.Helper()
 
 	ctx := context.Background()
 	store, err := database.Open(ctx, filepath.Join(t.TempDir(), "fascinate.db"))
@@ -360,5 +413,5 @@ func newTestHandler(t *testing.T, runtime *fakeRuntime, machines *fakeMachineMan
 		t.Fatal(err)
 	}
 
-	return New(config.Config{BaseDomain: "fascinate.dev"}, store, runtime, machines)
+	return New(cfg, store, runtime, machines)
 }

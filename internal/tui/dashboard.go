@@ -15,9 +15,8 @@ import (
 
 type MachineManager interface {
 	ListMachines(context.Context, string) ([]controlplane.Machine, error)
-	GetMachine(context.Context, string) (controlplane.Machine, error)
 	CreateMachine(context.Context, controlplane.CreateMachineInput) (controlplane.Machine, error)
-	DeleteMachine(context.Context, string) error
+	DeleteMachine(context.Context, string, string) error
 	CloneMachine(context.Context, controlplane.CloneMachineInput) (controlplane.Machine, error)
 }
 
@@ -351,7 +350,7 @@ func (m Model) deleteMachineCmd(name string) tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 		defer cancel()
 
-		if err := m.machines.DeleteMachine(ctx, name); err != nil {
+		if err := m.machines.DeleteMachine(ctx, name, m.userEmail); err != nil {
 			return operationDoneMsg{err: err}
 		}
 		return operationDoneMsg{info: fmt.Sprintf("deleted %s", name)}

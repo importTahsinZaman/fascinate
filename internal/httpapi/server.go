@@ -27,9 +27,10 @@ type runtimeChecker interface {
 
 type machineManager interface {
 	ListMachines(context.Context, string) ([]controlplane.Machine, error)
-	GetMachine(context.Context, string) (controlplane.Machine, error)
+	GetMachine(context.Context, string, string) (controlplane.Machine, error)
+	GetPublicMachine(context.Context, string) (controlplane.Machine, error)
 	CreateMachine(context.Context, controlplane.CreateMachineInput) (controlplane.Machine, error)
-	DeleteMachine(context.Context, string) error
+	DeleteMachine(context.Context, string, string) error
 	CloneMachine(context.Context, controlplane.CloneMachineInput) (controlplane.Machine, error)
 }
 
@@ -43,9 +44,8 @@ func New(cfg config.Config, store *database.Store, runtime runtimeChecker, machi
 		}
 
 		writeJSON(w, http.StatusOK, map[string]any{
-			"service":      "fascinate",
-			"base_domain":  cfg.BaseDomain,
-			"admin_emails": cfg.AdminEmails,
+			"service":     "fascinate",
+			"base_domain": cfg.BaseDomain,
 		})
 	})
 
@@ -100,7 +100,11 @@ func New(cfg config.Config, store *database.Store, runtime runtimeChecker, machi
 			ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 			defer cancel()
 
-			ownerEmail := strings.TrimSpace(r.URL.Query().Get("owner_email"))
+			ownerEmail, err := requiredOwnerEmail(strings.TrimSpace(r.URL.Query().Get("owner_email")))
+			if err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
 			machineList, err := machines.ListMachines(ctx, ownerEmail)
 			if err != nil {
 				writeServiceError(w, err)
@@ -117,13 +121,18 @@ func New(cfg config.Config, store *database.Store, runtime runtimeChecker, machi
 				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 				return
 			}
+			ownerEmail, err := requiredOwnerEmail(body.OwnerEmail)
+			if err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
 
 			ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
 			defer cancel()
 
 			machine, err := machines.CreateMachine(ctx, controlplane.CreateMachineInput{
 				Name:       body.Name,
-				OwnerEmail: body.OwnerEmail,
+				OwnerEmail: ownerEmail,
 			})
 			if err != nil {
 				writeServiceError(w, err)
@@ -149,10 +158,15 @@ func New(cfg config.Config, store *database.Store, runtime runtimeChecker, machi
 		if len(parts) == 1 {
 			switch r.Method {
 			case http.MethodGet:
+				ownerEmail, err := requiredOwnerEmail(strings.TrimSpace(r.URL.Query().Get("owner_email")))
+				if err != nil {
+					writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+					return
+				}
 				ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 				defer cancel()
 
-				machine, err := machines.GetMachine(ctx, name)
+				machine, err := machines.GetMachine(ctx, name, ownerEmail)
 				if err != nil {
 					writeServiceError(w, err)
 					return
@@ -160,10 +174,15 @@ func New(cfg config.Config, store *database.Store, runtime runtimeChecker, machi
 
 				writeJSON(w, http.StatusOK, machine)
 			case http.MethodDelete:
+				ownerEmail, err := requiredOwnerEmail(strings.TrimSpace(r.URL.Query().Get("owner_email")))
+				if err != nil {
+					writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+					return
+				}
 				ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
 				defer cancel()
 
-				if err := machines.DeleteMachine(ctx, name); err != nil {
+				if err := machines.DeleteMachine(ctx, name, ownerEmail); err != nil {
 					writeServiceError(w, err)
 					return
 				}
@@ -189,6 +208,11 @@ func New(cfg config.Config, store *database.Store, runtime runtimeChecker, machi
 				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 				return
 			}
+			ownerEmail, err := requiredOwnerEmail(body.OwnerEmail)
+			if err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
 
 			ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
 			defer cancel()
@@ -196,7 +220,7 @@ func New(cfg config.Config, store *database.Store, runtime runtimeChecker, machi
 			machine, err := machines.CloneMachine(ctx, controlplane.CloneMachineInput{
 				SourceName: name,
 				TargetName: body.TargetName,
-				OwnerEmail: body.OwnerEmail,
+				OwnerEmail: ownerEmail,
 			})
 			if err != nil {
 				writeServiceError(w, err)
@@ -230,6 +254,14 @@ func decodeJSON(r *http.Request, dest any) error {
 	}
 
 	return nil
+}
+
+func requiredOwnerEmail(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", fmt.Errorf("owner_email is required")
+	}
+	return value, nil
 }
 
 func writeServiceError(w http.ResponseWriter, err error) {
@@ -274,7 +306,7 @@ func withMachineProxy(cfg config.Config, machines machineManager, next http.Hand
 		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 		defer cancel()
 
-		machine, err := machines.GetMachine(ctx, machineName)
+		machine, err := machines.GetPublicMachine(ctx, machineName)
 		if err != nil {
 			if errors.Is(err, database.ErrNotFound) || errors.Is(err, incus.ErrMachineNotFound) {
 				writeMachinePage(w, http.StatusNotFound, host, "Unknown machine", "No machine with this name exists.", "")

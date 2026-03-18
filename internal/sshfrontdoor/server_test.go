@@ -34,10 +34,12 @@ type fakeMachines struct {
 	listErr      error
 	getResult    controlplane.Machine
 	getErr       error
+	getOwner     string
 	createInput  controlplane.CreateMachineInput
 	createResult controlplane.Machine
 	createErr    error
 	deleteName   string
+	deleteOwner  string
 	deleteErr    error
 	cloneInput   controlplane.CloneMachineInput
 	cloneResult  controlplane.Machine
@@ -67,7 +69,8 @@ func (f *fakeMachines) ListMachines(context.Context, string) ([]controlplane.Mac
 	return f.listResult, nil
 }
 
-func (f *fakeMachines) GetMachine(context.Context, string) (controlplane.Machine, error) {
+func (f *fakeMachines) GetMachine(_ context.Context, _ string, ownerEmail string) (controlplane.Machine, error) {
+	f.getOwner = ownerEmail
 	if f.getErr != nil {
 		return controlplane.Machine{}, f.getErr
 	}
@@ -82,8 +85,9 @@ func (f *fakeMachines) CreateMachine(_ context.Context, input controlplane.Creat
 	return f.createResult, nil
 }
 
-func (f *fakeMachines) DeleteMachine(_ context.Context, name string) error {
+func (f *fakeMachines) DeleteMachine(_ context.Context, name, ownerEmail string) error {
 	f.deleteName = name
+	f.deleteOwner = ownerEmail
 	return f.deleteErr
 }
 
@@ -272,6 +276,9 @@ func TestRunCommandDeleteMachine(t *testing.T) {
 	if machines.deleteName != "habits" {
 		t.Fatalf("expected delete of habits, got %q", machines.deleteName)
 	}
+	if machines.deleteOwner != "dev@example.com" {
+		t.Fatalf("expected delete owner dev@example.com, got %q", machines.deleteOwner)
+	}
 }
 
 func TestRenderMachinesReturnsError(t *testing.T) {
@@ -325,16 +332,16 @@ func TestRunCommandShellMachine(t *testing.T) {
 	if launched != "habits" {
 		t.Fatalf("unexpected shell target: %q", launched)
 	}
+	if machines.getOwner != "dev@example.com" {
+		t.Fatalf("expected owner lookup for dev@example.com, got %q", machines.getOwner)
+	}
 }
 
 func TestRunCommandShellMachineRejectsWrongOwner(t *testing.T) {
 	t.Parallel()
 
 	machines := &fakeMachines{
-		getResult: controlplane.Machine{
-			Name:       "habits",
-			OwnerEmail: "other@example.com",
-		},
+		getErr: database.ErrNotFound,
 	}
 	server := newTestServer(t, &fakeKeyLookup{}, machines)
 

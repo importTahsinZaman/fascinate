@@ -134,6 +134,7 @@ func TestServiceCreateCloneAndDeleteMachine(t *testing.T) {
 	cloned, err := service.CloneMachine(ctx, CloneMachineInput{
 		SourceName: "habits",
 		TargetName: "habits-v2",
+		OwnerEmail: "admin@example.com",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -150,7 +151,7 @@ func TestServiceCreateCloneAndDeleteMachine(t *testing.T) {
 		t.Fatalf("expected 2 machines, got %d", len(list))
 	}
 
-	if err := service.DeleteMachine(ctx, "habits"); err != nil {
+	if err := service.DeleteMachine(ctx, "habits", "admin@example.com"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -237,6 +238,7 @@ func TestServiceCloneMachineRollsBackRuntimeOnDBConflict(t *testing.T) {
 	_, err = service.CloneMachine(ctx, CloneMachineInput{
 		SourceName: "habits",
 		TargetName: "habits-v2",
+		OwnerEmail: "dev@example.com",
 	})
 	if !errors.Is(err, database.ErrConflict) {
 		t.Fatalf("expected conflict, got %v", err)
@@ -271,7 +273,7 @@ func TestServiceGetMachineMarksMissingWhenRuntimeDoesNotHaveIt(t *testing.T) {
 	runtime.getErr = incus.ErrMachineNotFound
 	service := newTestService(store, runtime)
 
-	machine, err := service.GetMachine(ctx, "habits")
+	machine, err := service.GetMachine(ctx, "habits", "dev@example.com")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -285,6 +287,54 @@ func TestServiceGetMachineMarksMissingWhenRuntimeDoesNotHaveIt(t *testing.T) {
 	}
 	if record.State != "missing" {
 		t.Fatalf("expected persisted missing state, got %q", record.State)
+	}
+}
+
+func TestServiceRejectsWrongOwnerForSensitiveOperations(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, runtime := newTestServiceDeps(t, ctx)
+
+	user, err := store.UpsertUser(ctx, "owner@example.com", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := store.CreateMachine(ctx, database.CreateMachineParams{
+		ID:          "machine-1",
+		Name:        "habits",
+		OwnerUserID: user.ID,
+		IncusName:   "habits",
+		State:       "RUNNING",
+		PrimaryPort: 3000,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	runtime.machines["habits"] = incus.Machine{Name: "habits", Type: "container", State: "RUNNING"}
+	service := newTestService(store, runtime)
+
+	if _, err := service.GetMachine(ctx, "habits", "other@example.com"); !errors.Is(err, database.ErrNotFound) {
+		t.Fatalf("expected not found for get, got %v", err)
+	}
+
+	if err := service.DeleteMachine(ctx, "habits", "other@example.com"); !errors.Is(err, database.ErrNotFound) {
+		t.Fatalf("expected not found for delete, got %v", err)
+	}
+	if len(runtime.deleted) != 0 {
+		t.Fatalf("expected no runtime deletes, got %+v", runtime.deleted)
+	}
+
+	if _, err := service.CloneMachine(ctx, CloneMachineInput{
+		SourceName: "habits",
+		TargetName: "habits-v2",
+		OwnerEmail: "other@example.com",
+	}); !errors.Is(err, database.ErrNotFound) {
+		t.Fatalf("expected not found for clone, got %v", err)
+	}
+	if _, ok := runtime.machines["habits-v2"]; ok {
+		t.Fatalf("expected no clone to be created")
 	}
 }
 

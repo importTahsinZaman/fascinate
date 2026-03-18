@@ -33,9 +33,9 @@ type keyLookup interface {
 
 type machineManager interface {
 	ListMachines(context.Context, string) ([]controlplane.Machine, error)
-	GetMachine(context.Context, string) (controlplane.Machine, error)
+	GetMachine(context.Context, string, string) (controlplane.Machine, error)
 	CreateMachine(context.Context, controlplane.CreateMachineInput) (controlplane.Machine, error)
-	DeleteMachine(context.Context, string) error
+	DeleteMachine(context.Context, string, string) error
 	CloneMachine(context.Context, controlplane.CloneMachineInput) (controlplane.Machine, error)
 }
 
@@ -244,7 +244,7 @@ func (s *Server) runCommand(channel ssh.Channel, requests <-chan *ssh.Request, a
 	case "clone":
 		return s.cloneMachine(channel, auth.userEmail, fields)
 	case "delete":
-		return s.deleteMachine(channel, fields)
+		return s.deleteMachine(channel, auth.userEmail, fields)
 	case "shell":
 		return s.shellMachine(channel, requests, auth.userEmail, fields, ptyState)
 	default:
@@ -455,7 +455,7 @@ func (s *Server) cloneMachine(channel ssh.Channel, userEmail string, fields []st
 	return 0
 }
 
-func (s *Server) deleteMachine(channel ssh.Channel, fields []string) uint32 {
+func (s *Server) deleteMachine(channel ssh.Channel, userEmail string, fields []string) uint32 {
 	if len(fields) != 4 || fields[2] != "--confirm" || fields[3] != fields[1] {
 		fmt.Fprintln(channel, "usage: delete <name> --confirm <name>")
 		return 2
@@ -464,7 +464,7 @@ func (s *Server) deleteMachine(channel ssh.Channel, fields []string) uint32 {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 
-	if err := s.machines.DeleteMachine(ctx, fields[1]); err != nil {
+	if err := s.machines.DeleteMachine(ctx, fields[1], userEmail); err != nil {
 		fmt.Fprintf(channel, "error: %v\n", err)
 		return 1
 	}
@@ -491,12 +491,9 @@ func (s *Server) openAuthorizedMachineShell(channel ssh.Channel, requests <-chan
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	machine, err := s.machines.GetMachine(ctx, name)
+	machine, err := s.machines.GetMachine(ctx, name, userEmail)
 	if err != nil {
 		return err
-	}
-	if !strings.EqualFold(strings.TrimSpace(machine.OwnerEmail), strings.TrimSpace(userEmail)) {
-		return fmt.Errorf("machine %q not found", strings.TrimSpace(name))
 	}
 
 	runtimeName := machine.Name

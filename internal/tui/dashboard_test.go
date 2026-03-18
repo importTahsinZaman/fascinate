@@ -15,13 +15,12 @@ import (
 type fakeMachines struct {
 	listResult  []controlplane.Machine
 	listErr     error
-	getResult   controlplane.Machine
-	getErr      error
 	createInput controlplane.CreateMachineInput
 	createErr   error
 	cloneInput  controlplane.CloneMachineInput
 	cloneErr    error
 	deleteName  string
+	deleteOwner string
 	deleteErr   error
 }
 
@@ -32,13 +31,6 @@ func (f *fakeMachines) ListMachines(context.Context, string) ([]controlplane.Mac
 	return f.listResult, nil
 }
 
-func (f *fakeMachines) GetMachine(context.Context, string) (controlplane.Machine, error) {
-	if f.getErr != nil {
-		return controlplane.Machine{}, f.getErr
-	}
-	return f.getResult, nil
-}
-
 func (f *fakeMachines) CreateMachine(_ context.Context, input controlplane.CreateMachineInput) (controlplane.Machine, error) {
 	f.createInput = input
 	if f.createErr != nil {
@@ -47,8 +39,9 @@ func (f *fakeMachines) CreateMachine(_ context.Context, input controlplane.Creat
 	return controlplane.Machine{Name: input.Name}, nil
 }
 
-func (f *fakeMachines) DeleteMachine(_ context.Context, name string) error {
+func (f *fakeMachines) DeleteMachine(_ context.Context, name, ownerEmail string) error {
 	f.deleteName = name
+	f.deleteOwner = ownerEmail
 	return f.deleteErr
 }
 
