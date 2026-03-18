@@ -93,6 +93,7 @@ Acquire::ForceIPv4 \"true\";
 Acquire::Retries \"3\";
 EOF
     apt-get -o Acquire::ForceIPv4=true update
+    apt-get -o Acquire::ForceIPv4=true upgrade -y
     apt-get -o Acquire::ForceIPv4=true install -y ${PACKAGES[*]}
     if [[ -n '${claude_package}' ]]; then
       npm install -g '${claude_package}'

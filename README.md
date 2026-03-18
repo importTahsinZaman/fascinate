@@ -192,8 +192,9 @@ If the SSH key is unknown and email delivery is configured, the session opens a 
 If your host Caddy config forwards wildcard subdomains to `FASCINATE_HTTP_ADDR`, requests for `https://<machine>.fascinate.dev` are proxied to that machine's primary port. If nothing is listening yet, Fascinate serves a status page with the SSH shell command for that machine.
 
 New machines built from `fascinate-base` come with:
+- Ubuntu 24.04 packages upgraded to the latest versions available in the current Ubuntu repositories at image-build time
 - Docker
-- Node.js, Python, Go, and common terminal tooling
+- Node.js, npm, Python 3, Go, git, jq, ripgrep, sqlite3, tmux, fzf, curl, wget, unzip, zip, rsync, and common build tooling
 - Claude Code available as `claude`
 
 Available exec-style SSH commands:
