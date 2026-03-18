@@ -30,20 +30,22 @@ func (f *fakeKeyLookup) GetSSHKeyByFingerprint(context.Context, string) (databas
 }
 
 type fakeMachines struct {
-	listResult   []controlplane.Machine
-	listErr      error
-	getResult    controlplane.Machine
-	getErr       error
-	getOwner     string
-	createInput  controlplane.CreateMachineInput
-	createResult controlplane.Machine
-	createErr    error
-	deleteName   string
-	deleteOwner  string
-	deleteErr    error
-	cloneInput   controlplane.CloneMachineInput
-	cloneResult  controlplane.Machine
-	cloneErr     error
+	listResult    []controlplane.Machine
+	listErr       error
+	getResult     controlplane.Machine
+	getErr        error
+	getOwner      string
+	createInput   controlplane.CreateMachineInput
+	createResult  controlplane.Machine
+	createErr     error
+	deleteName    string
+	deleteOwner   string
+	deleteErr     error
+	cloneInput    controlplane.CloneMachineInput
+	cloneResult   controlplane.Machine
+	cloneErr      error
+	tutorialOwner string
+	tutorialErr   error
 }
 
 type fakeSignup struct {
@@ -97,6 +99,11 @@ func (f *fakeMachines) CloneMachine(_ context.Context, input controlplane.CloneM
 		return controlplane.Machine{}, f.cloneErr
 	}
 	return f.cloneResult, nil
+}
+
+func (f *fakeMachines) CompleteTutorial(_ context.Context, ownerEmail string) error {
+	f.tutorialOwner = ownerEmail
+	return f.tutorialErr
 }
 
 type stubChannel struct {
@@ -334,6 +341,37 @@ func TestRunCommandShellMachine(t *testing.T) {
 	}
 	if machines.getOwner != "dev@example.com" {
 		t.Fatalf("expected owner lookup for dev@example.com, got %q", machines.getOwner)
+	}
+}
+
+func TestRunCommandTutorialMachine(t *testing.T) {
+	t.Parallel()
+
+	machines := &fakeMachines{
+		getResult: controlplane.Machine{
+			Name:         "habits",
+			OwnerEmail:   "dev@example.com",
+			ShowTutorial: true,
+		},
+	}
+	server := newTestServer(t, &fakeKeyLookup{}, machines)
+
+	var launched string
+	server.tutorialRunner = func(_ ssh.Channel, _ <-chan *ssh.Request, _ windowSize, machineName string) error {
+		launched = machineName
+		return nil
+	}
+
+	channel := &stubChannel{}
+	status := server.runCommand(channel, nil, sessionAuth{userEmail: "dev@example.com"}, "tutorial habits", sessionPTY{size: windowSize{width: 120, height: 40}, term: "xterm-256color"})
+	if status != 0 {
+		t.Fatalf("expected zero status, got %d", status)
+	}
+	if launched != "habits" {
+		t.Fatalf("unexpected tutorial target: %q", launched)
+	}
+	if machines.tutorialOwner != "dev@example.com" {
+		t.Fatalf("expected tutorial completion for dev@example.com, got %q", machines.tutorialOwner)
 	}
 }
 

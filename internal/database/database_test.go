@@ -32,6 +32,20 @@ func TestMachineRecordLifecycle(t *testing.T) {
 	if !user.IsAdmin {
 		t.Fatalf("expected admin user")
 	}
+	if user.TutorialCompletedAt != nil {
+		t.Fatalf("expected tutorial to start incomplete")
+	}
+
+	if err := store.MarkUserTutorialCompleted(ctx, user.ID); err != nil {
+		t.Fatal(err)
+	}
+	user, err = store.GetUserByEmail(ctx, "dev@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if user.TutorialCompletedAt == nil {
+		t.Fatalf("expected tutorial completion timestamp")
+	}
 
 	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {

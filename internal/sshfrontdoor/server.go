@@ -37,16 +37,20 @@ type machineManager interface {
 	CreateMachine(context.Context, controlplane.CreateMachineInput) (controlplane.Machine, error)
 	DeleteMachine(context.Context, string, string) error
 	CloneMachine(context.Context, controlplane.CloneMachineInput) (controlplane.Machine, error)
+	CompleteTutorial(context.Context, string) error
 }
 
 type Server struct {
-	addr        string
-	incusBinary string
-	config      *ssh.ServerConfig
-	machines    machineManager
-	signup      signupManager
-	shellRunner func(ssh.Channel, <-chan *ssh.Request, windowSize, string) error
+	addr           string
+	incusBinary    string
+	config         *ssh.ServerConfig
+	machines       machineManager
+	signup         signupManager
+	shellRunner    func(ssh.Channel, <-chan *ssh.Request, windowSize, string) error
+	tutorialRunner func(ssh.Channel, <-chan *ssh.Request, windowSize, string) error
 }
+
+const tutorialPrompt = "Build a polished Flappy Bird clone in Next.js and run it on port 3000. Keep everything in the current directory, install whatever dependencies you need, and leave the app ready to open in the browser."
 
 type signupManager interface {
 	Enabled() bool
@@ -246,9 +250,11 @@ func (s *Server) runCommand(channel ssh.Channel, requests <-chan *ssh.Request, a
 		return s.deleteMachine(channel, auth.userEmail, fields)
 	case "shell":
 		return s.shellMachine(channel, requests, auth.userEmail, fields, ptyState)
+	case "tutorial":
+		return s.tutorialMachine(channel, requests, auth.userEmail, fields, ptyState)
 	default:
 		fmt.Fprintf(channel, "unknown command: %s\n", fields[0])
-		fmt.Fprintln(channel, "available commands: help, dashboard, whoami, machines, create, clone, delete, shell, exit")
+		fmt.Fprintln(channel, "available commands: help, dashboard, whoami, machines, create, clone, delete, shell, tutorial, exit")
 		return 127
 	}
 }
@@ -262,7 +268,14 @@ func (s *Server) runInteractiveSession(channel ssh.Channel, requests <-chan *ssh
 		ptyState = nextPTY
 
 		if strings.TrimSpace(result.shellTarget) == "" {
-			return 0
+			if strings.TrimSpace(result.tutorialTarget) == "" {
+				return 0
+			}
+			if err := s.openAuthorizedMachineTutorial(channel, requests, ptyState, userEmail, result.tutorialTarget); err != nil {
+				fmt.Fprintf(channel, "error: %v\r\n", err)
+				continue
+			}
+			continue
 		}
 		if err := s.openAuthorizedMachineShell(channel, requests, ptyState, userEmail, result.shellTarget); err != nil {
 			fmt.Fprintf(channel, "error: %v\r\n", err)
@@ -272,7 +285,8 @@ func (s *Server) runInteractiveSession(channel ssh.Channel, requests <-chan *ssh
 }
 
 type dashboardResult struct {
-	shellTarget string
+	shellTarget    string
+	tutorialTarget string
 }
 
 func (s *Server) runDashboard(channel ssh.Channel, requests <-chan *ssh.Request, userEmail string, ptyState sessionPTY) (dashboardResult, sessionPTY, uint32) {
@@ -288,7 +302,10 @@ func (s *Server) runDashboard(channel ssh.Channel, requests <-chan *ssh.Request,
 		return dashboardResult{}, nextPTY, 1
 	}
 
-	return dashboardResult{shellTarget: dashboardModel.ShellTarget()}, nextPTY, 0
+	return dashboardResult{
+		shellTarget:    dashboardModel.ShellTarget(),
+		tutorialTarget: dashboardModel.TutorialTarget(),
+	}, nextPTY, 0
 }
 
 func (s *Server) runSignup(channel ssh.Channel, requests <-chan *ssh.Request, publicKey string, ptyState sessionPTY) (string, sessionPTY, uint32) {
@@ -385,7 +402,7 @@ func (s *Server) renderDashboard(channel ssh.Channel, userEmail string) {
 	if err := s.renderMachines(channel, userEmail); err != nil {
 		fmt.Fprintf(channel, "error loading machines: %v\n", err)
 	}
-	fmt.Fprintln(channel, "\ncommands: machines, create <name>, clone <source> <target>, delete <name> --confirm <name>, shell <name>, whoami, help, exit")
+	fmt.Fprintln(channel, "\ncommands: machines, create <name>, clone <source> <target>, delete <name> --confirm <name>, shell <name>, tutorial <name>, whoami, help, exit")
 }
 
 func (s *Server) renderMachines(channel ssh.Channel, userEmail string) error {
@@ -486,7 +503,29 @@ func (s *Server) shellMachine(channel ssh.Channel, requests <-chan *ssh.Request,
 	return 0
 }
 
+func (s *Server) tutorialMachine(channel ssh.Channel, requests <-chan *ssh.Request, userEmail string, fields []string, ptyState sessionPTY) uint32 {
+	if len(fields) != 2 {
+		fmt.Fprintln(channel, "usage: tutorial <name>")
+		return 2
+	}
+
+	if err := s.openAuthorizedMachineTutorial(channel, requests, ptyState, userEmail, fields[1]); err != nil {
+		fmt.Fprintf(channel, "error: %v\n", err)
+		return 1
+	}
+
+	return 0
+}
+
 func (s *Server) openAuthorizedMachineShell(channel ssh.Channel, requests <-chan *ssh.Request, ptyState sessionPTY, userEmail, name string) error {
+	return s.openAuthorizedMachineRunner(channel, requests, ptyState, userEmail, name, s.shellRunner, s.runIncusShell, false)
+}
+
+func (s *Server) openAuthorizedMachineTutorial(channel ssh.Channel, requests <-chan *ssh.Request, ptyState sessionPTY, userEmail, name string) error {
+	return s.openAuthorizedMachineRunner(channel, requests, ptyState, userEmail, name, s.tutorialRunner, s.runIncusTutorial, true)
+}
+
+func (s *Server) openAuthorizedMachineRunner(channel ssh.Channel, requests <-chan *ssh.Request, ptyState sessionPTY, userEmail, name string, runnerOverride func(ssh.Channel, <-chan *ssh.Request, windowSize, string) error, defaultRunner func(ssh.Channel, <-chan *ssh.Request, windowSize, string) error, markTutorialComplete bool) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -503,15 +542,37 @@ func (s *Server) openAuthorizedMachineShell(channel ssh.Channel, requests <-chan
 		return fmt.Errorf("machine %q is not available", strings.TrimSpace(name))
 	}
 
-	runner := s.shellRunner
+	runner := runnerOverride
 	if runner == nil {
-		runner = s.runIncusShell
+		runner = defaultRunner
 	}
 
-	return runner(channel, requests, ptyState.size, runtimeName)
+	if err := runner(channel, requests, ptyState.size, runtimeName); err != nil {
+		return err
+	}
+
+	if markTutorialComplete {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := s.machines.CompleteTutorial(ctx, userEmail); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 func (s *Server) runIncusShell(channel ssh.Channel, requests <-chan *ssh.Request, size windowSize, machineName string) error {
+	return s.runIncusCommand(channel, requests, size, machineName, "if command -v bash >/dev/null 2>&1; then exec bash -l; else exec sh -l; fi")
+}
+
+func (s *Server) runIncusTutorial(channel ssh.Channel, requests <-chan *ssh.Request, size windowSize, machineName string) error {
+	safePrompt := shellQuoteSingle(tutorialPrompt)
+	command := "mkdir -p /root/fascinate-tutorial/flappy-bird && cd /root/fascinate-tutorial/flappy-bird && if ! command -v claude >/dev/null 2>&1; then echo \"Claude Code is not installed on this machine.\"; exec bash -l; fi && exec claude '" + safePrompt + "'"
+	return s.runIncusCommand(channel, requests, size, machineName, command)
+}
+
+func (s *Server) runIncusCommand(channel ssh.Channel, requests <-chan *ssh.Request, size windowSize, machineName, shellCommand string) error {
 	term := "xterm-256color"
 	args := []string{
 		"exec",
@@ -524,7 +585,7 @@ func (s *Server) runIncusShell(channel ssh.Channel, requests <-chan *ssh.Request
 		"SHELL=/bin/bash",
 		"sh",
 		"-lc",
-		"if command -v bash >/dev/null 2>&1; then exec bash -l; else exec sh -l; fi",
+		shellCommand,
 	}
 
 	cmd := exec.Command(s.incusBinary, args...)
@@ -608,6 +669,10 @@ func max(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func shellQuoteSingle(value string) string {
+	return strings.ReplaceAll(value, `'`, `'\''`)
 }
 
 func writeExitStatus(channel ssh.Channel, status uint32) {

@@ -13,15 +13,17 @@ import (
 )
 
 type fakeMachines struct {
-	listResult  []controlplane.Machine
-	listErr     error
-	createInput controlplane.CreateMachineInput
-	createErr   error
-	cloneInput  controlplane.CloneMachineInput
-	cloneErr    error
-	deleteName  string
-	deleteOwner string
-	deleteErr   error
+	listResult    []controlplane.Machine
+	listErr       error
+	createInput   controlplane.CreateMachineInput
+	createErr     error
+	cloneInput    controlplane.CloneMachineInput
+	cloneErr      error
+	deleteName    string
+	deleteOwner   string
+	deleteErr     error
+	tutorialOwner string
+	tutorialErr   error
 }
 
 func (f *fakeMachines) ListMachines(context.Context, string) ([]controlplane.Machine, error) {
@@ -51,6 +53,11 @@ func (f *fakeMachines) CloneMachine(_ context.Context, input controlplane.CloneM
 		return controlplane.Machine{}, f.cloneErr
 	}
 	return controlplane.Machine{Name: input.TargetName}, nil
+}
+
+func (f *fakeMachines) CompleteTutorial(_ context.Context, ownerEmail string) error {
+	f.tutorialOwner = ownerEmail
+	return f.tutorialErr
 }
 
 func TestModelLoadsMachinesOnInit(t *testing.T) {
@@ -170,6 +177,29 @@ func TestModelShellActionFromBrowseMode(t *testing.T) {
 	}
 }
 
+func TestModelTutorialActionFromBrowseMode(t *testing.T) {
+	t.Parallel()
+
+	manager := &fakeMachines{
+		listResult: []controlplane.Machine{{Name: "habits", State: "RUNNING", ShowTutorial: true}},
+	}
+	model := NewDashboard("dev@example.com", manager, 80, 24)
+
+	updated, _ := model.Update(loadMachinesMsg{machines: manager.listResult})
+	withItems := updated.(Model)
+	updated, cmd := withItems.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'t'}})
+	got := updated.(Model)
+	if cmd == nil {
+		t.Fatalf("expected quit command")
+	}
+	if !got.WantsTutorial() {
+		t.Fatalf("expected tutorial action")
+	}
+	if got.TutorialTarget() != "habits" {
+		t.Fatalf("unexpected tutorial target: %q", got.TutorialTarget())
+	}
+}
+
 func TestEnterDoesNotSwitchModes(t *testing.T) {
 	t.Parallel()
 
@@ -193,10 +223,11 @@ func TestViewRendersMachineCardsWithSelectedState(t *testing.T) {
 	manager := &fakeMachines{
 		listResult: []controlplane.Machine{
 			{
-				Name:        "tic-tac-toe",
-				State:       "RUNNING",
-				URL:         "https://tic-tac-toe.fascinate.dev",
-				PrimaryPort: 3000,
+				Name:         "tic-tac-toe",
+				State:        "RUNNING",
+				URL:          "https://tic-tac-toe.fascinate.dev",
+				PrimaryPort:  3000,
+				ShowTutorial: true,
 				Runtime: &incus.Machine{
 					IPv4: []string{"10.223.166.84"},
 				},
@@ -214,7 +245,7 @@ func TestViewRendersMachineCardsWithSelectedState(t *testing.T) {
 	updated, _ := model.Update(loadMachinesMsg{machines: manager.listResult})
 	view := updated.(Model).View()
 
-	if !containsAll(view, "Fascinate", "tic-tac-toe", "Port 3000:", "https://tic-tac-toe.fascinate.dev", "IPv4", "notes", "(enter) shell", "(q) quit") {
+	if !containsAll(view, "Fascinate", "tic-tac-toe", "Port 3000:", "https://tic-tac-toe.fascinate.dev", "IPv4", "notes", "(enter) shell", "(t) tutorial", "(q) quit") {
 		t.Fatalf("unexpected browse view: %q", view)
 	}
 	if strings.Contains(view, "Selected machine") || strings.Contains(view, "Your machines") || strings.Contains(view, "SELECTED") || strings.Contains(view, "enter detail") {

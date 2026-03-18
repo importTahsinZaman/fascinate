@@ -610,6 +610,144 @@ func TestServiceSerializesQuotaCheckedCreates(t *testing.T) {
 	}
 }
 
+func TestServiceShowsTutorialForSingleFirstMachine(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, runtime := newTestServiceDeps(t, ctx)
+
+	user, err := store.UpsertUser(ctx, "dev@example.com", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := store.CreateMachine(ctx, database.CreateMachineParams{
+		ID:          "machine-1",
+		Name:        "habits",
+		OwnerUserID: user.ID,
+		IncusName:   "habits",
+		State:       "RUNNING",
+		PrimaryPort: 3000,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	runtime.machines["habits"] = incus.Machine{Name: "habits", Type: "container", State: "RUNNING", CPU: "1", Memory: "2GiB", Disk: "20GiB"}
+
+	service := newTestService(store, runtime)
+	machines, err := service.ListMachines(ctx, "dev@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(machines) != 1 || !machines[0].ShowTutorial {
+		t.Fatalf("expected tutorial to be offered on first machine, got %+v", machines)
+	}
+}
+
+func TestServiceCreateMachineMarksTutorialCompletedAfterSecondMachine(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, runtime := newTestServiceDeps(t, ctx)
+
+	user, err := store.UpsertUser(ctx, "dev@example.com", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := store.CreateMachine(ctx, database.CreateMachineParams{
+		ID:          "machine-1",
+		Name:        "habits",
+		OwnerUserID: user.ID,
+		IncusName:   "habits",
+		State:       "RUNNING",
+		PrimaryPort: 3000,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	runtime.machines["habits"] = incus.Machine{Name: "habits", Type: "container", State: "RUNNING", CPU: "1", Memory: "2GiB", Disk: "20GiB"}
+
+	service := newTestService(store, runtime)
+	if _, err := service.CreateMachine(ctx, CreateMachineInput{
+		Name:       "notes",
+		OwnerEmail: "dev@example.com",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	updatedUser, err := store.GetUserByEmail(ctx, "dev@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updatedUser.TutorialCompletedAt == nil {
+		t.Fatalf("expected tutorial to be marked complete after second machine")
+	}
+}
+
+func TestServiceCloneMachineMarksTutorialCompleted(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, runtime := newTestServiceDeps(t, ctx)
+
+	user, err := store.UpsertUser(ctx, "dev@example.com", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := store.CreateMachine(ctx, database.CreateMachineParams{
+		ID:          "machine-1",
+		Name:        "habits",
+		OwnerUserID: user.ID,
+		IncusName:   "habits",
+		State:       "RUNNING",
+		PrimaryPort: 3000,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	runtime.machines["habits"] = incus.Machine{Name: "habits", Type: "container", State: "RUNNING", CPU: "1", Memory: "2GiB", Disk: "20GiB"}
+
+	service := newTestService(store, runtime)
+	if _, err := service.CloneMachine(ctx, CloneMachineInput{
+		SourceName: "habits",
+		TargetName: "habits-v2",
+		OwnerEmail: "dev@example.com",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	updatedUser, err := store.GetUserByEmail(ctx, "dev@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updatedUser.TutorialCompletedAt == nil {
+		t.Fatalf("expected tutorial to be marked complete after clone")
+	}
+}
+
+func TestServiceCompleteTutorialMarksUser(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, runtime := newTestServiceDeps(t, ctx)
+
+	if _, err := store.UpsertUser(ctx, "dev@example.com", false); err != nil {
+		t.Fatal(err)
+	}
+
+	service := newTestService(store, runtime)
+	if err := service.CompleteTutorial(ctx, "dev@example.com"); err != nil {
+		t.Fatal(err)
+	}
+
+	user, err := store.GetUserByEmail(ctx, "dev@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if user.TutorialCompletedAt == nil {
+		t.Fatalf("expected tutorial completion timestamp")
+	}
+}
+
 func newTestServiceDeps(t *testing.T, ctx context.Context) (*database.Store, *fakeRuntime) {
 	t.Helper()
 

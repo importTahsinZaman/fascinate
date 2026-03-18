@@ -1,10 +1,11 @@
 package database
 
 type User struct {
-	ID        string `json:"id"`
-	Email     string `json:"email"`
-	IsAdmin   bool   `json:"is_admin"`
-	CreatedAt string `json:"created_at"`
+	ID                  string  `json:"id"`
+	Email               string  `json:"email"`
+	IsAdmin             bool    `json:"is_admin"`
+	TutorialCompletedAt *string `json:"tutorial_completed_at,omitempty"`
+	CreatedAt           string  `json:"created_at"`
 }
 
 type MachineRecord struct {

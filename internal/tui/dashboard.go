@@ -18,6 +18,7 @@ type MachineManager interface {
 	CreateMachine(context.Context, controlplane.CreateMachineInput) (controlplane.Machine, error)
 	DeleteMachine(context.Context, string, string) error
 	CloneMachine(context.Context, controlplane.CloneMachineInput) (controlplane.Machine, error)
+	CompleteTutorial(context.Context, string) error
 }
 
 type mode int
@@ -43,18 +44,19 @@ type Model struct {
 	userEmail string
 	machines  MachineManager
 
-	items       []controlplane.Machine
-	selected    int
-	width       int
-	height      int
-	mode        mode
-	input       textinput.Model
-	busy        bool
-	status      string
-	errMsg      string
-	sourceName  string
-	pendingName string
-	shellTarget string
+	items          []controlplane.Machine
+	selected       int
+	width          int
+	height         int
+	mode           mode
+	input          textinput.Model
+	busy           bool
+	status         string
+	errMsg         string
+	sourceName     string
+	pendingName    string
+	shellTarget    string
+	tutorialTarget string
 }
 
 func NewDashboard(userEmail string, machines MachineManager, width, height int) Model {
@@ -206,6 +208,13 @@ func (m Model) updateBrowseMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.shellTarget = selected.Name
 		return m, tea.Quit
+	case "t":
+		selected, ok := m.selectedMachine()
+		if !ok || !selected.ShowTutorial {
+			return m, nil
+		}
+		m.tutorialTarget = selected.Name
+		return m, tea.Quit
 	case "n":
 		m.mode = modeCreate
 		m.status = ""
@@ -293,6 +302,14 @@ func (m Model) WantsShell() bool {
 
 func (m Model) ShellTarget() string {
 	return strings.TrimSpace(m.shellTarget)
+}
+
+func (m Model) WantsTutorial() bool {
+	return strings.TrimSpace(m.tutorialTarget) != ""
+}
+
+func (m Model) TutorialTarget() string {
+	return strings.TrimSpace(m.tutorialTarget)
 }
 
 func (m Model) selectedMachine() (controlplane.Machine, bool) {
@@ -470,9 +487,14 @@ func (m Model) renderMachineCard(machine controlplane.Machine, selected bool, to
 
 	if selected {
 		lines = append(lines, "")
+		actions := []string{"(enter) shell"}
+		if machine.ShowTutorial {
+			actions = append(actions, "(t) tutorial")
+		}
+		actions = append(actions, "(c) clone", "(d) delete")
 		lines = append(lines, lipgloss.NewStyle().
 			Foreground(lipgloss.Color("244")).
-			Render("(enter) shell  •  (c) clone  •  (d) delete"))
+			Render(strings.Join(actions, "  •  ")))
 	}
 
 	style := lipgloss.NewStyle().

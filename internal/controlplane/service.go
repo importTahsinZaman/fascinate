@@ -37,15 +37,16 @@ type Service struct {
 }
 
 type Machine struct {
-	ID          string         `json:"id"`
-	Name        string         `json:"name"`
-	OwnerEmail  string         `json:"owner_email"`
-	State       string         `json:"state"`
-	PrimaryPort int            `json:"primary_port"`
-	URL         string         `json:"url,omitempty"`
-	CreatedAt   string         `json:"created_at"`
-	UpdatedAt   string         `json:"updated_at"`
-	Runtime     *incus.Machine `json:"runtime,omitempty"`
+	ID           string         `json:"id"`
+	Name         string         `json:"name"`
+	OwnerEmail   string         `json:"owner_email"`
+	State        string         `json:"state"`
+	PrimaryPort  int            `json:"primary_port"`
+	URL          string         `json:"url,omitempty"`
+	ShowTutorial bool           `json:"show_tutorial,omitempty"`
+	CreatedAt    string         `json:"created_at"`
+	UpdatedAt    string         `json:"updated_at"`
+	Runtime      *incus.Machine `json:"runtime,omitempty"`
 }
 
 type CreateMachineInput struct {
@@ -73,6 +74,11 @@ func (s *Service) ListMachines(ctx context.Context, ownerEmail string) ([]Machin
 		return nil, err
 	}
 
+	user, err := s.store.GetUserByEmail(ctx, ownerEmail)
+	if err != nil && !errors.Is(err, database.ErrNotFound) {
+		return nil, err
+	}
+
 	liveMachines := map[string]incus.Machine{}
 	if runtimeMachines, err := s.runtime.ListMachines(ctx); err == nil {
 		for _, machine := range runtimeMachines {
@@ -82,7 +88,11 @@ func (s *Service) ListMachines(ctx context.Context, ownerEmail string) ([]Machin
 
 	out := make([]Machine, 0, len(records))
 	for _, record := range records {
-		out = append(out, s.machineFromRecord(ctx, record, liveMachines[record.IncusName]))
+		machine := s.machineFromRecord(ctx, record, liveMachines[record.IncusName])
+		if len(records) == 1 && user.TutorialCompletedAt == nil {
+			machine.ShowTutorial = true
+		}
+		out = append(out, machine)
 	}
 
 	return out, nil
@@ -132,6 +142,10 @@ func (s *Service) CreateMachine(ctx context.Context, input CreateMachineInput) (
 	if ownerEmail == "" {
 		return Machine{}, fmt.Errorf("owner email is required")
 	}
+	existingRecords, err := s.store.ListMachines(ctx, ownerEmail)
+	if err != nil {
+		return Machine{}, err
+	}
 	if err := s.enforceMachineCreatePolicy(ctx, ownerEmail, s.cfg.DefaultMachineCPU, s.cfg.DefaultMachineRAM, s.cfg.DefaultMachineDisk); err != nil {
 		return Machine{}, err
 	}
@@ -165,6 +179,12 @@ func (s *Service) CreateMachine(ctx context.Context, input CreateMachineInput) (
 	if err != nil {
 		s.cleanupRuntimeMachine(name)
 		return Machine{}, err
+	}
+
+	if len(existingRecords) > 0 {
+		if err := s.store.MarkUserTutorialCompleted(ctx, user.ID); err != nil {
+			return Machine{}, err
+		}
 	}
 
 	return s.machineFromRecord(ctx, record, liveMachine), nil
@@ -257,7 +277,20 @@ func (s *Service) CloneMachine(ctx context.Context, input CloneMachineInput) (Ma
 		return Machine{}, err
 	}
 
+	if err := s.store.MarkUserTutorialCompleted(ctx, user.ID); err != nil {
+		return Machine{}, err
+	}
+
 	return s.machineFromRecord(ctx, record, liveMachine), nil
+}
+
+func (s *Service) CompleteTutorial(ctx context.Context, ownerEmail string) error {
+	user, err := s.store.GetUserByEmail(ctx, ownerEmail)
+	if err != nil {
+		return err
+	}
+
+	return s.store.MarkUserTutorialCompleted(ctx, user.ID)
 }
 
 func (s *Service) ownedMachineRecord(ctx context.Context, name, ownerEmail string) (database.MachineRecord, error) {

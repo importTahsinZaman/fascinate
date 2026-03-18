@@ -34,10 +34,10 @@ func (s *Store) GetUserByEmail(ctx context.Context, email string) (User, error) 
 	var user User
 	var isAdmin int
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id, email, is_admin, created_at
+		SELECT id, email, is_admin, tutorial_completed_at, created_at
 		FROM users
 		WHERE email = ?
-	`, email).Scan(&user.ID, &user.Email, &isAdmin, &user.CreatedAt)
+	`, email).Scan(&user.ID, &user.Email, &isAdmin, nullableString(&user.TutorialCompletedAt), &user.CreatedAt)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return User{}, ErrNotFound
@@ -47,6 +47,27 @@ func (s *Store) GetUserByEmail(ctx context.Context, email string) (User, error) 
 
 	user.IsAdmin = isAdmin == 1
 	return user, nil
+}
+
+func (s *Store) MarkUserTutorialCompleted(ctx context.Context, userID string) error {
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE users
+		SET tutorial_completed_at = COALESCE(tutorial_completed_at, CURRENT_TIMESTAMP)
+		WHERE id = ?
+	`, strings.TrimSpace(userID))
+	if err != nil {
+		return err
+	}
+
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return ErrNotFound
+	}
+
+	return nil
 }
 
 func normalizeEmail(email string) string {
