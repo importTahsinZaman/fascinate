@@ -18,6 +18,7 @@ run:
 
 verify-ops:
 	bash -n ops/host/bootstrap.sh
+	bash -n ops/host/configure-admin-ssh.sh
 	bash -n ops/host/verify.sh
 	bash -n ops/host/write-caddyfile.sh
 	bash -n ops/host/install-control-plane.sh

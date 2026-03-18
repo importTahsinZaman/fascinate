@@ -88,13 +88,24 @@ Build the default agent-ready image alias:
 sudo ./ops/incus/build-base-image.sh
 ```
 
+If you want Fascinate to own port `22`, move host admin SSH first:
+
+```bash
+export FASCINATE_HOST_ADMIN_SSH_PORT=2220
+sudo ./ops/host/configure-admin-ssh.sh
+```
+
+After that:
+- host admin SSH uses `ssh -p 2220 root@fascinate.dev`
+- Fascinate can safely bind `:22`
+
 Deploy or redeploy the Fascinate service:
 
 ```bash
 export FASCINATE_BASE_DOMAIN=fascinate.dev
 export FASCINATE_ACME_EMAIL=you@example.com
 export FASCINATE_ADMIN_EMAILS=you@example.com
-export FASCINATE_SSH_ADDR=0.0.0.0:2222
+export FASCINATE_SSH_ADDR=0.0.0.0:22
 sudo ./ops/host/install-control-plane.sh
 ```
 

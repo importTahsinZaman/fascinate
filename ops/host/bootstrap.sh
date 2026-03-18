@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 HOSTNAME_VALUE="${FASCINATE_HOSTNAME:-fascinate-01}"
 INCUS_POOL_NAME="${FASCINATE_INCUS_POOL_NAME:-machines}"
 INCUS_POOL_SIZE_GIB="${FASCINATE_INCUS_POOL_SIZE_GIB:-180}"
 INSTALL_GO="${FASCINATE_INSTALL_GO:-1}"
+HOST_ADMIN_SSH_PORT="${FASCINATE_HOST_ADMIN_SSH_PORT:-}"
 
 require_root() {
   if [[ "${EUID}" -ne 0 ]]; then
@@ -82,6 +84,14 @@ ensure_services() {
   systemctl enable --now caddy
 }
 
+configure_admin_ssh() {
+  if [[ -z "${HOST_ADMIN_SSH_PORT}" || "${HOST_ADMIN_SSH_PORT}" == "22" ]]; then
+    return 0
+  fi
+
+  FASCINATE_HOST_ADMIN_SSH_PORT="${HOST_ADMIN_SSH_PORT}" "${SCRIPT_DIR}/configure-admin-ssh.sh"
+}
+
 ensure_incus_initialized() {
   if ! incus info >/dev/null 2>&1; then
     incus admin init --minimal
@@ -129,6 +139,7 @@ install_packages
 configure_hostname
 configure_firewall
 ensure_services
+configure_admin_ssh
 ensure_incus_initialized
 ensure_incus_network
 allow_incus_bridge_firewall
