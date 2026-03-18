@@ -179,7 +179,7 @@ func TestRunCommandMachines(t *testing.T) {
 	})
 
 	channel := &stubChannel{}
-	status := server.runCommand(channel, nil, sessionAuth{userEmail: "dev@example.com"}, "machines", windowSize{width: 80, height: 24})
+	status := server.runCommand(channel, nil, sessionAuth{userEmail: "dev@example.com"}, "machines", sessionPTY{size: windowSize{width: 80, height: 24}, term: "xterm-256color"})
 	if status != 0 {
 		t.Fatalf("expected zero status, got %d", status)
 	}
@@ -194,7 +194,7 @@ func TestRunCommandUnknownCommand(t *testing.T) {
 	server := newTestServer(t, &fakeKeyLookup{}, &fakeMachines{})
 
 	channel := &stubChannel{}
-	status := server.runCommand(channel, nil, sessionAuth{userEmail: "dev@example.com"}, "wat", windowSize{width: 80, height: 24})
+	status := server.runCommand(channel, nil, sessionAuth{userEmail: "dev@example.com"}, "wat", sessionPTY{size: windowSize{width: 80, height: 24}, term: "xterm-256color"})
 	if status != 127 {
 		t.Fatalf("expected 127, got %d", status)
 	}
@@ -212,7 +212,7 @@ func TestRunCommandCreateMachine(t *testing.T) {
 	server := newTestServer(t, &fakeKeyLookup{}, machines)
 
 	channel := &stubChannel{}
-	status := server.runCommand(channel, nil, sessionAuth{userEmail: "dev@example.com"}, "create habits", windowSize{width: 80, height: 24})
+	status := server.runCommand(channel, nil, sessionAuth{userEmail: "dev@example.com"}, "create habits", sessionPTY{size: windowSize{width: 80, height: 24}, term: "xterm-256color"})
 	if status != 0 {
 		t.Fatalf("expected zero status, got %d", status)
 	}
@@ -233,7 +233,7 @@ func TestRunCommandCloneMachine(t *testing.T) {
 	server := newTestServer(t, &fakeKeyLookup{}, machines)
 
 	channel := &stubChannel{}
-	status := server.runCommand(channel, nil, sessionAuth{userEmail: "dev@example.com"}, "clone habits habits-v2", windowSize{width: 80, height: 24})
+	status := server.runCommand(channel, nil, sessionAuth{userEmail: "dev@example.com"}, "clone habits habits-v2", sessionPTY{size: windowSize{width: 80, height: 24}, term: "xterm-256color"})
 	if status != 0 {
 		t.Fatalf("expected zero status, got %d", status)
 	}
@@ -249,7 +249,7 @@ func TestRunCommandDeleteMachineRequiresTypedConfirmation(t *testing.T) {
 	server := newTestServer(t, &fakeKeyLookup{}, machines)
 
 	channel := &stubChannel{}
-	status := server.runCommand(channel, nil, sessionAuth{userEmail: "dev@example.com"}, "delete habits", windowSize{width: 80, height: 24})
+	status := server.runCommand(channel, nil, sessionAuth{userEmail: "dev@example.com"}, "delete habits", sessionPTY{size: windowSize{width: 80, height: 24}, term: "xterm-256color"})
 	if status != 2 {
 		t.Fatalf("expected usage status, got %d", status)
 	}
@@ -265,7 +265,7 @@ func TestRunCommandDeleteMachine(t *testing.T) {
 	server := newTestServer(t, &fakeKeyLookup{}, machines)
 
 	channel := &stubChannel{}
-	status := server.runCommand(channel, nil, sessionAuth{userEmail: "dev@example.com"}, "delete habits --confirm habits", windowSize{width: 80, height: 24})
+	status := server.runCommand(channel, nil, sessionAuth{userEmail: "dev@example.com"}, "delete habits --confirm habits", sessionPTY{size: windowSize{width: 80, height: 24}, term: "xterm-256color"})
 	if status != 0 {
 		t.Fatalf("expected zero status, got %d", status)
 	}
@@ -291,7 +291,7 @@ func TestRunCommandRequiresSignupForUnknownKey(t *testing.T) {
 	server := newTestServer(t, &fakeKeyLookup{}, &fakeMachines{})
 
 	channel := &stubChannel{}
-	status := server.runCommand(channel, nil, sessionAuth{signupRequired: true}, "machines", windowSize{width: 80, height: 24})
+	status := server.runCommand(channel, nil, sessionAuth{signupRequired: true}, "machines", sessionPTY{size: windowSize{width: 80, height: 24}, term: "xterm-256color"})
 	if status != 1 {
 		t.Fatalf("expected status 1, got %d", status)
 	}
@@ -318,7 +318,7 @@ func TestRunCommandShellMachine(t *testing.T) {
 	}
 
 	channel := &stubChannel{}
-	status := server.runCommand(channel, nil, sessionAuth{userEmail: "dev@example.com"}, "shell habits", windowSize{width: 120, height: 40})
+	status := server.runCommand(channel, nil, sessionAuth{userEmail: "dev@example.com"}, "shell habits", sessionPTY{size: windowSize{width: 120, height: 40}, term: "xterm-256color"})
 	if status != 0 {
 		t.Fatalf("expected zero status, got %d", status)
 	}
@@ -339,12 +339,41 @@ func TestRunCommandShellMachineRejectsWrongOwner(t *testing.T) {
 	server := newTestServer(t, &fakeKeyLookup{}, machines)
 
 	channel := &stubChannel{}
-	status := server.runCommand(channel, nil, sessionAuth{userEmail: "dev@example.com"}, "shell habits", windowSize{width: 120, height: 40})
+	status := server.runCommand(channel, nil, sessionAuth{userEmail: "dev@example.com"}, "shell habits", sessionPTY{size: windowSize{width: 120, height: 40}, term: "xterm-256color"})
 	if status != 1 {
 		t.Fatalf("expected status 1, got %d", status)
 	}
 	if got := channel.String(); !bytes.Contains([]byte(got), []byte("not found")) {
 		t.Fatalf("unexpected output: %q", got)
+	}
+}
+
+func TestParsePTYRequestUpdatesTermAndSize(t *testing.T) {
+	t.Parallel()
+
+	payload := ssh.Marshal(struct {
+		Term   string
+		Width  uint32
+		Height uint32
+		PxW    uint32
+		PxH    uint32
+		Modes  string
+	}{
+		Term:   "screen-256color",
+		Width:  132,
+		Height: 43,
+	})
+
+	got := parsePTYRequest(payload, sessionPTY{
+		size: windowSize{width: 80, height: 24},
+		term: "xterm-256color",
+	})
+
+	if got.term != "screen-256color" {
+		t.Fatalf("unexpected term: %q", got.term)
+	}
+	if got.size.width != 132 || got.size.height != 43 {
+		t.Fatalf("unexpected size: %+v", got.size)
 	}
 }
 
