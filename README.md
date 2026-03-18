@@ -158,6 +158,8 @@ export FASCINATE_DEFAULT_IMAGE=images:ubuntu/24.04
 export FASCINATE_DEFAULT_MACHINE_CPU=1
 export FASCINATE_DEFAULT_MACHINE_RAM=2GiB
 export FASCINATE_DEFAULT_PRIMARY_PORT=3000
+export FASCINATE_NODE_VERSION=latest
+export FASCINATE_GO_VERSION=latest
 export FASCINATE_SSH_HOST_KEY_PATH=./data/ssh_host_ed25519_key
 export FASCINATE_RESEND_API_KEY=...
 export FASCINATE_EMAIL_FROM='Fascinate <hello@example.com>'
@@ -194,7 +196,8 @@ If your host Caddy config forwards wildcard subdomains to `FASCINATE_HTTP_ADDR`,
 New machines built from `fascinate-base` come with:
 - Ubuntu 24.04 packages upgraded to the latest versions available in the current Ubuntu repositories at image-build time
 - Docker
-- Node.js, npm, Python 3, Go, git, jq, ripgrep, sqlite3, tmux, fzf, curl, wget, unzip, zip, rsync, and common build tooling
+- Node.js and Go installed from upstream releases at image-build time (`FASCINATE_NODE_VERSION=latest` and `FASCINATE_GO_VERSION=latest` by default)
+- npm, Python 3, git, jq, ripgrep, sqlite3, tmux, fzf, curl, wget, unzip, zip, rsync, and common build tooling
 - Claude Code available as `claude`
 
 Available exec-style SSH commands:
