@@ -9,6 +9,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"fascinate/internal/controlplane"
+	"fascinate/internal/runtime/incus"
 )
 
 type fakeMachines struct {
@@ -203,8 +204,21 @@ func TestViewRendersMachineCardsWithSelectedState(t *testing.T) {
 
 	manager := &fakeMachines{
 		listResult: []controlplane.Machine{
-			{Name: "tic-tac-toe", State: "RUNNING", URL: "https://tic-tac-toe.fascinate.dev"},
-			{Name: "notes", State: "STOPPED", URL: "https://notes.fascinate.dev"},
+			{
+				Name:        "tic-tac-toe",
+				State:       "RUNNING",
+				URL:         "https://tic-tac-toe.fascinate.dev",
+				PrimaryPort: 3000,
+				Runtime: &incus.Machine{
+					IPv4: []string{"10.223.166.84"},
+				},
+			},
+			{
+				Name:        "notes",
+				State:       "STOPPED",
+				URL:         "https://notes.fascinate.dev",
+				PrimaryPort: 3000,
+			},
 		},
 	}
 	model := NewDashboard("dev@example.com", manager, 100, 30)
@@ -212,8 +226,11 @@ func TestViewRendersMachineCardsWithSelectedState(t *testing.T) {
 	updated, _ := model.Update(loadMachinesMsg{machines: manager.listResult})
 	view := updated.(Model).View()
 
-	if !containsAll(view, "Fascinate", "MACHINES", "Your machines", "Selected machine", "tic-tac-toe", "https://tic-tac-toe.fascinate.dev") {
+	if !containsAll(view, "Fascinate", "tic-tac-toe", "https://tic-tac-toe.fascinate.dev", "Primary port", "IPv4", "SELECTED", "notes") {
 		t.Fatalf("unexpected browse view: %q", view)
+	}
+	if strings.Contains(view, "Selected machine") || strings.Contains(view, "Your machines") {
+		t.Fatalf("unexpected legacy browse layout: %q", view)
 	}
 }
 

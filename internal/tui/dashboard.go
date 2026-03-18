@@ -494,115 +494,67 @@ func (m Model) renderBrowse(width int) string {
 		return m.renderPanel(width, "Machines", empty, false)
 	}
 
-	selected, _ := m.selectedMachine()
-	if width >= 110 {
-		return m.renderUnifiedBrowsePanel(width, selected, true)
+	var cards []string
+	for i, machine := range m.items {
+		cards = append(cards, m.renderMachineCard(machine, i == m.selected, width))
 	}
-
-	return m.renderUnifiedBrowsePanel(width, selected, false)
+	return strings.Join(cards, "\n\n")
 }
 
-func (m Model) renderUnifiedBrowsePanel(width int, machine controlplane.Machine, split bool) string {
-	if split {
-		leftWidth := maxInt(34, width/2-3)
-		rightWidth := maxInt(34, width-leftWidth-7)
-		left := m.renderMachineListContent(leftWidth)
-		right := m.renderSelectedPreviewContent(rightWidth, machine)
-		body := lipgloss.JoinHorizontal(
-			lipgloss.Top,
-			lipgloss.NewStyle().Width(leftWidth).Render(left),
-			lipgloss.NewStyle().Foreground(lipgloss.Color("238")).Render(" │ "),
-			lipgloss.NewStyle().Width(rightWidth).Render(right),
-		)
-		return m.renderPanel(width, "Machines", body, false)
-	}
-
-	body := m.renderMachineListContent(m.panelInnerWidth(width))
-	body += "\n\n" + lipgloss.NewStyle().Foreground(lipgloss.Color("238")).Render(strings.Repeat("─", maxInt(20, m.panelInnerWidth(width))))
-	body += "\n\n" + m.renderSelectedPreviewContent(m.panelInnerWidth(width), machine)
-	return m.renderPanel(width, "Machines", body, false)
-}
-
-func (m Model) renderMachineRow(machine controlplane.Machine, selected bool, totalWidth int) string {
-	contentWidth := maxInt(18, totalWidth-8)
+func (m Model) renderMachineCard(machine controlplane.Machine, selected bool, totalWidth int) string {
+	innerWidth := m.panelInnerWidth(totalWidth)
 
 	name := lipgloss.NewStyle().
 		Bold(true).
 		Foreground(lipgloss.Color("255")).
-		Render(m.truncate(machine.Name, contentWidth))
-	url := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("117")).
-		Render(m.truncate(machine.URL, contentWidth))
+		Render(m.truncate(machine.Name, maxInt(18, innerWidth-18)))
 
-	indicator := lipgloss.NewStyle().Foreground(lipgloss.Color("81")).Render("›")
-	if !selected {
-		indicator = lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render(" ")
+	header := m.padLine(name, m.statusBadge(machine.State), innerWidth)
+	if selected {
+		header = m.padLine(
+			lipgloss.JoinHorizontal(lipgloss.Center, m.renderPill("SELECTED", lipgloss.Color("16"), lipgloss.Color("81")), " "+name),
+			m.statusBadge(machine.State),
+			innerWidth,
+		)
 	}
 
-	var out strings.Builder
-	out.WriteString(indicator)
-	out.WriteString(" ")
-	out.WriteString(name)
-	out.WriteString("\n")
-	out.WriteString("  ")
-	out.WriteString(m.statusBadge(machine.State))
-	out.WriteString("\n")
-	out.WriteString("  ")
-	out.WriteString(url)
+	var lines []string
+	lines = append(lines, header)
+
+	if strings.TrimSpace(machine.URL) != "" {
+		lines = append(lines, lipgloss.NewStyle().
+			Foreground(lipgloss.Color("117")).
+			Underline(true).
+			Render(m.truncate(machine.URL, innerWidth)))
+	}
+
+	lines = append(lines, m.renderKeyValue("Primary port", fmt.Sprintf("%d", machine.PrimaryPort)))
+	if machine.Runtime != nil && len(machine.Runtime.IPv4) > 0 {
+		lines = append(lines, m.renderKeyValue("IPv4", strings.Join(machine.Runtime.IPv4, ", ")))
+	}
+	if machine.Runtime != nil && strings.TrimSpace(machine.Runtime.Type) != "" {
+		lines = append(lines, m.renderKeyValue("Runtime", machine.Runtime.Type))
+	}
+
+	if selected {
+		lines = append(lines, "")
+		lines = append(lines, lipgloss.NewStyle().
+			Foreground(lipgloss.Color("244")).
+			Render("enter detail  •  s shell  •  c clone  •  d delete"))
+	}
 
 	style := lipgloss.NewStyle().
 		Padding(0, 1).
-		Width(maxInt(16, totalWidth-4))
-
+		Width(innerWidth).
+		BorderStyle(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("240"))
 	if selected {
 		style = style.
-			Background(lipgloss.Color("236"))
-	} else {
-		style = style.Foreground(lipgloss.Color("252"))
+			BorderForeground(lipgloss.Color("81")).
+			Background(lipgloss.Color("235"))
 	}
 
-	return style.Render(out.String())
-}
-
-func (m Model) renderMachineListContent(width int) string {
-	var out strings.Builder
-	out.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("250")).Render("Your machines"))
-	out.WriteString("\n\n")
-	for i, machine := range m.items {
-		if i > 0 {
-			out.WriteString("\n")
-		}
-		out.WriteString(m.renderMachineRow(machine, i == m.selected, width))
-	}
-	return out.String()
-}
-
-func (m Model) renderSelectedPreviewContent(width int, machine controlplane.Machine) string {
-	var out strings.Builder
-	out.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("250")).Render("Selected machine"))
-	out.WriteString("\n\n")
-	out.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("255")).Render(m.truncate(machine.Name, width)))
-	out.WriteString("  ")
-	out.WriteString(m.statusBadge(machine.State))
-	out.WriteString("\n\n")
-	out.WriteString(m.renderKeyValue("URL", machine.URL))
-	out.WriteString("\n")
-	out.WriteString(m.renderKeyValue("Primary Port", fmt.Sprintf("%d", machine.PrimaryPort)))
-	out.WriteString("\n")
-	out.WriteString(m.renderKeyValue("Owner", machine.OwnerEmail))
-	if machine.Runtime != nil {
-		if len(machine.Runtime.IPv4) > 0 {
-			out.WriteString("\n")
-			out.WriteString(m.renderKeyValue("IPv4", strings.Join(machine.Runtime.IPv4, ", ")))
-		}
-		if strings.TrimSpace(machine.Runtime.Type) != "" {
-			out.WriteString("\n")
-			out.WriteString(m.renderKeyValue("Runtime", machine.Runtime.Type))
-		}
-	}
-	out.WriteString("\n\n")
-	out.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("244")).Render("enter detail | s shell | c clone | d delete"))
-	return out.String()
+	return style.Render(strings.Join(lines, "\n"))
 }
 
 func (m Model) renderFooter(width int) string {
