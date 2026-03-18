@@ -38,9 +38,16 @@ type Server struct {
 	addr     string
 	config   *ssh.ServerConfig
 	machines machineManager
+	signup   signupManager
 }
 
-func New(cfg config.Config, keys keyLookup, machines machineManager) (*Server, error) {
+type signupManager interface {
+	Enabled() bool
+	RequestCode(context.Context, string) error
+	VerifyAndRegisterKey(context.Context, string, string, string) (database.User, error)
+}
+
+func New(cfg config.Config, keys keyLookup, machines machineManager, signup signupManager) (*Server, error) {
 	signer, err := loadOrCreateHostKey(cfg.SSHHostKeyPath)
 	if err != nil {
 		return nil, err
@@ -52,6 +59,15 @@ func New(cfg config.Config, keys keyLookup, machines machineManager) (*Server, e
 
 			record, err := keys.GetSSHKeyByFingerprint(context.Background(), fingerprint)
 			if err != nil {
+				if errors.Is(err, database.ErrNotFound) && signup != nil && signup.Enabled() {
+					return &ssh.Permissions{
+						Extensions: map[string]string{
+							"signup_required": "true",
+							"fingerprint":     fingerprint,
+							"public_key":      strings.TrimSpace(string(ssh.MarshalAuthorizedKey(key))),
+						},
+					}, nil
+				}
 				if errors.Is(err, database.ErrNotFound) {
 					return nil, fmt.Errorf("unauthorized")
 				}
@@ -73,6 +89,7 @@ func New(cfg config.Config, keys keyLookup, machines machineManager) (*Server, e
 		addr:     strings.TrimSpace(cfg.SSHAddr),
 		config:   serverConfig,
 		machines: machines,
+		signup:   signup,
 	}, nil
 }
 
@@ -117,7 +134,11 @@ func (s *Server) handleConn(conn net.Conn) {
 
 	go ssh.DiscardRequests(requests)
 
-	userEmail := serverConn.Permissions.Extensions["user_email"]
+	auth := sessionAuth{
+		userEmail:      serverConn.Permissions.Extensions["user_email"],
+		publicKey:      serverConn.Permissions.Extensions["public_key"],
+		signupRequired: serverConn.Permissions.Extensions["signup_required"] == "true",
+	}
 	for newChannel := range channels {
 		if newChannel.ChannelType() != "session" {
 			_ = newChannel.Reject(ssh.UnknownChannelType, "unsupported channel type")
@@ -129,11 +150,11 @@ func (s *Server) handleConn(conn net.Conn) {
 			continue
 		}
 
-		go s.handleSession(channel, requests, userEmail)
+		go s.handleSession(channel, requests, auth)
 	}
 }
 
-func (s *Server) handleSession(channel ssh.Channel, requests <-chan *ssh.Request, userEmail string) {
+func (s *Server) handleSession(channel ssh.Channel, requests <-chan *ssh.Request, auth sessionAuth) {
 	defer channel.Close()
 
 	size := windowSize{width: 80, height: 24}
@@ -147,7 +168,17 @@ func (s *Server) handleSession(channel ssh.Channel, requests <-chan *ssh.Request
 			replyIfWanted(req, true)
 		case "shell":
 			replyIfWanted(req, true)
-			writeExitStatus(channel, s.runDashboard(channel, requests, userEmail, size))
+			if auth.signupRequired {
+				userEmail, status := s.runSignup(channel, requests, auth.publicKey, size)
+				if status != 0 || userEmail == "" {
+					writeExitStatus(channel, status)
+					return
+				}
+				auth.userEmail = userEmail
+				auth.signupRequired = false
+			}
+
+			writeExitStatus(channel, s.runDashboard(channel, requests, auth.userEmail, size))
 			return
 		case "exec":
 			replyIfWanted(req, true)
@@ -161,7 +192,7 @@ func (s *Server) handleSession(channel ssh.Channel, requests <-chan *ssh.Request
 				return
 			}
 
-			status := s.runCommand(channel, userEmail, payload.Command)
+			status := s.runCommand(channel, auth, payload.Command)
 			writeExitStatus(channel, status)
 			return
 		default:
@@ -170,30 +201,36 @@ func (s *Server) handleSession(channel ssh.Channel, requests <-chan *ssh.Request
 	}
 }
 
-func (s *Server) runCommand(channel ssh.Channel, userEmail, command string) uint32 {
+func (s *Server) runCommand(channel ssh.Channel, auth sessionAuth, command string) uint32 {
+	if auth.signupRequired {
+		fmt.Fprintln(channel, "this SSH key is not registered yet")
+		fmt.Fprintln(channel, "open an interactive SSH session to complete signup")
+		return 1
+	}
+
 	fields := strings.Fields(strings.TrimSpace(command))
 	if len(fields) == 0 {
-		s.renderDashboard(channel, userEmail)
+		s.renderDashboard(channel, auth.userEmail)
 		return 0
 	}
 
 	switch fields[0] {
 	case "dashboard", "help":
-		s.renderDashboard(channel, userEmail)
+		s.renderDashboard(channel, auth.userEmail)
 		return 0
 	case "whoami":
-		fmt.Fprintln(channel, userEmail)
+		fmt.Fprintln(channel, auth.userEmail)
 		return 0
 	case "machines":
-		if err := s.renderMachines(channel, userEmail); err != nil {
+		if err := s.renderMachines(channel, auth.userEmail); err != nil {
 			fmt.Fprintf(channel, "error: %v\n", err)
 			return 1
 		}
 		return 0
 	case "create":
-		return s.createMachine(channel, userEmail, fields)
+		return s.createMachine(channel, auth.userEmail, fields)
 	case "clone":
-		return s.cloneMachine(channel, userEmail, fields)
+		return s.cloneMachine(channel, auth.userEmail, fields)
 	case "delete":
 		return s.deleteMachine(channel, fields)
 	default:
@@ -205,6 +242,39 @@ func (s *Server) runCommand(channel ssh.Channel, userEmail, command string) uint
 
 func (s *Server) runDashboard(channel ssh.Channel, requests <-chan *ssh.Request, userEmail string, size windowSize) uint32 {
 	model := tui.NewDashboard(userEmail, s.machines, size.width, size.height)
+	if _, err := s.runProgram(channel, requests, size, model); err != nil {
+		fmt.Fprintf(channel, "error: %v\r\n", err)
+		return 1
+	}
+
+	return 0
+}
+
+func (s *Server) runSignup(channel ssh.Channel, requests <-chan *ssh.Request, publicKey string, size windowSize) (string, uint32) {
+	if s.signup == nil || !s.signup.Enabled() {
+		fmt.Fprintln(channel, "signup is not configured on this server")
+		return "", 1
+	}
+
+	model := tui.NewSignup(s.signup, publicKey)
+	finalModel, err := s.runProgram(channel, requests, size, model)
+	if err != nil {
+		fmt.Fprintf(channel, "error: %v\r\n", err)
+		return "", 1
+	}
+
+	signupModel, ok := finalModel.(tui.SignupModel)
+	if !ok {
+		return "", 1
+	}
+	if !signupModel.Verified() {
+		return "", 0
+	}
+
+	return signupModel.VerifiedEmail(), 0
+}
+
+func (s *Server) runProgram(channel ssh.Channel, requests <-chan *ssh.Request, size windowSize, model tea.Model) (tea.Model, error) {
 	program := tea.NewProgram(
 		model,
 		tea.WithInput(channel),
@@ -240,12 +310,7 @@ func (s *Server) runDashboard(channel ssh.Channel, requests <-chan *ssh.Request,
 		}
 	}()
 
-	if _, err := program.Run(); err != nil {
-		fmt.Fprintf(channel, "error: %v\r\n", err)
-		return 1
-	}
-
-	return 0
+	return program.Run()
 }
 
 func (s *Server) renderDashboard(channel ssh.Channel, userEmail string) {
@@ -345,6 +410,12 @@ func writeExitStatus(channel ssh.Channel, status uint32) {
 	_, _ = channel.SendRequest("exit-status", false, ssh.Marshal(struct {
 		Status uint32
 	}{Status: status}))
+}
+
+type sessionAuth struct {
+	userEmail      string
+	publicKey      string
+	signupRequired bool
 }
 
 func replyIfWanted(req *ssh.Request, ok bool) {

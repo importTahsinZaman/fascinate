@@ -22,8 +22,8 @@ This is the first real scaffold, not the full product yet. It gives us:
   - talk to the local `incus` CLI
 
 It does not yet include:
-- terminal signup and unknown-key verification
 - dynamic Caddy routing from the control plane
+- recovery and account-management flows for additional SSH keys
 
 It now includes a first machine API slice:
 - `GET /v1/machines`
@@ -37,6 +37,7 @@ It also includes a first SSH slice:
 - a DB-backed SSH server on `FASCINATE_SSH_ADDR`
 - command handling for `help`, `whoami`, `machines`, `create`, `clone`, and `delete`
 - a Bubble Tea dashboard for interactive `ssh fascinate.dev` sessions
+- unknown-key signup with emailed 6-digit verification codes
 
 For now, machine ownership is bootstrapped by passing `owner_email` in the API request. This is temporary until the SSH auth flow is wired in.
 
@@ -107,6 +108,10 @@ export FASCINATE_DEFAULT_MACHINE_CPU=1
 export FASCINATE_DEFAULT_MACHINE_RAM=2GiB
 export FASCINATE_DEFAULT_PRIMARY_PORT=3000
 export FASCINATE_SSH_HOST_KEY_PATH=./data/ssh_host_ed25519_key
+export FASCINATE_RESEND_API_KEY=...
+export FASCINATE_EMAIL_FROM='Fascinate <hello@example.com>'
+export FASCINATE_RESEND_BASE_URL=https://api.resend.com
+export FASCINATE_SIGNUP_CODE_TTL=15m
 ```
 
 Seed an SSH key into the local SQLite DB:
@@ -129,6 +134,8 @@ Or open an interactive shell:
 ```bash
 ssh -p 2222 localhost
 ```
+
+If the SSH key is unknown and email delivery is configured, the session opens a signup flow instead of rejecting the connection. After verification, the key is persisted and the dashboard opens in the same SSH session.
 
 Available exec-style SSH commands:
 
@@ -157,7 +164,7 @@ esc               back/cancel
 
 ## Next Milestones
 
-1. Add terminal signup and unknown-key verification flow.
+1. Add recovery and “attach another SSH key” flows for existing accounts.
 2. Replace the current single-screen dashboard with fuller Bubble Tea flows for machine creation, detail, and errors.
 3. Replace the static host Caddy config with control-plane-managed routing.
 4. Enforce per-user quotas and approval rules.

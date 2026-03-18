@@ -38,3 +38,14 @@ type SSHKeyRecord struct {
 	Fingerprint string `json:"fingerprint"`
 	CreatedAt   string `json:"created_at"`
 }
+
+type EmailCodeRecord struct {
+	ID         string  `json:"id"`
+	UserID     *string `json:"user_id,omitempty"`
+	Email      string  `json:"email"`
+	Purpose    string  `json:"purpose"`
+	CodeHash   string  `json:"code_hash"`
+	ExpiresAt  string  `json:"expires_at"`
+	ConsumedAt *string `json:"consumed_at,omitempty"`
+	CreatedAt  string  `json:"created_at"`
+}

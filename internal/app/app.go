@@ -14,8 +14,10 @@ import (
 	"fascinate/internal/config"
 	"fascinate/internal/controlplane"
 	"fascinate/internal/database"
+	"fascinate/internal/email"
 	"fascinate/internal/httpapi"
 	"fascinate/internal/runtime/incus"
+	"fascinate/internal/signup"
 	"fascinate/internal/sshfrontdoor"
 )
 
@@ -44,7 +46,9 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 	runtimeClient := incus.NewCLI(cfg.IncusBinary)
 	controlPlane := controlplane.New(cfg, store, runtimeClient)
 	handler := httpapi.New(cfg, store, runtimeClient, controlPlane)
-	sshServer, err := sshfrontdoor.New(cfg, store, controlPlane)
+	emailClient := email.NewResendClient(cfg.ResendBaseURL, cfg.ResendAPIKey, cfg.EmailFrom)
+	signupService := signup.New(cfg, store, emailClient)
+	sshServer, err := sshfrontdoor.New(cfg, store, controlPlane, signupService)
 	if err != nil {
 		store.Close()
 		return nil, err

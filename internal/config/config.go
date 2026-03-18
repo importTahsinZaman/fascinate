@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type Config struct {
@@ -21,6 +22,10 @@ type Config struct {
 	DefaultMachineRAM  string
 	DefaultPrimaryPort int
 	SSHHostKeyPath     string
+	ResendAPIKey       string
+	ResendBaseURL      string
+	EmailFrom          string
+	SignupCodeTTL      time.Duration
 }
 
 func Load() Config {
@@ -44,6 +49,10 @@ func Load() Config {
 		DefaultMachineRAM:  getenv("FASCINATE_DEFAULT_MACHINE_RAM", "2GiB"),
 		DefaultPrimaryPort: getenvInt("FASCINATE_DEFAULT_PRIMARY_PORT", 3000),
 		SSHHostKeyPath:     getenv("FASCINATE_SSH_HOST_KEY_PATH", filepath.Join(dataDir, "ssh_host_ed25519_key")),
+		ResendAPIKey:       getenv("FASCINATE_RESEND_API_KEY", ""),
+		ResendBaseURL:      getenv("FASCINATE_RESEND_BASE_URL", "https://api.resend.com"),
+		EmailFrom:          getenv("FASCINATE_EMAIL_FROM", ""),
+		SignupCodeTTL:      getenvDuration("FASCINATE_SIGNUP_CODE_TTL", 15*time.Minute),
 	}
 }
 
@@ -81,6 +90,20 @@ func getenvInt(key string, fallback int) int {
 	}
 
 	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return fallback
+	}
+
+	return parsed
+}
+
+func getenvDuration(key string, fallback time.Duration) time.Duration {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback
+	}
+
+	parsed, err := time.ParseDuration(value)
 	if err != nil {
 		return fallback
 	}

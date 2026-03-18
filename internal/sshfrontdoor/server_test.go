@@ -42,6 +42,22 @@ type fakeMachines struct {
 	cloneErr     error
 }
 
+type fakeSignup struct {
+	enabled bool
+}
+
+func (f *fakeSignup) Enabled() bool {
+	return f.enabled
+}
+
+func (f *fakeSignup) RequestCode(context.Context, string) error {
+	return nil
+}
+
+func (f *fakeSignup) VerifyAndRegisterKey(context.Context, string, string, string) (database.User, error) {
+	return database.User{}, nil
+}
+
 func (f *fakeMachines) ListMachines(context.Context, string) ([]controlplane.Machine, error) {
 	if f.listErr != nil {
 		return nil, f.listErr
@@ -128,6 +144,24 @@ func TestPublicKeyCallbackRejectsUnknownKey(t *testing.T) {
 	}
 }
 
+func TestPublicKeyCallbackAllowsUnknownKeyWhenSignupEnabled(t *testing.T) {
+	t.Parallel()
+
+	publicKey, _, fingerprint := generateAuthorizedKey(t)
+	server := newTestServer(t, &fakeKeyLookup{err: database.ErrNotFound}, &fakeMachines{}, &fakeSignup{enabled: true})
+
+	perms, err := server.config.PublicKeyCallback(nil, publicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perms.Extensions["signup_required"] != "true" {
+		t.Fatalf("expected signup-required permissions, got %+v", perms.Extensions)
+	}
+	if perms.Extensions["fingerprint"] != fingerprint {
+		t.Fatalf("unexpected fingerprint: %+v", perms.Extensions)
+	}
+}
+
 func TestRunCommandMachines(t *testing.T) {
 	t.Parallel()
 
@@ -136,7 +170,7 @@ func TestRunCommandMachines(t *testing.T) {
 	})
 
 	channel := &stubChannel{}
-	status := server.runCommand(channel, "dev@example.com", "machines")
+	status := server.runCommand(channel, sessionAuth{userEmail: "dev@example.com"}, "machines")
 	if status != 0 {
 		t.Fatalf("expected zero status, got %d", status)
 	}
@@ -151,7 +185,7 @@ func TestRunCommandUnknownCommand(t *testing.T) {
 	server := newTestServer(t, &fakeKeyLookup{}, &fakeMachines{})
 
 	channel := &stubChannel{}
-	status := server.runCommand(channel, "dev@example.com", "wat")
+	status := server.runCommand(channel, sessionAuth{userEmail: "dev@example.com"}, "wat")
 	if status != 127 {
 		t.Fatalf("expected 127, got %d", status)
 	}
@@ -169,7 +203,7 @@ func TestRunCommandCreateMachine(t *testing.T) {
 	server := newTestServer(t, &fakeKeyLookup{}, machines)
 
 	channel := &stubChannel{}
-	status := server.runCommand(channel, "dev@example.com", "create habits")
+	status := server.runCommand(channel, sessionAuth{userEmail: "dev@example.com"}, "create habits")
 	if status != 0 {
 		t.Fatalf("expected zero status, got %d", status)
 	}
@@ -190,7 +224,7 @@ func TestRunCommandCloneMachine(t *testing.T) {
 	server := newTestServer(t, &fakeKeyLookup{}, machines)
 
 	channel := &stubChannel{}
-	status := server.runCommand(channel, "dev@example.com", "clone habits habits-v2")
+	status := server.runCommand(channel, sessionAuth{userEmail: "dev@example.com"}, "clone habits habits-v2")
 	if status != 0 {
 		t.Fatalf("expected zero status, got %d", status)
 	}
@@ -206,7 +240,7 @@ func TestRunCommandDeleteMachineRequiresTypedConfirmation(t *testing.T) {
 	server := newTestServer(t, &fakeKeyLookup{}, machines)
 
 	channel := &stubChannel{}
-	status := server.runCommand(channel, "dev@example.com", "delete habits")
+	status := server.runCommand(channel, sessionAuth{userEmail: "dev@example.com"}, "delete habits")
 	if status != 2 {
 		t.Fatalf("expected usage status, got %d", status)
 	}
@@ -222,7 +256,7 @@ func TestRunCommandDeleteMachine(t *testing.T) {
 	server := newTestServer(t, &fakeKeyLookup{}, machines)
 
 	channel := &stubChannel{}
-	status := server.runCommand(channel, "dev@example.com", "delete habits --confirm habits")
+	status := server.runCommand(channel, sessionAuth{userEmail: "dev@example.com"}, "delete habits --confirm habits")
 	if status != 0 {
 		t.Fatalf("expected zero status, got %d", status)
 	}
@@ -242,13 +276,33 @@ func TestRenderMachinesReturnsError(t *testing.T) {
 	}
 }
 
-func newTestServer(t *testing.T, keys keyLookup, machines machineManager) *Server {
+func TestRunCommandRequiresSignupForUnknownKey(t *testing.T) {
+	t.Parallel()
+
+	server := newTestServer(t, &fakeKeyLookup{}, &fakeMachines{})
+
+	channel := &stubChannel{}
+	status := server.runCommand(channel, sessionAuth{signupRequired: true}, "machines")
+	if status != 1 {
+		t.Fatalf("expected status 1, got %d", status)
+	}
+	if got := channel.String(); !bytes.Contains([]byte(got), []byte("not registered")) {
+		t.Fatalf("unexpected output: %q", got)
+	}
+}
+
+func newTestServer(t *testing.T, keys keyLookup, machines machineManager, signup ...signupManager) *Server {
 	t.Helper()
+
+	var signupService signupManager
+	if len(signup) > 0 {
+		signupService = signup[0]
+	}
 
 	server, err := New(config.Config{
 		SSHAddr:        "127.0.0.1:0",
 		SSHHostKeyPath: filepath.Join(t.TempDir(), "hostkey"),
-	}, keys, machines)
+	}, keys, machines, signupService)
 	if err != nil {
 		t.Fatal(err)
 	}
