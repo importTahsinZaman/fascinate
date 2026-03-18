@@ -492,7 +492,7 @@ func (m Model) renderMachineCard(machine controlplane.Machine, selected bool, to
 }
 
 func (m Model) renderFooter(width int) string {
-	help := "(n) new  •  (r) sync  •  (q) quit"
+	help := "(n) new  •  (r) refresh  •  (q) quit"
 	style := lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
 	if width <= 0 {
 		return style.Render(help)
