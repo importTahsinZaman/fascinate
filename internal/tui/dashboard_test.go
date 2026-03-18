@@ -177,7 +177,7 @@ func TestModelShellActionFromBrowseMode(t *testing.T) {
 	}
 }
 
-func TestModelShellActionFromDetailMode(t *testing.T) {
+func TestEnterDoesNotSwitchModes(t *testing.T) {
 	t.Parallel()
 
 	manager := &fakeMachines{
@@ -188,14 +188,9 @@ func TestModelShellActionFromDetailMode(t *testing.T) {
 	updated, _ := model.Update(loadMachinesMsg{machines: manager.listResult})
 	withItems := updated.(Model)
 	updated, _ = withItems.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	detail := updated.(Model)
-	updated, cmd := detail.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
 	got := updated.(Model)
-	if cmd == nil {
-		t.Fatalf("expected quit command")
-	}
-	if got.ShellTarget() != "habits" {
-		t.Fatalf("unexpected shell target: %q", got.ShellTarget())
+	if got.mode != modeBrowse {
+		t.Fatalf("expected browse mode, got %v", got.mode)
 	}
 }
 
@@ -226,30 +221,11 @@ func TestViewRendersMachineCardsWithSelectedState(t *testing.T) {
 	updated, _ := model.Update(loadMachinesMsg{machines: manager.listResult})
 	view := updated.(Model).View()
 
-	if !containsAll(view, "Fascinate", "tic-tac-toe", "https://tic-tac-toe.fascinate.dev", "Primary port", "IPv4", "SELECTED", "notes") {
+	if !containsAll(view, "Fascinate", "tic-tac-toe", "https://tic-tac-toe.fascinate.dev", "Primary port", "IPv4", "notes", "s shell") {
 		t.Fatalf("unexpected browse view: %q", view)
 	}
-	if strings.Contains(view, "Selected machine") || strings.Contains(view, "Your machines") {
+	if strings.Contains(view, "Selected machine") || strings.Contains(view, "Your machines") || strings.Contains(view, "SELECTED") || strings.Contains(view, "enter detail") {
 		t.Fatalf("unexpected legacy browse layout: %q", view)
-	}
-}
-
-func TestViewRendersDetailPanel(t *testing.T) {
-	t.Parallel()
-
-	manager := &fakeMachines{
-		listResult: []controlplane.Machine{
-			{Name: "tic-tac-toe", OwnerEmail: "dev@example.com", State: "RUNNING", URL: "https://tic-tac-toe.fascinate.dev", PrimaryPort: 3000},
-		},
-	}
-	model := NewDashboard("dev@example.com", manager, 100, 30)
-
-	updated, _ := model.Update(loadMachinesMsg{machines: manager.listResult})
-	updated, _ = updated.(Model).Update(tea.KeyMsg{Type: tea.KeyEnter})
-	view := updated.(Model).View()
-
-	if !containsAll(view, "MACHINE DETAIL", "primary port", "3000", "s shell | enter back | esc back") {
-		t.Fatalf("unexpected detail view: %q", view)
 	}
 }
 

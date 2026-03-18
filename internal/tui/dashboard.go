@@ -25,7 +25,6 @@ type mode int
 
 const (
 	modeBrowse mode = iota
-	modeDetail
 	modeCreate
 	modeClone
 	modeDeleteConfirm
@@ -99,7 +98,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.items = msg.machines
 		if len(m.items) == 0 {
 			m.selected = 0
-			if m.mode == modeDetail || m.mode == modeClone || m.mode == modeDeleteConfirm {
+			if m.mode == modeClone || m.mode == modeDeleteConfirm {
 				m.mode = modeBrowse
 			}
 			return m, nil
@@ -130,8 +129,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch m.mode {
 		case modeCreate, modeClone, modeDeleteConfirm:
 			return m.updateInputMode(msg)
-		case modeDetail:
-			return m.updateDetailMode(msg)
 		default:
 			return m.updateBrowseMode(msg)
 		}
@@ -152,8 +149,6 @@ func (m Model) View() string {
 	}
 
 	switch m.mode {
-	case modeDetail:
-		sections = append(sections, m.renderDetail())
 	case modeCreate:
 		sections = append(sections, m.renderInputPanel(
 			"Create Machine",
@@ -205,11 +200,6 @@ func (m Model) updateBrowseMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.status = ""
 		m.errMsg = ""
 		return m, m.loadMachinesCmd()
-	case "enter":
-		if _, ok := m.selectedMachine(); ok {
-			m.mode = modeDetail
-		}
-		return m, nil
 	case "s":
 		selected, ok := m.selectedMachine()
 		if !ok {
@@ -246,25 +236,6 @@ func (m Model) updateBrowseMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.input.Placeholder = selected.Name
 		m.input.SetValue("")
 		m.input.Focus()
-		return m, nil
-	default:
-		return m, nil
-	}
-}
-
-func (m Model) updateDetailMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
-	case "ctrl+c", "q":
-		return m, tea.Quit
-	case "s":
-		selected, ok := m.selectedMachine()
-		if !ok {
-			return m, nil
-		}
-		m.shellTarget = selected.Name
-		return m, tea.Quit
-	case "esc", "enter":
-		m.mode = modeBrowse
 		return m, nil
 	default:
 		return m, nil
@@ -315,37 +286,6 @@ func (m Model) updateInputMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
 	return m, cmd
-}
-
-func (m Model) renderDetail() string {
-	width := m.contentWidth()
-
-	selected, ok := m.selectedMachine()
-	if !ok {
-		return m.renderPanel(width, "Machine Detail", "No machine selected.\n\nesc to go back", true)
-	}
-
-	var out strings.Builder
-	out.WriteString(m.renderKeyValue("name", selected.Name))
-	out.WriteString("\n")
-	out.WriteString(m.renderKeyValue("owner", selected.OwnerEmail))
-	out.WriteString("\n")
-	out.WriteString(m.renderKeyValue("state", selected.State))
-	out.WriteString("\n")
-	out.WriteString(m.renderKeyValue("url", selected.URL))
-	out.WriteString("\n")
-	out.WriteString(m.renderKeyValue("primary port", fmt.Sprintf("%d", selected.PrimaryPort)))
-	if selected.Runtime != nil {
-		out.WriteString("\n")
-		out.WriteString(m.renderKeyValue("runtime type", selected.Runtime.Type))
-		if len(selected.Runtime.IPv4) > 0 {
-			out.WriteString("\n")
-			out.WriteString(m.renderKeyValue("ipv4", strings.Join(selected.Runtime.IPv4, ", ")))
-		}
-	}
-	out.WriteString("\n\n")
-	out.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Render("s shell | enter back | esc back"))
-	return m.renderPanel(width, "Machine Detail", out.String(), true)
 }
 
 func (m Model) WantsShell() bool {
@@ -510,13 +450,6 @@ func (m Model) renderMachineCard(machine controlplane.Machine, selected bool, to
 		Render(m.truncate(machine.Name, maxInt(18, innerWidth-18)))
 
 	header := m.padLine(name, m.statusBadge(machine.State), innerWidth)
-	if selected {
-		header = m.padLine(
-			lipgloss.JoinHorizontal(lipgloss.Center, m.renderPill("SELECTED", lipgloss.Color("16"), lipgloss.Color("81")), " "+name),
-			m.statusBadge(machine.State),
-			innerWidth,
-		)
-	}
 
 	var lines []string
 	lines = append(lines, header)
@@ -540,7 +473,7 @@ func (m Model) renderMachineCard(machine controlplane.Machine, selected bool, to
 		lines = append(lines, "")
 		lines = append(lines, lipgloss.NewStyle().
 			Foreground(lipgloss.Color("244")).
-			Render("enter detail  •  s shell  •  c clone  •  d delete"))
+			Render("s shell  •  c clone  •  d delete"))
 	}
 
 	style := lipgloss.NewStyle().
@@ -550,6 +483,7 @@ func (m Model) renderMachineCard(machine controlplane.Machine, selected bool, to
 		BorderForeground(lipgloss.Color("240"))
 	if selected {
 		style = style.
+			BorderStyle(lipgloss.DoubleBorder()).
 			BorderForeground(lipgloss.Color("81")).
 			Background(lipgloss.Color("235"))
 	}
@@ -558,7 +492,7 @@ func (m Model) renderMachineCard(machine controlplane.Machine, selected bool, to
 }
 
 func (m Model) renderFooter(width int) string {
-	help := "j/k move  •  enter detail  •  s shell  •  n new  •  c clone  •  d delete  •  r sync  •  q quit"
+	help := "s shell  •  n new  •  c clone  •  d delete  •  r sync  •  q quit"
 	return lipgloss.NewStyle().Foreground(lipgloss.Color("244")).Render(m.truncate(help, width))
 }
 
@@ -643,8 +577,6 @@ func (m Model) padLine(left, right string, width int) string {
 
 func (m Model) modeLabel() string {
 	switch m.mode {
-	case modeDetail:
-		return "detail"
 	case modeCreate:
 		return "create"
 	case modeClone:
