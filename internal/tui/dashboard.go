@@ -200,7 +200,7 @@ func (m Model) updateBrowseMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.status = ""
 		m.errMsg = ""
 		return m, m.loadMachinesCmd()
-	case "s":
+	case "enter":
 		selected, ok := m.selectedMachine()
 		if !ok {
 			return m, nil
@@ -473,7 +473,7 @@ func (m Model) renderMachineCard(machine controlplane.Machine, selected bool, to
 		lines = append(lines, "")
 		lines = append(lines, lipgloss.NewStyle().
 			Foreground(lipgloss.Color("244")).
-			Render("s shell  •  c clone  •  d delete"))
+			Render("(enter) shell  •  (c) clone  •  (d) delete"))
 	}
 
 	style := lipgloss.NewStyle().
@@ -492,8 +492,12 @@ func (m Model) renderMachineCard(machine controlplane.Machine, selected bool, to
 }
 
 func (m Model) renderFooter(width int) string {
-	help := "n new  •  r sync  •  q quit"
-	return lipgloss.NewStyle().Foreground(lipgloss.Color("244")).Render(m.truncate(help, width))
+	help := "(n) new  •  (r) sync  •  (q) quit"
+	style := lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
+	if width <= 0 {
+		return style.Render(help)
+	}
+	return style.Width(width).Align(lipgloss.Center).Render(m.truncate(help, width))
 }
 
 func (m Model) renderPanel(width int, title, content string, accent bool) string {

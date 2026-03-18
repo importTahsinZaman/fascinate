@@ -164,7 +164,7 @@ func TestModelShellActionFromBrowseMode(t *testing.T) {
 
 	updated, _ := model.Update(loadMachinesMsg{machines: manager.listResult})
 	withItems := updated.(Model)
-	updated, cmd := withItems.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+	updated, cmd := withItems.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	got := updated.(Model)
 	if cmd == nil {
 		t.Fatalf("expected quit command")
@@ -221,7 +221,7 @@ func TestViewRendersMachineCardsWithSelectedState(t *testing.T) {
 	updated, _ := model.Update(loadMachinesMsg{machines: manager.listResult})
 	view := updated.(Model).View()
 
-	if !containsAll(view, "Fascinate", "tic-tac-toe", "https://tic-tac-toe.fascinate.dev", "Primary port", "IPv4", "notes", "s shell") {
+	if !containsAll(view, "Fascinate", "tic-tac-toe", "https://tic-tac-toe.fascinate.dev", "Primary port", "IPv4", "notes", "(enter) shell", "(q) quit") {
 		t.Fatalf("unexpected browse view: %q", view)
 	}
 	if strings.Contains(view, "Selected machine") || strings.Contains(view, "Your machines") || strings.Contains(view, "SELECTED") || strings.Contains(view, "enter detail") {
