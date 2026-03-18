@@ -15,6 +15,7 @@ import (
 
 type MachineManager interface {
 	ListMachines(context.Context, string) ([]controlplane.Machine, error)
+	GetMachine(context.Context, string) (controlplane.Machine, error)
 	CreateMachine(context.Context, controlplane.CreateMachineInput) (controlplane.Machine, error)
 	DeleteMachine(context.Context, string) error
 	CloneMachine(context.Context, controlplane.CloneMachineInput) (controlplane.Machine, error)
@@ -55,6 +56,7 @@ type Model struct {
 	errMsg      string
 	sourceName  string
 	pendingName string
+	shellTarget string
 }
 
 func NewDashboard(userEmail string, machines MachineManager, width, height int) Model {
@@ -179,7 +181,7 @@ func (m Model) View() string {
 	}
 
 	out.WriteString("\n\n")
-	out.WriteString(lipgloss.NewStyle().Faint(true).Render("j/k or arrows move • enter details • n create • c clone • d delete • r refresh • q quit"))
+	out.WriteString(lipgloss.NewStyle().Faint(true).Render("j/k or arrows move • enter details • s shell • n create • c clone • d delete • r refresh • q quit"))
 
 	return out.String()
 }
@@ -208,6 +210,13 @@ func (m Model) updateBrowseMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.mode = modeDetail
 		}
 		return m, nil
+	case "s":
+		selected, ok := m.selectedMachine()
+		if !ok {
+			return m, nil
+		}
+		m.shellTarget = selected.Name
+		return m, tea.Quit
 	case "n":
 		m.mode = modeCreate
 		m.status = ""
@@ -246,6 +255,13 @@ func (m Model) updateBrowseMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m Model) updateDetailMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "ctrl+c", "q":
+		return m, tea.Quit
+	case "s":
+		selected, ok := m.selectedMachine()
+		if !ok {
+			return m, nil
+		}
+		m.shellTarget = selected.Name
 		return m, tea.Quit
 	case "esc", "enter":
 		m.mode = modeBrowse
@@ -338,8 +354,16 @@ func (m Model) renderDetail() string {
 			out.WriteString(fmt.Sprintf("ipv4: %s\n", strings.Join(selected.Runtime.IPv4, ", ")))
 		}
 	}
-	out.WriteString("\nenter or esc to go back")
+	out.WriteString("\ns to open shell • enter or esc to go back")
 	return out.String()
+}
+
+func (m Model) WantsShell() bool {
+	return strings.TrimSpace(m.shellTarget) != ""
+}
+
+func (m Model) ShellTarget() string {
+	return strings.TrimSpace(m.shellTarget)
 }
 
 func (m Model) selectedMachine() (controlplane.Machine, bool) {

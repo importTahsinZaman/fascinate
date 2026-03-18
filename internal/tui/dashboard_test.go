@@ -13,6 +13,8 @@ import (
 type fakeMachines struct {
 	listResult  []controlplane.Machine
 	listErr     error
+	getResult   controlplane.Machine
+	getErr      error
 	createInput controlplane.CreateMachineInput
 	createErr   error
 	cloneInput  controlplane.CloneMachineInput
@@ -26,6 +28,13 @@ func (f *fakeMachines) ListMachines(context.Context, string) ([]controlplane.Mac
 		return nil, f.listErr
 	}
 	return f.listResult, nil
+}
+
+func (f *fakeMachines) GetMachine(context.Context, string) (controlplane.Machine, error) {
+	if f.getErr != nil {
+		return controlplane.Machine{}, f.getErr
+	}
+	return f.getResult, nil
 }
 
 func (f *fakeMachines) CreateMachine(_ context.Context, input controlplane.CreateMachineInput) (controlplane.Machine, error) {
@@ -140,5 +149,50 @@ func TestModelCloneMachineError(t *testing.T) {
 	}
 	if manager.cloneInput.TargetName != "habits-v2" {
 		t.Fatalf("unexpected clone input: %+v", manager.cloneInput)
+	}
+}
+
+func TestModelShellActionFromBrowseMode(t *testing.T) {
+	t.Parallel()
+
+	manager := &fakeMachines{
+		listResult: []controlplane.Machine{{Name: "habits", State: "RUNNING"}},
+	}
+	model := NewDashboard("dev@example.com", manager, 80, 24)
+
+	updated, _ := model.Update(loadMachinesMsg{machines: manager.listResult})
+	withItems := updated.(Model)
+	updated, cmd := withItems.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+	got := updated.(Model)
+	if cmd == nil {
+		t.Fatalf("expected quit command")
+	}
+	if !got.WantsShell() {
+		t.Fatalf("expected shell action")
+	}
+	if got.ShellTarget() != "habits" {
+		t.Fatalf("unexpected shell target: %q", got.ShellTarget())
+	}
+}
+
+func TestModelShellActionFromDetailMode(t *testing.T) {
+	t.Parallel()
+
+	manager := &fakeMachines{
+		listResult: []controlplane.Machine{{Name: "habits", State: "RUNNING"}},
+	}
+	model := NewDashboard("dev@example.com", manager, 80, 24)
+
+	updated, _ := model.Update(loadMachinesMsg{machines: manager.listResult})
+	withItems := updated.(Model)
+	updated, _ = withItems.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	detail := updated.(Model)
+	updated, cmd := detail.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+	got := updated.(Model)
+	if cmd == nil {
+		t.Fatalf("expected quit command")
+	}
+	if got.ShellTarget() != "habits" {
+		t.Fatalf("unexpected shell target: %q", got.ShellTarget())
 	}
 }

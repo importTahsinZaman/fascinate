@@ -8,13 +8,17 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/creack/pty"
 	"golang.org/x/crypto/ssh"
 
 	"fascinate/internal/config"
@@ -29,16 +33,19 @@ type keyLookup interface {
 
 type machineManager interface {
 	ListMachines(context.Context, string) ([]controlplane.Machine, error)
+	GetMachine(context.Context, string) (controlplane.Machine, error)
 	CreateMachine(context.Context, controlplane.CreateMachineInput) (controlplane.Machine, error)
 	DeleteMachine(context.Context, string) error
 	CloneMachine(context.Context, controlplane.CloneMachineInput) (controlplane.Machine, error)
 }
 
 type Server struct {
-	addr     string
-	config   *ssh.ServerConfig
-	machines machineManager
-	signup   signupManager
+	addr        string
+	incusBinary string
+	config      *ssh.ServerConfig
+	machines    machineManager
+	signup      signupManager
+	shellRunner func(ssh.Channel, <-chan *ssh.Request, windowSize, string) error
 }
 
 type signupManager interface {
@@ -86,10 +93,11 @@ func New(cfg config.Config, keys keyLookup, machines machineManager, signup sign
 	serverConfig.AddHostKey(signer)
 
 	return &Server{
-		addr:     strings.TrimSpace(cfg.SSHAddr),
-		config:   serverConfig,
-		machines: machines,
-		signup:   signup,
+		addr:        strings.TrimSpace(cfg.SSHAddr),
+		incusBinary: strings.TrimSpace(cfg.IncusBinary),
+		config:      serverConfig,
+		machines:    machines,
+		signup:      signup,
 	}, nil
 }
 
@@ -169,16 +177,17 @@ func (s *Server) handleSession(channel ssh.Channel, requests <-chan *ssh.Request
 		case "shell":
 			replyIfWanted(req, true)
 			if auth.signupRequired {
-				userEmail, status := s.runSignup(channel, requests, auth.publicKey, size)
+				userEmail, nextSize, status := s.runSignup(channel, requests, auth.publicKey, size)
 				if status != 0 || userEmail == "" {
 					writeExitStatus(channel, status)
 					return
 				}
 				auth.userEmail = userEmail
 				auth.signupRequired = false
+				size = nextSize
 			}
 
-			writeExitStatus(channel, s.runDashboard(channel, requests, auth.userEmail, size))
+			writeExitStatus(channel, s.runInteractiveSession(channel, requests, auth.userEmail, size))
 			return
 		case "exec":
 			replyIfWanted(req, true)
@@ -192,7 +201,7 @@ func (s *Server) handleSession(channel ssh.Channel, requests <-chan *ssh.Request
 				return
 			}
 
-			status := s.runCommand(channel, auth, payload.Command)
+			status := s.runCommand(channel, requests, auth, payload.Command, size)
 			writeExitStatus(channel, status)
 			return
 		default:
@@ -201,7 +210,7 @@ func (s *Server) handleSession(channel ssh.Channel, requests <-chan *ssh.Request
 	}
 }
 
-func (s *Server) runCommand(channel ssh.Channel, auth sessionAuth, command string) uint32 {
+func (s *Server) runCommand(channel ssh.Channel, requests <-chan *ssh.Request, auth sessionAuth, command string, size windowSize) uint32 {
 	if auth.signupRequired {
 		fmt.Fprintln(channel, "this SSH key is not registered yet")
 		fmt.Fprintln(channel, "open an interactive SSH session to complete signup")
@@ -233,54 +242,87 @@ func (s *Server) runCommand(channel ssh.Channel, auth sessionAuth, command strin
 		return s.cloneMachine(channel, auth.userEmail, fields)
 	case "delete":
 		return s.deleteMachine(channel, fields)
+	case "shell":
+		return s.shellMachine(channel, requests, auth.userEmail, fields, size)
 	default:
 		fmt.Fprintf(channel, "unknown command: %s\n", fields[0])
-		fmt.Fprintln(channel, "available commands: help, dashboard, whoami, machines, create, clone, delete, exit")
+		fmt.Fprintln(channel, "available commands: help, dashboard, whoami, machines, create, clone, delete, shell, exit")
 		return 127
 	}
 }
 
-func (s *Server) runDashboard(channel ssh.Channel, requests <-chan *ssh.Request, userEmail string, size windowSize) uint32 {
-	model := tui.NewDashboard(userEmail, s.machines, size.width, size.height)
-	if _, err := s.runProgram(channel, requests, size, model); err != nil {
-		fmt.Fprintf(channel, "error: %v\r\n", err)
-		return 1
-	}
+func (s *Server) runInteractiveSession(channel ssh.Channel, requests <-chan *ssh.Request, userEmail string, size windowSize) uint32 {
+	for {
+		result, nextSize, status := s.runDashboard(channel, requests, userEmail, size)
+		if status != 0 {
+			return status
+		}
+		size = nextSize
 
-	return 0
+		if strings.TrimSpace(result.shellTarget) == "" {
+			return 0
+		}
+		if err := s.openAuthorizedMachineShell(channel, requests, size, userEmail, result.shellTarget); err != nil {
+			fmt.Fprintf(channel, "error: %v\r\n", err)
+			continue
+		}
+	}
 }
 
-func (s *Server) runSignup(channel ssh.Channel, requests <-chan *ssh.Request, publicKey string, size windowSize) (string, uint32) {
+type dashboardResult struct {
+	shellTarget string
+}
+
+func (s *Server) runDashboard(channel ssh.Channel, requests <-chan *ssh.Request, userEmail string, size windowSize) (dashboardResult, windowSize, uint32) {
+	model := tui.NewDashboard(userEmail, s.machines, size.width, size.height)
+	finalModel, nextSize, err := s.runProgram(channel, requests, size, model)
+	if err != nil {
+		fmt.Fprintf(channel, "error: %v\r\n", err)
+		return dashboardResult{}, nextSize, 1
+	}
+
+	dashboardModel, ok := finalModel.(tui.Model)
+	if !ok {
+		return dashboardResult{}, nextSize, 1
+	}
+
+	return dashboardResult{shellTarget: dashboardModel.ShellTarget()}, nextSize, 0
+}
+
+func (s *Server) runSignup(channel ssh.Channel, requests <-chan *ssh.Request, publicKey string, size windowSize) (string, windowSize, uint32) {
 	if s.signup == nil || !s.signup.Enabled() {
 		fmt.Fprintln(channel, "signup is not configured on this server")
-		return "", 1
+		return "", size, 1
 	}
 
 	model := tui.NewSignup(s.signup, publicKey)
-	finalModel, err := s.runProgram(channel, requests, size, model)
+	finalModel, nextSize, err := s.runProgram(channel, requests, size, model)
 	if err != nil {
 		fmt.Fprintf(channel, "error: %v\r\n", err)
-		return "", 1
+		return "", nextSize, 1
 	}
 
 	signupModel, ok := finalModel.(tui.SignupModel)
 	if !ok {
-		return "", 1
+		return "", nextSize, 1
 	}
 	if !signupModel.Verified() {
-		return "", 0
+		return "", nextSize, 0
 	}
 
-	return signupModel.VerifiedEmail(), 0
+	return signupModel.VerifiedEmail(), nextSize, 0
 }
 
-func (s *Server) runProgram(channel ssh.Channel, requests <-chan *ssh.Request, size windowSize, model tea.Model) (tea.Model, error) {
+func (s *Server) runProgram(channel ssh.Channel, requests <-chan *ssh.Request, size windowSize, model tea.Model) (tea.Model, windowSize, error) {
 	program := tea.NewProgram(
 		model,
 		tea.WithInput(channel),
 		tea.WithOutput(channel),
 		tea.WithAltScreen(),
 	)
+
+	currentSize := size
+	var sizeMu sync.Mutex
 
 	stop := make(chan struct{})
 	defer close(stop)
@@ -297,11 +339,17 @@ func (s *Server) runProgram(channel ssh.Channel, requests <-chan *ssh.Request, s
 
 				switch req.Type {
 				case "window-change":
-					size = parseWindowChange(req.Payload, size)
-					program.Send(tea.WindowSizeMsg{Width: size.width, Height: size.height})
+					sizeMu.Lock()
+					currentSize = parseWindowChange(req.Payload, currentSize)
+					nextSize := currentSize
+					sizeMu.Unlock()
+					program.Send(tea.WindowSizeMsg{Width: nextSize.width, Height: nextSize.height})
 				case "pty-req":
-					size = parsePTYRequest(req.Payload, size)
-					program.Send(tea.WindowSizeMsg{Width: size.width, Height: size.height})
+					sizeMu.Lock()
+					currentSize = parsePTYRequest(req.Payload, currentSize)
+					nextSize := currentSize
+					sizeMu.Unlock()
+					program.Send(tea.WindowSizeMsg{Width: nextSize.width, Height: nextSize.height})
 					replyIfWanted(req, true)
 				default:
 					replyIfWanted(req, false)
@@ -310,7 +358,11 @@ func (s *Server) runProgram(channel ssh.Channel, requests <-chan *ssh.Request, s
 		}
 	}()
 
-	return program.Run()
+	finalModel, err := program.Run()
+	sizeMu.Lock()
+	nextSize := currentSize
+	sizeMu.Unlock()
+	return finalModel, nextSize, err
 }
 
 func (s *Server) renderDashboard(channel ssh.Channel, userEmail string) {
@@ -319,7 +371,7 @@ func (s *Server) renderDashboard(channel ssh.Channel, userEmail string) {
 	if err := s.renderMachines(channel, userEmail); err != nil {
 		fmt.Fprintf(channel, "error loading machines: %v\n", err)
 	}
-	fmt.Fprintln(channel, "\ncommands: machines, create <name>, clone <source> <target>, delete <name> --confirm <name>, whoami, help, exit")
+	fmt.Fprintln(channel, "\ncommands: machines, create <name>, clone <source> <target>, delete <name> --confirm <name>, shell <name>, whoami, help, exit")
 }
 
 func (s *Server) renderMachines(channel ssh.Channel, userEmail string) error {
@@ -404,6 +456,147 @@ func (s *Server) deleteMachine(channel ssh.Channel, fields []string) uint32 {
 
 	fmt.Fprintf(channel, "deleted %s\n", fields[1])
 	return 0
+}
+
+func (s *Server) shellMachine(channel ssh.Channel, requests <-chan *ssh.Request, userEmail string, fields []string, size windowSize) uint32 {
+	if len(fields) != 2 {
+		fmt.Fprintln(channel, "usage: shell <name>")
+		return 2
+	}
+
+	if err := s.openAuthorizedMachineShell(channel, requests, size, userEmail, fields[1]); err != nil {
+		fmt.Fprintf(channel, "error: %v\n", err)
+		return 1
+	}
+
+	return 0
+}
+
+func (s *Server) openAuthorizedMachineShell(channel ssh.Channel, requests <-chan *ssh.Request, size windowSize, userEmail, name string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	machine, err := s.machines.GetMachine(ctx, name)
+	if err != nil {
+		return err
+	}
+	if !strings.EqualFold(strings.TrimSpace(machine.OwnerEmail), strings.TrimSpace(userEmail)) {
+		return fmt.Errorf("machine %q not found", strings.TrimSpace(name))
+	}
+
+	runtimeName := machine.Name
+	if machine.Runtime != nil && strings.TrimSpace(machine.Runtime.Name) != "" {
+		runtimeName = strings.TrimSpace(machine.Runtime.Name)
+	}
+	if runtimeName == "" {
+		return fmt.Errorf("machine %q is not available", strings.TrimSpace(name))
+	}
+
+	runner := s.shellRunner
+	if runner == nil {
+		runner = s.runIncusShell
+	}
+
+	return runner(channel, requests, size, runtimeName)
+}
+
+func (s *Server) runIncusShell(channel ssh.Channel, requests <-chan *ssh.Request, size windowSize, machineName string) error {
+	term := "xterm-256color"
+	args := []string{
+		"exec",
+		strings.TrimSpace(machineName),
+		"--mode=interactive",
+		"--",
+		"env",
+		"TERM=" + term,
+		"HOME=/root",
+		"SHELL=/bin/bash",
+		"sh",
+		"-lc",
+		"if command -v bash >/dev/null 2>&1; then exec bash -l; else exec sh -l; fi",
+	}
+
+	cmd := exec.Command(s.incusBinary, args...)
+	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{
+		Cols: uint16(max(1, size.width)),
+		Rows: uint16(max(1, size.height)),
+	})
+	if err != nil {
+		return err
+	}
+	defer ptmx.Close()
+
+	stop := make(chan struct{})
+	defer close(stop)
+	go s.forwardShellRequests(requests, ptmx, size, stop)
+
+	stdinDone := make(chan struct{})
+	go func() {
+		_, _ = io.Copy(ptmx, channel)
+		close(stdinDone)
+	}()
+
+	_, copyErr := io.Copy(channel, ptmx)
+	_ = ptmx.Close()
+	<-stdinDone
+	waitErr := cmd.Wait()
+
+	if copyErr != nil && !isIgnorableShellCopyError(copyErr) {
+		return copyErr
+	}
+	if waitErr != nil {
+		return waitErr
+	}
+
+	return nil
+}
+
+func (s *Server) forwardShellRequests(requests <-chan *ssh.Request, ptmx *os.File, size windowSize, stop <-chan struct{}) {
+	for {
+		select {
+		case <-stop:
+			return
+		case req, ok := <-requests:
+			if !ok {
+				return
+			}
+
+			switch req.Type {
+			case "window-change":
+				size = parseWindowChange(req.Payload, size)
+				_ = pty.Setsize(ptmx, &pty.Winsize{
+					Cols: uint16(max(1, size.width)),
+					Rows: uint16(max(1, size.height)),
+				})
+				replyIfWanted(req, true)
+			case "pty-req":
+				size = parsePTYRequest(req.Payload, size)
+				_ = pty.Setsize(ptmx, &pty.Winsize{
+					Cols: uint16(max(1, size.width)),
+					Rows: uint16(max(1, size.height)),
+				})
+				replyIfWanted(req, true)
+			default:
+				replyIfWanted(req, false)
+			}
+		}
+	}
+}
+
+func isIgnorableShellCopyError(err error) bool {
+	if err == nil || errors.Is(err, io.EOF) {
+		return true
+	}
+
+	value := strings.ToLower(strings.TrimSpace(err.Error()))
+	return strings.Contains(value, "input/output error") || strings.Contains(value, "closed")
+}
+
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 func writeExitStatus(channel ssh.Channel, status uint32) {

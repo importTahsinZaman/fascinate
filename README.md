@@ -35,7 +35,7 @@ It now includes a first machine API slice:
 It also includes a first SSH slice:
 - `fascinate seed-ssh-key --email ... --name ... --public-key-file ...`
 - a DB-backed SSH server on `FASCINATE_SSH_ADDR`
-- command handling for `help`, `whoami`, `machines`, `create`, `clone`, and `delete`
+- command handling for `help`, `whoami`, `machines`, `create`, `clone`, `delete`, and `shell`
 - a Bubble Tea dashboard for interactive `ssh fascinate.dev` sessions
 - unknown-key signup with emailed 6-digit verification codes
 
@@ -144,6 +144,7 @@ machines
 create habits
 clone habits habits-v2
 delete habits --confirm habits
+shell habits
 whoami
 help
 exit
@@ -154,6 +155,7 @@ Interactive dashboard keys:
 ```bash
 j / k or arrows   move selection
 enter             open selected machine detail
+s                 open a shell in the selected machine
 n                 create machine
 c                 clone selected machine
 d                 delete selected machine (typed confirmation)
