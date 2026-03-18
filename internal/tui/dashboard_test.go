@@ -212,7 +212,7 @@ func TestViewRendersMachineCardsWithSelectedState(t *testing.T) {
 	updated, _ := model.Update(loadMachinesMsg{machines: manager.listResult})
 	view := updated.(Model).View()
 
-	if !containsAll(view, "SELECTED", "tic-tac-toe", "RUNNING", "https://tic-tac-toe.fascinate.dev", "+") {
+	if !containsAll(view, "Fascinate", "MACHINES", "SELECTED MACHINE", "tic-tac-toe", "https://tic-tac-toe.fascinate.dev") {
 		t.Fatalf("unexpected browse view: %q", view)
 	}
 }
@@ -231,7 +231,7 @@ func TestViewRendersDetailPanel(t *testing.T) {
 	updated, _ = updated.(Model).Update(tea.KeyMsg{Type: tea.KeyEnter})
 	view := updated.(Model).View()
 
-	if !containsAll(view, "MACHINE DETAIL", "primary port:", "3000", "s shell | enter back | esc back") {
+	if !containsAll(view, "MACHINE DETAIL", "primary port", "3000", "s shell | enter back | esc back") {
 		t.Fatalf("unexpected detail view: %q", view)
 	}
 }

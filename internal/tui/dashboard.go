@@ -179,7 +179,7 @@ func (m Model) View() string {
 			"enter delete | esc cancel",
 		))
 	default:
-		sections = append(sections, m.renderList())
+		sections = append(sections, m.renderBrowse(width))
 	}
 
 	sections = append(sections, m.renderFooter(width))
@@ -317,34 +317,12 @@ func (m Model) updateInputMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-func (m Model) renderList() string {
-	width := m.contentWidth()
-
-	if len(m.items) == 0 {
-		empty := lipgloss.NewStyle().
-			Foreground(lipgloss.Color("8")).
-			Render("No machines yet.\n\nPress n to create your first machine.")
-		return m.renderPanel(width, "Machines", empty)
-	}
-
-	var out strings.Builder
-	cardWidth := m.cardWidth(width)
-	for i, machine := range m.items {
-		if i > 0 {
-			out.WriteString("\n")
-		}
-		out.WriteString(m.renderMachineCard(machine, i == m.selected, cardWidth))
-	}
-
-	return m.renderPanel(width, "Machines", out.String())
-}
-
 func (m Model) renderDetail() string {
 	width := m.contentWidth()
 
 	selected, ok := m.selectedMachine()
 	if !ok {
-		return m.renderPanel(width, "Machine Detail", "No machine selected.\n\nesc to go back")
+		return m.renderPanel(width, "Machine Detail", "No machine selected.\n\nesc to go back", true)
 	}
 
 	var out strings.Builder
@@ -367,7 +345,7 @@ func (m Model) renderDetail() string {
 	}
 	out.WriteString("\n\n")
 	out.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Render("s shell | enter back | esc back"))
-	return m.renderPanel(width, "Machine Detail", out.String())
+	return m.renderPanel(width, "Machine Detail", out.String(), true)
 }
 
 func (m Model) WantsShell() bool {
@@ -442,25 +420,20 @@ func (m Model) deleteMachineCmd(name string) tea.Cmd {
 
 func (m Model) contentWidth() int {
 	if m.width <= 0 {
-		return 92
+		return 96
 	}
-	return maxInt(40, m.width-2)
-}
-
-func (m Model) panelInnerWidth(totalWidth int) int {
-	return maxInt(20, totalWidth-4)
-}
-
-func (m Model) cardWidth(totalWidth int) int {
-	return maxInt(16, m.panelInnerWidth(totalWidth)-4)
+	return maxInt(48, m.width-2)
 }
 
 func (m Model) renderHeader(width int) string {
-	title := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12")).Render("fascinate")
+	title := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color("81")).
+		Render("Fascinate")
 	modeBadge := lipgloss.NewStyle().
 		Bold(true).
 		Foreground(lipgloss.Color("0")).
-		Background(lipgloss.Color("12")).
+		Background(lipgloss.Color("81")).
 		Padding(0, 1).
 		Render(strings.ToUpper(m.modeLabel()))
 
@@ -470,112 +443,183 @@ func (m Model) renderHeader(width int) string {
 	}
 
 	var out strings.Builder
-	out.WriteString(m.padLine(title, modeBadge, m.panelInnerWidth(width)))
+	out.WriteString(m.padLine(title, modeBadge, width))
 	out.WriteString("\n")
-	out.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("7")).Render(m.truncate("signed in as "+m.userEmail, m.panelInnerWidth(width))))
+	out.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Render(m.truncate("signed in as "+m.userEmail, width)))
 	out.WriteString("\n")
-	out.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Render(m.truncate(meta, m.panelInnerWidth(width))))
+	out.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("244")).Render(m.truncate(meta, width)))
 
-	return m.renderPanel(width, "Control Plane", out.String())
+	return out.String()
 }
 
 func (m Model) renderBanner(width int) string {
 	var messages []string
 	if m.status != "" {
-		messages = append(messages, lipgloss.NewStyle().Foreground(lipgloss.Color("10")).Render("OK  "+m.status))
+		messages = append(messages, m.renderPill("OK", lipgloss.Color("22"), lipgloss.Color("120"))+" "+lipgloss.NewStyle().Foreground(lipgloss.Color("120")).Render(m.status))
 	}
 	if m.errMsg != "" {
-		messages = append(messages, lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Render("ERR "+m.errMsg))
+		messages = append(messages, m.renderPill("ERR", lipgloss.Color("52"), lipgloss.Color("204"))+" "+lipgloss.NewStyle().Foreground(lipgloss.Color("210")).Render(m.errMsg))
 	}
 	if m.busy {
-		messages = append(messages, lipgloss.NewStyle().Foreground(lipgloss.Color("11")).Render("... working"))
+		messages = append(messages, m.renderPill("SYNC", lipgloss.Color("17"), lipgloss.Color("117"))+" "+lipgloss.NewStyle().Foreground(lipgloss.Color("117")).Render("refreshing machine state"))
 	}
 	if len(messages) == 0 {
 		return ""
 	}
-	return m.renderPanel(width, "Status", strings.Join(messages, "\n"))
+	return lipgloss.NewStyle().
+		Foreground(lipgloss.Color("252")).
+		Render(m.truncate(strings.Join(messages, "   "), width))
 }
 
 func (m Model) renderInputPanel(title, description, label, value, footer string) string {
 	width := m.contentWidth()
 
 	var out strings.Builder
-	out.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("7")).Render(m.truncate(description, m.panelInnerWidth(width))))
+	out.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Render(m.truncate(description, m.panelInnerWidth(width))))
 	out.WriteString("\n\n")
-	out.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12")).Render(label + ":"))
+	out.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("81")).Render(strings.ToUpper(label)))
 	out.WriteString("\n")
 	out.WriteString(value)
 	out.WriteString("\n\n")
-	out.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Render(footer))
+	out.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("244")).Render(footer))
 
-	return m.renderPanel(width, title, out.String())
+	return m.renderPanel(width, title, out.String(), false)
 }
 
-func (m Model) renderMachineCard(machine controlplane.Machine, selected bool, width int) string {
-	name := lipgloss.NewStyle().Bold(true).Render(m.truncate(machine.Name, width))
-	state := m.statusBadge(machine.State)
+func (m Model) renderBrowse(width int) string {
+	if len(m.items) == 0 {
+		empty := lipgloss.NewStyle().
+			Foreground(lipgloss.Color("244")).
+			Render("No machines yet.\n\nPress n to create your first machine.")
+		return m.renderPanel(width, "Machines", empty, false)
+	}
 
-	url := lipgloss.NewStyle().Foreground(lipgloss.Color("6")).Render(m.truncate(machine.URL, width))
-	actions := lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Render("enter details | s shell | c clone | d delete")
+	selected, _ := m.selectedMachine()
+	if width >= 110 {
+		leftWidth := maxInt(36, width/2-2)
+		rightWidth := maxInt(36, width-leftWidth-2)
+		return lipgloss.JoinHorizontal(
+			lipgloss.Top,
+			m.renderMachineListPanel(leftWidth),
+			"  ",
+			m.renderSelectedPreview(rightWidth, selected),
+		)
+	}
+
+	return lipgloss.JoinVertical(
+		lipgloss.Left,
+		m.renderMachineListPanel(width),
+		"",
+		m.renderSelectedPreview(width, selected),
+	)
+}
+
+func (m Model) renderMachineListPanel(width int) string {
+	var out strings.Builder
+	for i, machine := range m.items {
+		if i > 0 {
+			out.WriteString("\n")
+		}
+		out.WriteString(m.renderMachineRow(machine, i == m.selected, width))
+	}
+	return m.renderPanel(width, "Machines", out.String(), false)
+}
+
+func (m Model) renderMachineRow(machine controlplane.Machine, selected bool, totalWidth int) string {
+	contentWidth := maxInt(18, totalWidth-8)
+
+	name := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color("255")).
+		Render(m.truncate(machine.Name, contentWidth))
+	url := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("117")).
+		Render(m.truncate(machine.URL, contentWidth))
+
+	indicator := lipgloss.NewStyle().Foreground(lipgloss.Color("81")).Render("›")
+	if !selected {
+		indicator = lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render(" ")
+	}
 
 	var out strings.Builder
-	if selected {
-		out.WriteString(lipgloss.NewStyle().
-			Bold(true).
-			Foreground(lipgloss.Color("0")).
-			Background(lipgloss.Color("10")).
-			Padding(0, 1).
-			Render("SELECTED"))
-		out.WriteString("\n")
-	}
+	out.WriteString(indicator)
+	out.WriteString(" ")
 	out.WriteString(name)
 	out.WriteString("\n")
-	out.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Render("state: "))
-	out.WriteString(state)
+	out.WriteString("  ")
+	out.WriteString(m.statusBadge(machine.State))
 	out.WriteString("\n")
+	out.WriteString("  ")
 	out.WriteString(url)
-	out.WriteString("\n")
-	out.WriteString(actions)
 
 	style := lipgloss.NewStyle().
 		Padding(0, 1).
-		BorderStyle(asciiBorder()).
-		Width(width)
+		Width(maxInt(16, totalWidth-4))
+
 	if selected {
 		style = style.
-			BorderForeground(lipgloss.Color("12")).
-			Background(lipgloss.Color("235"))
+			Background(lipgloss.Color("236"))
 	} else {
-		style = style.BorderForeground(lipgloss.Color("8"))
+		style = style.Foreground(lipgloss.Color("252"))
 	}
 
 	return style.Render(out.String())
 }
 
-func (m Model) renderFooter(width int) string {
-	help := "j/k move | enter detail | s shell | n new | c clone | d delete | r refresh | q quit"
-	return m.renderPanel(width, "Keys", lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Render(m.truncate(help, m.panelInnerWidth(width))))
+func (m Model) renderSelectedPreview(width int, machine controlplane.Machine) string {
+	var out strings.Builder
+	out.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("255")).Render(m.truncate(machine.Name, m.panelInnerWidth(width))))
+	out.WriteString("  ")
+	out.WriteString(m.statusBadge(machine.State))
+	out.WriteString("\n\n")
+	out.WriteString(m.renderKeyValue("URL", machine.URL))
+	out.WriteString("\n")
+	out.WriteString(m.renderKeyValue("Primary Port", fmt.Sprintf("%d", machine.PrimaryPort)))
+	out.WriteString("\n")
+	out.WriteString(m.renderKeyValue("Owner", machine.OwnerEmail))
+	if machine.Runtime != nil {
+		if len(machine.Runtime.IPv4) > 0 {
+			out.WriteString("\n")
+			out.WriteString(m.renderKeyValue("IPv4", strings.Join(machine.Runtime.IPv4, ", ")))
+		}
+		if strings.TrimSpace(machine.Runtime.Type) != "" {
+			out.WriteString("\n")
+			out.WriteString(m.renderKeyValue("Runtime", machine.Runtime.Type))
+		}
+	}
+	out.WriteString("\n\n")
+	out.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("244")).Render("enter detail | s shell | c clone | d delete"))
+
+	return m.renderPanel(width, "Selected Machine", out.String(), true)
 }
 
-func (m Model) renderPanel(width int, title, content string) string {
+func (m Model) renderFooter(width int) string {
+	help := "j/k move  •  enter detail  •  s shell  •  n new  •  c clone  •  d delete  •  r sync  •  q quit"
+	return lipgloss.NewStyle().Foreground(lipgloss.Color("244")).Render(m.truncate(help, width))
+}
+
+func (m Model) renderPanel(width int, title, content string, accent bool) string {
 	innerWidth := m.panelInnerWidth(width)
 	titleBar := lipgloss.NewStyle().
 		Bold(true).
-		Foreground(lipgloss.Color("12")).
+		Foreground(lipgloss.Color("81")).
 		Render(strings.ToUpper(title))
 
 	style := lipgloss.NewStyle().
 		Padding(0, 1).
 		Width(innerWidth).
-		BorderStyle(asciiBorder()).
-		BorderForeground(lipgloss.Color("8"))
+		BorderStyle(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("240"))
+	if accent {
+		style = style.BorderForeground(lipgloss.Color("81"))
+	}
 
 	return style.Render(titleBar + "\n\n" + content)
 }
 
 func (m Model) renderKeyValue(label, value string) string {
-	labelText := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12")).Render(label + ":")
-	return labelText + " " + value
+	labelText := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("81")).Render(label)
+	return labelText + "  " + lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Render(value)
 }
 
 func (m Model) statusBadge(state string) string {
@@ -587,17 +631,26 @@ func (m Model) statusBadge(state string) string {
 	style := lipgloss.NewStyle().Bold(true).Padding(0, 1)
 	switch strings.ToLower(strings.TrimSpace(state)) {
 	case "running":
-		style = style.Foreground(lipgloss.Color("0")).Background(lipgloss.Color("10"))
+		style = style.Foreground(lipgloss.Color("22")).Background(lipgloss.Color("120"))
 	case "starting":
-		style = style.Foreground(lipgloss.Color("0")).Background(lipgloss.Color("11"))
+		style = style.Foreground(lipgloss.Color("58")).Background(lipgloss.Color("221"))
 	case "stopped":
-		style = style.Foreground(lipgloss.Color("15")).Background(lipgloss.Color("8"))
+		style = style.Foreground(lipgloss.Color("251")).Background(lipgloss.Color("238"))
 	case "deleted", "missing":
-		style = style.Foreground(lipgloss.Color("15")).Background(lipgloss.Color("9"))
+		style = style.Foreground(lipgloss.Color("52")).Background(lipgloss.Color("204"))
 	default:
-		style = style.Foreground(lipgloss.Color("15")).Background(lipgloss.Color("8"))
+		style = style.Foreground(lipgloss.Color("17")).Background(lipgloss.Color("81"))
 	}
 	return style.Render(value)
+}
+
+func (m Model) renderPill(label string, fg, bg lipgloss.Color) string {
+	return lipgloss.NewStyle().
+		Bold(true).
+		Foreground(fg).
+		Background(bg).
+		Padding(0, 1).
+		Render(label)
 }
 
 func (m Model) truncate(value string, width int) string {
@@ -639,22 +692,8 @@ func (m Model) modeLabel() string {
 	}
 }
 
-func asciiBorder() lipgloss.Border {
-	return lipgloss.Border{
-		Top:          "-",
-		Bottom:       "-",
-		Left:         "|",
-		Right:        "|",
-		TopLeft:      "+",
-		TopRight:     "+",
-		BottomLeft:   "+",
-		BottomRight:  "+",
-		MiddleLeft:   "|",
-		MiddleRight:  "|",
-		Middle:       "-",
-		MiddleTop:    "+",
-		MiddleBottom: "+",
-	}
+func (m Model) panelInnerWidth(totalWidth int) int {
+	return maxInt(20, totalWidth-4)
 }
 
 func maxInt(a, b int) int {
