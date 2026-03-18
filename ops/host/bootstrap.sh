@@ -79,6 +79,25 @@ allow_incus_bridge_firewall() {
   fi
 }
 
+allow_incus_bridge_routing() {
+  local uplink=""
+
+  if ! command -v ufw >/dev/null 2>&1; then
+    return 0
+  fi
+
+  if ! ip link show incusbr0 >/dev/null 2>&1; then
+    return 0
+  fi
+
+  uplink="$(ip route get 1.1.1.1 2>/dev/null | awk '{for (i = 1; i <= NF; i++) if ($i == "dev") {print $(i + 1); exit}}')"
+  if [[ -z "${uplink}" ]]; then
+    return 0
+  fi
+
+  ufw route allow in on incusbr0 out on "${uplink}" >/dev/null
+}
+
 ensure_services() {
   systemctl enable --now fail2ban
   systemctl enable --now caddy
@@ -143,5 +162,6 @@ configure_admin_ssh
 ensure_incus_initialized
 ensure_incus_network
 allow_incus_bridge_firewall
+allow_incus_bridge_routing
 ensure_incus_pool
 print_summary

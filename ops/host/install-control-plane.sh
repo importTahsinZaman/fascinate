@@ -85,6 +85,25 @@ maybe_allow_incus_bridge() {
   fi
 }
 
+maybe_allow_incus_bridge_routing() {
+  local uplink=""
+
+  if ! command -v ufw >/dev/null 2>&1; then
+    return 0
+  fi
+
+  if ! ip link show incusbr0 >/dev/null 2>&1; then
+    return 0
+  fi
+
+  uplink="$(ip route get 1.1.1.1 2>/dev/null | awk '{for (i = 1; i <= NF; i++) if ($i == "dev") {print $(i + 1); exit}}')"
+  if [[ -z "${uplink}" ]]; then
+    return 0
+  fi
+
+  ufw route allow in on incusbr0 out on "${uplink}" >/dev/null
+}
+
 main() {
   require_root
   install_binary
@@ -101,6 +120,7 @@ main() {
 
   maybe_open_firewall_port "${FASCINATE_SSH_ADDR}"
   maybe_allow_incus_bridge
+  maybe_allow_incus_bridge_routing
   bash "${REPO_ROOT}/ops/host/write-caddyfile.sh"
 
   systemctl daemon-reload
