@@ -1,7 +1,6 @@
 package sshfrontdoor
 
 import (
-	"bufio"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -15,11 +14,13 @@ import (
 	"strings"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"golang.org/x/crypto/ssh"
 
 	"fascinate/internal/config"
 	"fascinate/internal/controlplane"
 	"fascinate/internal/database"
+	"fascinate/internal/tui"
 )
 
 type keyLookup interface {
@@ -135,17 +136,21 @@ func (s *Server) handleConn(conn net.Conn) {
 func (s *Server) handleSession(channel ssh.Channel, requests <-chan *ssh.Request, userEmail string) {
 	defer channel.Close()
 
+	size := windowSize{width: 80, height: 24}
 	for req := range requests {
 		switch req.Type {
-		case "pty-req", "window-change":
-			req.Reply(true, nil)
+		case "pty-req":
+			size = parsePTYRequest(req.Payload, size)
+			replyIfWanted(req, true)
+		case "window-change":
+			size = parseWindowChange(req.Payload, size)
+			replyIfWanted(req, true)
 		case "shell":
-			req.Reply(true, nil)
-			s.runShell(channel, userEmail)
-			writeExitStatus(channel, 0)
+			replyIfWanted(req, true)
+			writeExitStatus(channel, s.runDashboard(channel, requests, userEmail, size))
 			return
 		case "exec":
-			req.Reply(true, nil)
+			replyIfWanted(req, true)
 
 			var payload struct {
 				Command string
@@ -198,31 +203,49 @@ func (s *Server) runCommand(channel ssh.Channel, userEmail, command string) uint
 	}
 }
 
-func (s *Server) runShell(channel ssh.Channel, userEmail string) {
-	s.renderDashboard(channel, userEmail)
-	fmt.Fprintln(channel)
+func (s *Server) runDashboard(channel ssh.Channel, requests <-chan *ssh.Request, userEmail string, size windowSize) uint32 {
+	model := tui.NewDashboard(userEmail, s.machines, size.width, size.height)
+	program := tea.NewProgram(
+		model,
+		tea.WithInput(channel),
+		tea.WithOutput(channel),
+		tea.WithAltScreen(),
+	)
 
-	scanner := bufio.NewScanner(channel)
-	for {
-		fmt.Fprint(channel, "fascinate> ")
-		if !scanner.Scan() {
-			return
-		}
+	stop := make(chan struct{})
+	defer close(stop)
 
-		command := strings.TrimSpace(scanner.Text())
-		if command == "" {
-			continue
-		}
+	go func() {
+		for {
+			select {
+			case <-stop:
+				return
+			case req, ok := <-requests:
+				if !ok {
+					return
+				}
 
-		switch command {
-		case "exit", "quit":
-			fmt.Fprintln(channel, "bye")
-			return
-		default:
-			_ = s.runCommand(channel, userEmail, command)
-			fmt.Fprintln(channel)
+				switch req.Type {
+				case "window-change":
+					size = parseWindowChange(req.Payload, size)
+					program.Send(tea.WindowSizeMsg{Width: size.width, Height: size.height})
+				case "pty-req":
+					size = parsePTYRequest(req.Payload, size)
+					program.Send(tea.WindowSizeMsg{Width: size.width, Height: size.height})
+					replyIfWanted(req, true)
+				default:
+					replyIfWanted(req, false)
+				}
+			}
 		}
+	}()
+
+	if _, err := program.Run(); err != nil {
+		fmt.Fprintf(channel, "error: %v\r\n", err)
+		return 1
 	}
+
+	return 0
 }
 
 func (s *Server) renderDashboard(channel ssh.Channel, userEmail string) {
@@ -322,6 +345,51 @@ func writeExitStatus(channel ssh.Channel, status uint32) {
 	_, _ = channel.SendRequest("exit-status", false, ssh.Marshal(struct {
 		Status uint32
 	}{Status: status}))
+}
+
+func replyIfWanted(req *ssh.Request, ok bool) {
+	if req.WantReply {
+		req.Reply(ok, nil)
+	}
+}
+
+type windowSize struct {
+	width  int
+	height int
+}
+
+func parsePTYRequest(payload []byte, fallback windowSize) windowSize {
+	var msg struct {
+		Term   string
+		Width  uint32
+		Height uint32
+		PxW    uint32
+		PxH    uint32
+		Modes  string
+	}
+	if err := ssh.Unmarshal(payload, &msg); err != nil {
+		return fallback
+	}
+	if msg.Width == 0 || msg.Height == 0 {
+		return fallback
+	}
+	return windowSize{width: int(msg.Width), height: int(msg.Height)}
+}
+
+func parseWindowChange(payload []byte, fallback windowSize) windowSize {
+	var msg struct {
+		Width  uint32
+		Height uint32
+		PxW    uint32
+		PxH    uint32
+	}
+	if err := ssh.Unmarshal(payload, &msg); err != nil {
+		return fallback
+	}
+	if msg.Width == 0 || msg.Height == 0 {
+		return fallback
+	}
+	return windowSize{width: int(msg.Width), height: int(msg.Height)}
 }
 
 func loadOrCreateHostKey(path string) (ssh.Signer, error) {

@@ -22,8 +22,7 @@ This is the first real scaffold, not the full product yet. It gives us:
   - talk to the local `incus` CLI
 
 It does not yet include:
-- SSH auth flow
-- Bubble Tea TUI
+- terminal signup and unknown-key verification
 - dynamic Caddy routing from the control plane
 
 It now includes a first machine API slice:
@@ -37,7 +36,7 @@ It also includes a first SSH slice:
 - `fascinate seed-ssh-key --email ... --name ... --public-key-file ...`
 - a DB-backed SSH server on `FASCINATE_SSH_ADDR`
 - command handling for `help`, `whoami`, `machines`, `create`, `clone`, and `delete`
-- an interactive line-based shell loop for `ssh fascinate.dev`
+- a Bubble Tea dashboard for interactive `ssh fascinate.dev` sessions
 
 For now, machine ownership is bootstrapped by passing `owner_email` in the API request. This is temporary until the SSH auth flow is wired in.
 
@@ -50,6 +49,8 @@ For now, machine ownership is bootstrapped by passing `owner_email` in the API r
 - [`internal/config/config.go`](/Users/tahsin/Desktop/vmcloud/internal/config/config.go): env-backed config
 - [`internal/database/migrations/0001_init.sql`](/Users/tahsin/Desktop/vmcloud/internal/database/migrations/0001_init.sql): initial SQLite schema
 - [`internal/runtime/incus/runtime.go`](/Users/tahsin/Desktop/vmcloud/internal/runtime/incus/runtime.go): Incus CLI wrapper
+- [`internal/sshfrontdoor/server.go`](/Users/tahsin/Desktop/vmcloud/internal/sshfrontdoor/server.go): SSH transport and auth
+- [`internal/tui/dashboard.go`](/Users/tahsin/Desktop/vmcloud/internal/tui/dashboard.go): Bubble Tea dashboard model
 
 ## Quick Start
 
@@ -129,7 +130,7 @@ Or open an interactive shell:
 ssh -p 2222 localhost
 ```
 
-Available SSH commands:
+Available exec-style SSH commands:
 
 ```bash
 machines
@@ -141,10 +142,22 @@ help
 exit
 ```
 
+Interactive dashboard keys:
+
+```bash
+j / k or arrows   move selection
+enter             open selected machine detail
+n                 create machine
+c                 clone selected machine
+d                 delete selected machine (typed confirmation)
+r                 refresh
+q                 quit
+esc               back/cancel
+```
+
 ## Next Milestones
 
 1. Add terminal signup and unknown-key verification flow.
-2. Replace the line-based SSH shell with the real Bubble Tea dashboard and machine detail screens.
-3. Add terminal signup and unknown-key verification flow.
-4. Replace the static host Caddy config with control-plane-managed routing.
-5. Enforce per-user quotas and approval rules.
+2. Replace the current single-screen dashboard with fuller Bubble Tea flows for machine creation, detail, and errors.
+3. Replace the static host Caddy config with control-plane-managed routing.
+4. Enforce per-user quotas and approval rules.
