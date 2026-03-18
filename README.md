@@ -4,6 +4,9 @@
 
 This repo now contains:
 - a reproducible host bootstrap path under [`ops/host/bootstrap.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/bootstrap.sh)
+- a host redeploy path under [`ops/host/install-control-plane.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/install-control-plane.sh)
+- a Caddy config writer under [`ops/host/write-caddyfile.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/write-caddyfile.sh)
+- a base image builder under [`ops/incus/build-base-image.sh`](/Users/tahsin/Desktop/vmcloud/ops/incus/build-base-image.sh)
 - a minimal Go control plane under [`cmd/fascinate/main.go`](/Users/tahsin/Desktop/vmcloud/cmd/fascinate/main.go)
 - SQLite migrations for the first platform tables
 - an Incus runtime wrapper and health endpoints
@@ -22,7 +25,6 @@ This is the first real scaffold, not the full product yet. It gives us:
   - talk to the local `incus` CLI
 
 It does not yet include:
-- automatic host-side Caddy provisioning
 - recovery and account-management flows for additional SSH keys
 
 It now includes a first machine API slice:
@@ -46,6 +48,9 @@ For now, machine ownership is bootstrapped by passing `owner_email` in the API r
 
 - [`ops/host/bootstrap.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/bootstrap.sh): installs host dependencies and baseline Incus config
 - [`ops/host/verify.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/verify.sh): checks the host after bootstrap
+- [`ops/host/write-caddyfile.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/write-caddyfile.sh): writes the host Caddy config for Fascinate
+- [`ops/host/install-control-plane.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/install-control-plane.sh): builds and installs the Fascinate service on a host
+- [`ops/incus/build-base-image.sh`](/Users/tahsin/Desktop/vmcloud/ops/incus/build-base-image.sh): publishes an agent-ready Incus image alias
 - [`ops/systemd/fascinate.service`](/Users/tahsin/Desktop/vmcloud/ops/systemd/fascinate.service): example systemd unit
 - [`cmd/fascinate/main.go`](/Users/tahsin/Desktop/vmcloud/cmd/fascinate/main.go): entrypoint
 - [`internal/config/config.go`](/Users/tahsin/Desktop/vmcloud/internal/config/config.go): env-backed config
@@ -75,6 +80,27 @@ Notes:
 - it installs `Incus` from Zabbly's stable repo
 - it creates an Incus storage pool named `machines` by default
 - it does not manage DNS or Cloudflare for you
+
+Build the default agent-ready image alias:
+
+```bash
+sudo ./ops/incus/build-base-image.sh
+```
+
+Deploy or redeploy the Fascinate service:
+
+```bash
+export FASCINATE_BASE_DOMAIN=fascinate.dev
+export FASCINATE_ACME_EMAIL=you@example.com
+export FASCINATE_ADMIN_EMAILS=you@example.com
+export FASCINATE_SSH_ADDR=0.0.0.0:2222
+sudo ./ops/host/install-control-plane.sh
+```
+
+Important for Cloudflare:
+- the generated wildcard Caddy block uses `tls internal`
+- that means Cloudflare should use `Full` mode for proxied wildcard traffic unless you replace the wildcard TLS block with an Origin CA certificate
+- the apex `fascinate.dev` site still gets a normal public cert from Caddy because it is `DNS only`
 
 ### Local Development
 
@@ -113,6 +139,7 @@ export FASCINATE_RESEND_API_KEY=...
 export FASCINATE_EMAIL_FROM='Fascinate <hello@example.com>'
 export FASCINATE_RESEND_BASE_URL=https://api.resend.com
 export FASCINATE_SIGNUP_CODE_TTL=15m
+export FASCINATE_ACME_EMAIL=you@example.com
 ```
 
 Seed an SSH key into the local SQLite DB:
@@ -171,5 +198,5 @@ esc               back/cancel
 
 1. Add recovery and “attach another SSH key” flows for existing accounts.
 2. Replace the current single-screen dashboard with fuller Bubble Tea flows for machine creation, detail, and errors.
-3. Install and manage the host Caddy wildcard proxy config from the repo.
-4. Enforce per-user quotas and approval rules.
+3. Enforce per-user quotas and approval rules.
+4. Add account recovery and attach-another-key flows.
