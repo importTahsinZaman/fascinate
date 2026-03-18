@@ -1,0 +1,273 @@
+package sshfrontdoor
+
+import (
+	"bytes"
+	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"errors"
+	"io"
+	"path/filepath"
+	"testing"
+
+	"golang.org/x/crypto/ssh"
+
+	"fascinate/internal/config"
+	"fascinate/internal/controlplane"
+	"fascinate/internal/database"
+)
+
+type fakeKeyLookup struct {
+	record database.SSHKeyRecord
+	err    error
+}
+
+func (f *fakeKeyLookup) GetSSHKeyByFingerprint(context.Context, string) (database.SSHKeyRecord, error) {
+	if f.err != nil {
+		return database.SSHKeyRecord{}, f.err
+	}
+	return f.record, nil
+}
+
+type fakeMachines struct {
+	listResult   []controlplane.Machine
+	listErr      error
+	createInput  controlplane.CreateMachineInput
+	createResult controlplane.Machine
+	createErr    error
+	deleteName   string
+	deleteErr    error
+	cloneInput   controlplane.CloneMachineInput
+	cloneResult  controlplane.Machine
+	cloneErr     error
+}
+
+func (f *fakeMachines) ListMachines(context.Context, string) ([]controlplane.Machine, error) {
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
+	return f.listResult, nil
+}
+
+func (f *fakeMachines) CreateMachine(_ context.Context, input controlplane.CreateMachineInput) (controlplane.Machine, error) {
+	f.createInput = input
+	if f.createErr != nil {
+		return controlplane.Machine{}, f.createErr
+	}
+	return f.createResult, nil
+}
+
+func (f *fakeMachines) DeleteMachine(_ context.Context, name string) error {
+	f.deleteName = name
+	return f.deleteErr
+}
+
+func (f *fakeMachines) CloneMachine(_ context.Context, input controlplane.CloneMachineInput) (controlplane.Machine, error) {
+	f.cloneInput = input
+	if f.cloneErr != nil {
+		return controlplane.Machine{}, f.cloneErr
+	}
+	return f.cloneResult, nil
+}
+
+type stubChannel struct {
+	bytes.Buffer
+	requests []string
+}
+
+func (c *stubChannel) Read(_ []byte) (int, error) {
+	return 0, io.EOF
+}
+
+func (c *stubChannel) Close() error {
+	return nil
+}
+
+func (c *stubChannel) CloseWrite() error {
+	return nil
+}
+
+func (c *stubChannel) SendRequest(name string, _ bool, _ []byte) (bool, error) {
+	c.requests = append(c.requests, name)
+	return true, nil
+}
+
+func (c *stubChannel) Stderr() io.ReadWriter {
+	return c
+}
+
+func TestPublicKeyCallbackAcceptsKnownKey(t *testing.T) {
+	t.Parallel()
+
+	publicKey, _, fingerprint := generateAuthorizedKey(t)
+	server := newTestServer(t, &fakeKeyLookup{
+		record: database.SSHKeyRecord{
+			UserEmail:   "dev@example.com",
+			Name:        "laptop",
+			Fingerprint: fingerprint,
+		},
+	}, &fakeMachines{})
+
+	perms, err := server.config.PublicKeyCallback(nil, publicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perms.Extensions["user_email"] != "dev@example.com" {
+		t.Fatalf("unexpected permissions: %+v", perms.Extensions)
+	}
+}
+
+func TestPublicKeyCallbackRejectsUnknownKey(t *testing.T) {
+	t.Parallel()
+
+	publicKey, _, _ := generateAuthorizedKey(t)
+	server := newTestServer(t, &fakeKeyLookup{err: database.ErrNotFound}, &fakeMachines{})
+
+	if _, err := server.config.PublicKeyCallback(nil, publicKey); err == nil {
+		t.Fatalf("expected authorization error")
+	}
+}
+
+func TestRunCommandMachines(t *testing.T) {
+	t.Parallel()
+
+	server := newTestServer(t, &fakeKeyLookup{}, &fakeMachines{
+		listResult: []controlplane.Machine{{Name: "habits", State: "RUNNING", URL: "https://habits.fascinate.dev"}},
+	})
+
+	channel := &stubChannel{}
+	status := server.runCommand(channel, "dev@example.com", "machines")
+	if status != 0 {
+		t.Fatalf("expected zero status, got %d", status)
+	}
+	if got := channel.String(); got == "" || !bytes.Contains([]byte(got), []byte("habits")) {
+		t.Fatalf("unexpected channel output: %q", got)
+	}
+}
+
+func TestRunCommandUnknownCommand(t *testing.T) {
+	t.Parallel()
+
+	server := newTestServer(t, &fakeKeyLookup{}, &fakeMachines{})
+
+	channel := &stubChannel{}
+	status := server.runCommand(channel, "dev@example.com", "wat")
+	if status != 127 {
+		t.Fatalf("expected 127, got %d", status)
+	}
+	if got := channel.String(); !bytes.Contains([]byte(got), []byte("unknown command")) {
+		t.Fatalf("unexpected channel output: %q", got)
+	}
+}
+
+func TestRunCommandCreateMachine(t *testing.T) {
+	t.Parallel()
+
+	machines := &fakeMachines{
+		createResult: controlplane.Machine{Name: "habits", URL: "https://habits.fascinate.dev"},
+	}
+	server := newTestServer(t, &fakeKeyLookup{}, machines)
+
+	channel := &stubChannel{}
+	status := server.runCommand(channel, "dev@example.com", "create habits")
+	if status != 0 {
+		t.Fatalf("expected zero status, got %d", status)
+	}
+	if machines.createInput.OwnerEmail != "dev@example.com" || machines.createInput.Name != "habits" {
+		t.Fatalf("unexpected create input: %+v", machines.createInput)
+	}
+	if got := channel.String(); !bytes.Contains([]byte(got), []byte("created habits")) {
+		t.Fatalf("unexpected channel output: %q", got)
+	}
+}
+
+func TestRunCommandCloneMachine(t *testing.T) {
+	t.Parallel()
+
+	machines := &fakeMachines{
+		cloneResult: controlplane.Machine{Name: "habits-v2", URL: "https://habits-v2.fascinate.dev"},
+	}
+	server := newTestServer(t, &fakeKeyLookup{}, machines)
+
+	channel := &stubChannel{}
+	status := server.runCommand(channel, "dev@example.com", "clone habits habits-v2")
+	if status != 0 {
+		t.Fatalf("expected zero status, got %d", status)
+	}
+	if machines.cloneInput.SourceName != "habits" || machines.cloneInput.TargetName != "habits-v2" {
+		t.Fatalf("unexpected clone input: %+v", machines.cloneInput)
+	}
+}
+
+func TestRunCommandDeleteMachineRequiresTypedConfirmation(t *testing.T) {
+	t.Parallel()
+
+	machines := &fakeMachines{}
+	server := newTestServer(t, &fakeKeyLookup{}, machines)
+
+	channel := &stubChannel{}
+	status := server.runCommand(channel, "dev@example.com", "delete habits")
+	if status != 2 {
+		t.Fatalf("expected usage status, got %d", status)
+	}
+	if machines.deleteName != "" {
+		t.Fatalf("expected no delete call, got %q", machines.deleteName)
+	}
+}
+
+func TestRunCommandDeleteMachine(t *testing.T) {
+	t.Parallel()
+
+	machines := &fakeMachines{}
+	server := newTestServer(t, &fakeKeyLookup{}, machines)
+
+	channel := &stubChannel{}
+	status := server.runCommand(channel, "dev@example.com", "delete habits --confirm habits")
+	if status != 0 {
+		t.Fatalf("expected zero status, got %d", status)
+	}
+	if machines.deleteName != "habits" {
+		t.Fatalf("expected delete of habits, got %q", machines.deleteName)
+	}
+}
+
+func TestRenderMachinesReturnsError(t *testing.T) {
+	t.Parallel()
+
+	server := newTestServer(t, &fakeKeyLookup{}, &fakeMachines{listErr: errors.New("boom")})
+
+	channel := &stubChannel{}
+	if err := server.renderMachines(channel, "dev@example.com"); err == nil {
+		t.Fatalf("expected renderMachines to fail")
+	}
+}
+
+func newTestServer(t *testing.T, keys keyLookup, machines machineManager) *Server {
+	t.Helper()
+
+	server, err := New(config.Config{
+		SSHAddr:        "127.0.0.1:0",
+		SSHHostKeyPath: filepath.Join(t.TempDir(), "hostkey"),
+	}, keys, machines)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return server
+}
+
+func generateAuthorizedKey(t *testing.T) (ssh.PublicKey, string, string) {
+	t.Helper()
+
+	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	publicKey, err := ssh.NewPublicKey(privateKey.Public())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return publicKey, string(ssh.MarshalAuthorizedKey(publicKey)), ssh.FingerprintSHA256(publicKey)
+}

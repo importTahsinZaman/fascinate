@@ -36,7 +36,8 @@ It now includes a first machine API slice:
 It also includes a first SSH slice:
 - `fascinate seed-ssh-key --email ... --name ... --public-key-file ...`
 - a DB-backed SSH server on `FASCINATE_SSH_ADDR`
-- command handling for `help`, `whoami`, and `machines`
+- command handling for `help`, `whoami`, `machines`, `create`, `clone`, and `delete`
+- an interactive line-based shell loop for `ssh fascinate.dev`
 
 For now, machine ownership is bootstrapped by passing `owner_email` in the API request. This is temporary until the SSH auth flow is wired in.
 
@@ -122,10 +123,28 @@ Then connect to the local SSH frontdoor:
 ssh -p 2222 localhost machines
 ```
 
+Or open an interactive shell:
+
+```bash
+ssh -p 2222 localhost
+```
+
+Available SSH commands:
+
+```bash
+machines
+create habits
+clone habits habits-v2
+delete habits --confirm habits
+whoami
+help
+exit
+```
+
 ## Next Milestones
 
 1. Add terminal signup and unknown-key verification flow.
-2. Add the Bubble Tea dashboard and machine detail screens.
-3. Replace the placeholder SSH dashboard output with the real terminal UI flow.
+2. Replace the line-based SSH shell with the real Bubble Tea dashboard and machine detail screens.
+3. Add terminal signup and unknown-key verification flow.
 4. Replace the static host Caddy config with control-plane-managed routing.
 5. Enforce per-user quotas and approval rules.

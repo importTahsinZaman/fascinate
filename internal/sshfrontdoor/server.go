@@ -1,6 +1,7 @@
 package sshfrontdoor
 
 import (
+	"bufio"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -25,17 +26,20 @@ type keyLookup interface {
 	GetSSHKeyByFingerprint(context.Context, string) (database.SSHKeyRecord, error)
 }
 
-type machineLister interface {
+type machineManager interface {
 	ListMachines(context.Context, string) ([]controlplane.Machine, error)
+	CreateMachine(context.Context, controlplane.CreateMachineInput) (controlplane.Machine, error)
+	DeleteMachine(context.Context, string) error
+	CloneMachine(context.Context, controlplane.CloneMachineInput) (controlplane.Machine, error)
 }
 
 type Server struct {
 	addr     string
 	config   *ssh.ServerConfig
-	machines machineLister
+	machines machineManager
 }
 
-func New(cfg config.Config, keys keyLookup, machines machineLister) (*Server, error) {
+func New(cfg config.Config, keys keyLookup, machines machineManager) (*Server, error) {
 	signer, err := loadOrCreateHostKey(cfg.SSHHostKeyPath)
 	if err != nil {
 		return nil, err
@@ -137,7 +141,7 @@ func (s *Server) handleSession(channel ssh.Channel, requests <-chan *ssh.Request
 			req.Reply(true, nil)
 		case "shell":
 			req.Reply(true, nil)
-			s.renderDashboard(channel, userEmail)
+			s.runShell(channel, userEmail)
 			writeExitStatus(channel, 0)
 			return
 		case "exec":
@@ -162,9 +166,14 @@ func (s *Server) handleSession(channel ssh.Channel, requests <-chan *ssh.Request
 }
 
 func (s *Server) runCommand(channel ssh.Channel, userEmail, command string) uint32 {
-	command = strings.TrimSpace(command)
-	switch command {
-	case "", "dashboard", "help":
+	fields := strings.Fields(strings.TrimSpace(command))
+	if len(fields) == 0 {
+		s.renderDashboard(channel, userEmail)
+		return 0
+	}
+
+	switch fields[0] {
+	case "dashboard", "help":
 		s.renderDashboard(channel, userEmail)
 		return 0
 	case "whoami":
@@ -176,10 +185,43 @@ func (s *Server) runCommand(channel ssh.Channel, userEmail, command string) uint
 			return 1
 		}
 		return 0
+	case "create":
+		return s.createMachine(channel, userEmail, fields)
+	case "clone":
+		return s.cloneMachine(channel, userEmail, fields)
+	case "delete":
+		return s.deleteMachine(channel, fields)
 	default:
-		fmt.Fprintf(channel, "unknown command: %s\n", command)
-		fmt.Fprintln(channel, "available commands: help, dashboard, whoami, machines")
+		fmt.Fprintf(channel, "unknown command: %s\n", fields[0])
+		fmt.Fprintln(channel, "available commands: help, dashboard, whoami, machines, create, clone, delete, exit")
 		return 127
+	}
+}
+
+func (s *Server) runShell(channel ssh.Channel, userEmail string) {
+	s.renderDashboard(channel, userEmail)
+	fmt.Fprintln(channel)
+
+	scanner := bufio.NewScanner(channel)
+	for {
+		fmt.Fprint(channel, "fascinate> ")
+		if !scanner.Scan() {
+			return
+		}
+
+		command := strings.TrimSpace(scanner.Text())
+		if command == "" {
+			continue
+		}
+
+		switch command {
+		case "exit", "quit":
+			fmt.Fprintln(channel, "bye")
+			return
+		default:
+			_ = s.runCommand(channel, userEmail, command)
+			fmt.Fprintln(channel)
+		}
 	}
 }
 
@@ -189,7 +231,7 @@ func (s *Server) renderDashboard(channel ssh.Channel, userEmail string) {
 	if err := s.renderMachines(channel, userEmail); err != nil {
 		fmt.Fprintf(channel, "error loading machines: %v\n", err)
 	}
-	fmt.Fprintln(channel, "\ncommands: machines, whoami, help")
+	fmt.Fprintln(channel, "\ncommands: machines, create <name>, clone <source> <target>, delete <name> --confirm <name>, whoami, help, exit")
 }
 
 func (s *Server) renderMachines(channel ssh.Channel, userEmail string) error {
@@ -211,6 +253,69 @@ func (s *Server) renderMachines(channel ssh.Channel, userEmail string) error {
 	}
 
 	return nil
+}
+
+func (s *Server) createMachine(channel ssh.Channel, userEmail string, fields []string) uint32 {
+	if len(fields) != 2 {
+		fmt.Fprintln(channel, "usage: create <name>")
+		return 2
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	machine, err := s.machines.CreateMachine(ctx, controlplane.CreateMachineInput{
+		Name:       fields[1],
+		OwnerEmail: userEmail,
+	})
+	if err != nil {
+		fmt.Fprintf(channel, "error: %v\n", err)
+		return 1
+	}
+
+	fmt.Fprintf(channel, "created %s\t%s\n", machine.Name, machine.URL)
+	return 0
+}
+
+func (s *Server) cloneMachine(channel ssh.Channel, userEmail string, fields []string) uint32 {
+	if len(fields) != 3 {
+		fmt.Fprintln(channel, "usage: clone <source> <target>")
+		return 2
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	machine, err := s.machines.CloneMachine(ctx, controlplane.CloneMachineInput{
+		SourceName: fields[1],
+		TargetName: fields[2],
+		OwnerEmail: userEmail,
+	})
+	if err != nil {
+		fmt.Fprintf(channel, "error: %v\n", err)
+		return 1
+	}
+
+	fmt.Fprintf(channel, "cloned %s -> %s\t%s\n", fields[1], machine.Name, machine.URL)
+	return 0
+}
+
+func (s *Server) deleteMachine(channel ssh.Channel, fields []string) uint32 {
+	if len(fields) != 4 || fields[2] != "--confirm" || fields[3] != fields[1] {
+		fmt.Fprintln(channel, "usage: delete <name> --confirm <name>")
+		return 2
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	if err := s.machines.DeleteMachine(ctx, fields[1]); err != nil {
+		fmt.Fprintf(channel, "error: %v\n", err)
+		return 1
+	}
+
+	fmt.Fprintf(channel, "deleted %s\n", fields[1])
+	return 0
 }
 
 func writeExitStatus(channel ssh.Channel, status uint32) {

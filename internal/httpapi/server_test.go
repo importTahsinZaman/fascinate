@@ -1,0 +1,215 @@
+package httpapi
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
+	"testing"
+
+	"fascinate/internal/config"
+	"fascinate/internal/controlplane"
+	"fascinate/internal/database"
+	"fascinate/internal/runtime/incus"
+)
+
+type fakeRuntime struct {
+	healthErr error
+	listErr   error
+	machines  []incus.Machine
+}
+
+func (f *fakeRuntime) HealthCheck(context.Context) error {
+	return f.healthErr
+}
+
+func (f *fakeRuntime) ListMachines(context.Context) ([]incus.Machine, error) {
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
+	return f.machines, nil
+}
+
+type fakeMachineManager struct {
+	listOwnerEmail string
+	listResult     []controlplane.Machine
+	listErr        error
+	getResult      controlplane.Machine
+	getErr         error
+	createInput    controlplane.CreateMachineInput
+	createResult   controlplane.Machine
+	createErr      error
+	deleteName     string
+	deleteErr      error
+	cloneInput     controlplane.CloneMachineInput
+	cloneResult    controlplane.Machine
+	cloneErr       error
+}
+
+func (f *fakeMachineManager) ListMachines(_ context.Context, ownerEmail string) ([]controlplane.Machine, error) {
+	f.listOwnerEmail = ownerEmail
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
+	return f.listResult, nil
+}
+
+func (f *fakeMachineManager) GetMachine(context.Context, string) (controlplane.Machine, error) {
+	if f.getErr != nil {
+		return controlplane.Machine{}, f.getErr
+	}
+	return f.getResult, nil
+}
+
+func (f *fakeMachineManager) CreateMachine(_ context.Context, input controlplane.CreateMachineInput) (controlplane.Machine, error) {
+	f.createInput = input
+	if f.createErr != nil {
+		return controlplane.Machine{}, f.createErr
+	}
+	return f.createResult, nil
+}
+
+func (f *fakeMachineManager) DeleteMachine(_ context.Context, name string) error {
+	f.deleteName = name
+	return f.deleteErr
+}
+
+func (f *fakeMachineManager) CloneMachine(_ context.Context, input controlplane.CloneMachineInput) (controlplane.Machine, error) {
+	f.cloneInput = input
+	if f.cloneErr != nil {
+		return controlplane.Machine{}, f.cloneErr
+	}
+	return f.cloneResult, nil
+}
+
+func TestListMachinesEndpointPassesOwnerEmail(t *testing.T) {
+	t.Parallel()
+
+	handler := newTestHandler(t, &fakeRuntime{}, &fakeMachineManager{
+		listResult: []controlplane.Machine{{Name: "habits"}},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/machines?owner_email=dev@example.com", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+
+	var body struct {
+		Machines []controlplane.Machine `json:"machines"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Machines) != 1 || body.Machines[0].Name != "habits" {
+		t.Fatalf("unexpected machine list: %+v", body.Machines)
+	}
+}
+
+func TestCreateMachineEndpointReturnsConflict(t *testing.T) {
+	t.Parallel()
+
+	manager := &fakeMachineManager{createErr: database.ErrConflict}
+	handler := newTestHandler(t, &fakeRuntime{}, manager)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/machines", bytes.NewBufferString(`{"name":"habits","owner_email":"dev@example.com"}`))
+	req.Header.Set("Content-Type", "application/json")
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d", rec.Code)
+	}
+	if manager.createInput.OwnerEmail != "dev@example.com" || manager.createInput.Name != "habits" {
+		t.Fatalf("unexpected create input: %+v", manager.createInput)
+	}
+}
+
+func TestCreateMachineEndpointRejectsUnknownFields(t *testing.T) {
+	t.Parallel()
+
+	handler := newTestHandler(t, &fakeRuntime{}, &fakeMachineManager{})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/machines", bytes.NewBufferString(`{"name":"habits","owner_email":"dev@example.com","extra":true}`))
+	req.Header.Set("Content-Type", "application/json")
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", rec.Code)
+	}
+}
+
+func TestCloneMachineEndpointReturnsNotFound(t *testing.T) {
+	t.Parallel()
+
+	handler := newTestHandler(t, &fakeRuntime{}, &fakeMachineManager{cloneErr: database.ErrNotFound})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/machines/habits/clone", bytes.NewBufferString(`{"target_name":"habits-v2"}`))
+	req.Header.Set("Content-Type", "application/json")
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", rec.Code)
+	}
+}
+
+func TestDeleteMachineEndpointCallsManager(t *testing.T) {
+	t.Parallel()
+
+	manager := &fakeMachineManager{}
+	handler := newTestHandler(t, &fakeRuntime{}, manager)
+
+	req := httptest.NewRequest(http.MethodDelete, "/v1/machines/habits", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d", rec.Code)
+	}
+	if manager.deleteName != "habits" {
+		t.Fatalf("expected delete of habits, got %q", manager.deleteName)
+	}
+}
+
+func TestReadyzReturnsUnavailableWhenRuntimeFails(t *testing.T) {
+	t.Parallel()
+
+	handler := newTestHandler(t, &fakeRuntime{healthErr: errors.New("runtime down")}, &fakeMachineManager{})
+
+	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d", rec.Code)
+	}
+}
+
+func newTestHandler(t *testing.T, runtime *fakeRuntime, machines *fakeMachineManager) http.Handler {
+	t.Helper()
+
+	ctx := context.Background()
+	store, err := database.Open(ctx, filepath.Join(t.TempDir(), "fascinate.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	if err := store.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	return New(config.Config{BaseDomain: "fascinate.dev"}, store, runtime, machines)
+}
