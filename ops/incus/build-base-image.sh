@@ -10,6 +10,7 @@ CLAUDE_CODE_VERSION="${FASCINATE_CLAUDE_CODE_VERSION:-}"
 APT_MIRROR_BASE_URL="${FASCINATE_APT_MIRROR_BASE_URL:-}"
 NODE_VERSION="${FASCINATE_NODE_VERSION:-latest}"
 GO_VERSION="${FASCINATE_GO_VERSION:-latest}"
+NPM_VERSION="${FASCINATE_NPM_VERSION:-latest}"
 
 PACKAGES=(
   build-essential
@@ -85,6 +86,7 @@ main() {
     GO_VERSION_REQUESTED="${GO_VERSION}" \
     INSTALL_CLAUDE_CODE="${INSTALL_CLAUDE_CODE}" \
     NODE_VERSION_REQUESTED="${NODE_VERSION}" \
+    NPM_VERSION_REQUESTED="${NPM_VERSION}" \
     bash -se <<'EOF'
 set -euo pipefail
 
@@ -187,6 +189,12 @@ install_go() {
   rm -f "${file}"
 }
 
+install_npm() {
+  local requested="${NPM_VERSION_REQUESTED:-latest}"
+
+  npm install -g --force "npm@${requested}"
+}
+
 if [[ -n "${APT_MIRROR_BASE_URL}" ]]; then
   cat >/etc/apt/sources.list <<EOF_MIRROR
 deb ${APT_MIRROR_BASE_URL} noble main restricted universe multiverse
@@ -208,6 +216,7 @@ NODE_RESOLVED_VERSION="$(resolve_node_version)"
 GO_RESOLVED_VERSION="$(resolve_go_version)"
 install_node "${NODE_RESOLVED_VERSION}" "$(node_arch)"
 install_go "${GO_RESOLVED_VERSION}" "$(go_arch)"
+install_npm
 
 if [[ "${INSTALL_CLAUDE_CODE}" == "1" && -n "${CLAUDE_PACKAGE}" ]]; then
   npm install -g "${CLAUDE_PACKAGE}"
