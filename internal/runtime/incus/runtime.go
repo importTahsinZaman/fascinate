@@ -32,22 +32,25 @@ type Machine struct {
 	State  string   `json:"state"`
 	CPU    string   `json:"cpu,omitempty"`
 	Memory string   `json:"memory,omitempty"`
+	Disk   string   `json:"disk,omitempty"`
 	IPv4   []string `json:"ipv4"`
 	IPv6   []string `json:"ipv6"`
 }
 
 type CreateMachineRequest struct {
-	Name        string
-	Image       string
-	StoragePool string
-	CPU         string
-	Memory      string
-	PrimaryPort int
+	Name         string
+	Image        string
+	StoragePool  string
+	CPU          string
+	Memory       string
+	RootDiskSize string
+	PrimaryPort  int
 }
 
 type CloneMachineRequest struct {
-	SourceName string
-	TargetName string
+	SourceName   string
+	TargetName   string
+	RootDiskSize string
 }
 
 func NewCLI(binary string) *CLI {
@@ -147,6 +150,11 @@ func (c *CLI) CreateMachine(ctx context.Context, req CreateMachineRequest) (Mach
 			return Machine{}, err
 		}
 	}
+	if value := strings.TrimSpace(req.RootDiskSize); value != "" {
+		if _, err := c.run(ctx, "config", "device", "set", name, "root", "size", value); err != nil {
+			return Machine{}, err
+		}
+	}
 
 	if _, err := c.run(ctx, "start", name); err != nil {
 		return Machine{}, err
@@ -191,6 +199,11 @@ func (c *CLI) CloneMachine(ctx context.Context, req CloneMachineRequest) (Machin
 		}
 		_, _ = c.run(context.Background(), "delete", "--force", target)
 	}()
+	if value := strings.TrimSpace(req.RootDiskSize); value != "" {
+		if _, err := c.run(ctx, "config", "device", "set", target, "root", "size", value); err != nil {
+			return Machine{}, err
+		}
+	}
 
 	if _, err := c.run(ctx, "start", target); err != nil {
 		return Machine{}, err
@@ -233,11 +246,13 @@ func (c *CLI) run(ctx context.Context, args ...string) ([]byte, error) {
 }
 
 type rawInstance struct {
-	Name   string            `json:"name"`
-	Status string            `json:"status"`
-	Type   string            `json:"type"`
-	Config map[string]string `json:"config"`
-	State  *rawState         `json:"state"`
+	Name            string                       `json:"name"`
+	Status          string                       `json:"status"`
+	Type            string                       `json:"type"`
+	Config          map[string]string            `json:"config"`
+	Devices         map[string]map[string]string `json:"devices"`
+	ExpandedDevices map[string]map[string]string `json:"expanded_devices"`
+	State           *rawState                    `json:"state"`
 }
 
 type rawState struct {
@@ -261,6 +276,7 @@ func machineFromRaw(instance rawInstance) Machine {
 		State:  instance.Status,
 		CPU:    strings.TrimSpace(instance.Config["limits.cpu"]),
 		Memory: strings.TrimSpace(instance.Config["limits.memory"]),
+		Disk:   rootDiskSize(instance),
 	}
 
 	if instance.State == nil {
@@ -289,4 +305,18 @@ func machineFromRaw(instance rawInstance) Machine {
 	sort.Strings(machine.IPv6)
 
 	return machine
+}
+
+func rootDiskSize(instance rawInstance) string {
+	if device, ok := instance.ExpandedDevices["root"]; ok {
+		if value := strings.TrimSpace(device["size"]); value != "" {
+			return value
+		}
+	}
+	if device, ok := instance.Devices["root"]; ok {
+		if value := strings.TrimSpace(device["size"]); value != "" {
+			return value
+		}
+	}
+	return ""
 }

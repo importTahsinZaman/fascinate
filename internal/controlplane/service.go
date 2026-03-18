@@ -132,7 +132,7 @@ func (s *Service) CreateMachine(ctx context.Context, input CreateMachineInput) (
 	if ownerEmail == "" {
 		return Machine{}, fmt.Errorf("owner email is required")
 	}
-	if err := s.enforceMachineCreatePolicy(ctx, ownerEmail, s.cfg.DefaultMachineCPU, s.cfg.DefaultMachineRAM); err != nil {
+	if err := s.enforceMachineCreatePolicy(ctx, ownerEmail, s.cfg.DefaultMachineCPU, s.cfg.DefaultMachineRAM, s.cfg.DefaultMachineDisk); err != nil {
 		return Machine{}, err
 	}
 
@@ -142,12 +142,13 @@ func (s *Service) CreateMachine(ctx context.Context, input CreateMachineInput) (
 	}
 
 	liveMachine, err := s.runtime.CreateMachine(ctx, incus.CreateMachineRequest{
-		Name:        name,
-		Image:       s.cfg.DefaultImage,
-		StoragePool: s.cfg.IncusStoragePool,
-		CPU:         s.cfg.DefaultMachineCPU,
-		Memory:      s.cfg.DefaultMachineRAM,
-		PrimaryPort: s.cfg.DefaultPrimaryPort,
+		Name:         name,
+		Image:        s.cfg.DefaultImage,
+		StoragePool:  s.cfg.IncusStoragePool,
+		CPU:          s.cfg.DefaultMachineCPU,
+		Memory:       s.cfg.DefaultMachineRAM,
+		RootDiskSize: s.cfg.DefaultMachineDisk,
+		PrimaryPort:  s.cfg.DefaultPrimaryPort,
 	})
 	if err != nil {
 		return Machine{}, err
@@ -221,7 +222,11 @@ func (s *Service) CloneMachine(ctx context.Context, input CloneMachineInput) (Ma
 	if err != nil {
 		return Machine{}, err
 	}
-	if err := s.validateMachineSizeLimit(liveSource.CPU, liveSource.Memory); err != nil {
+	rootDiskSize := strings.TrimSpace(liveSource.Disk)
+	if rootDiskSize == "" {
+		rootDiskSize = s.cfg.DefaultMachineDisk
+	}
+	if err := s.validateMachineSizeLimit(liveSource.CPU, liveSource.Memory, rootDiskSize); err != nil {
 		return Machine{}, err
 	}
 
@@ -231,8 +236,9 @@ func (s *Service) CloneMachine(ctx context.Context, input CloneMachineInput) (Ma
 	}
 
 	liveMachine, err := s.runtime.CloneMachine(ctx, incus.CloneMachineRequest{
-		SourceName: sourceRecord.IncusName,
-		TargetName: targetName,
+		SourceName:   sourceRecord.IncusName,
+		TargetName:   targetName,
+		RootDiskSize: rootDiskSize,
 	})
 	if err != nil {
 		return Machine{}, err
@@ -271,11 +277,11 @@ func (s *Service) ownedMachineRecord(ctx context.Context, name, ownerEmail strin
 	return record, nil
 }
 
-func (s *Service) enforceMachineCreatePolicy(ctx context.Context, ownerEmail, cpu, memory string) error {
+func (s *Service) enforceMachineCreatePolicy(ctx context.Context, ownerEmail, cpu, memory, disk string) error {
 	if err := s.enforceMachineCountLimit(ctx, ownerEmail); err != nil {
 		return err
 	}
-	return s.validateMachineSizeLimit(cpu, memory)
+	return s.validateMachineSizeLimit(cpu, memory, disk)
 }
 
 func (s *Service) enforceMachineCountLimit(ctx context.Context, ownerEmail string) error {
@@ -294,7 +300,7 @@ func (s *Service) enforceMachineCountLimit(ctx context.Context, ownerEmail strin
 	return nil
 }
 
-func (s *Service) validateMachineSizeLimit(cpu, memory string) error {
+func (s *Service) validateMachineSizeLimit(cpu, memory, disk string) error {
 	maxCPU := strings.TrimSpace(s.cfg.MaxMachineCPU)
 	if maxCPU != "" {
 		requestedCPU, err := parseCPUCount(cpu)
@@ -312,16 +318,31 @@ func (s *Service) validateMachineSizeLimit(cpu, memory string) error {
 
 	maxMemory := strings.TrimSpace(s.cfg.MaxMachineRAM)
 	if maxMemory != "" {
-		requestedMemory, err := parseMemoryBytes(memory)
+		requestedMemory, err := parseByteSize(memory)
 		if err != nil {
 			return fmt.Errorf("invalid machine memory limit %q: %w", memory, err)
 		}
-		allowedMemory, err := parseMemoryBytes(maxMemory)
+		allowedMemory, err := parseByteSize(maxMemory)
 		if err != nil {
 			return fmt.Errorf("invalid configured max machine memory %q: %w", maxMemory, err)
 		}
 		if requestedMemory > allowedMemory {
 			return fmt.Errorf("machine size exceeds limit: memory %s > %s", strings.TrimSpace(memory), maxMemory)
+		}
+	}
+
+	maxDisk := strings.TrimSpace(s.cfg.MaxMachineDisk)
+	if maxDisk != "" {
+		requestedDisk, err := parseByteSize(disk)
+		if err != nil {
+			return fmt.Errorf("invalid machine disk limit %q: %w", disk, err)
+		}
+		allowedDisk, err := parseByteSize(maxDisk)
+		if err != nil {
+			return fmt.Errorf("invalid configured max machine disk %q: %w", maxDisk, err)
+		}
+		if requestedDisk > allowedDisk {
+			return fmt.Errorf("machine size exceeds limit: disk %s > %s", strings.TrimSpace(disk), maxDisk)
 		}
 	}
 
@@ -412,23 +433,23 @@ func parseCPUCount(value string) (float64, error) {
 	return count, nil
 }
 
-func parseMemoryBytes(value string) (int64, error) {
+func parseByteSize(value string) (int64, error) {
 	value = strings.TrimSpace(value)
 	if value == "" {
-		return 0, fmt.Errorf("memory value is required")
+		return 0, fmt.Errorf("size value is required")
 	}
 
 	matches := memoryLimitPattern.FindStringSubmatch(value)
 	if matches == nil {
-		return 0, fmt.Errorf("unsupported memory value")
+		return 0, fmt.Errorf("unsupported size value")
 	}
 
 	number, err := strconv.ParseFloat(matches[1], 64)
 	if err != nil {
-		return 0, fmt.Errorf("memory value must be numeric")
+		return 0, fmt.Errorf("size value must be numeric")
 	}
 	if number <= 0 {
-		return 0, fmt.Errorf("memory value must be positive")
+		return 0, fmt.Errorf("size value must be positive")
 	}
 
 	unit := strings.ToLower(matches[2])

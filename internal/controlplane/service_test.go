@@ -76,6 +76,7 @@ func (f *fakeRuntime) CreateMachine(_ context.Context, req incus.CreateMachineRe
 		State:  "RUNNING",
 		CPU:    req.CPU,
 		Memory: req.Memory,
+		Disk:   req.RootDiskSize,
 	}
 	f.machines[req.Name] = machine
 	return machine, nil
@@ -122,6 +123,7 @@ func TestServiceCreateCloneAndDeleteMachine(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	runtime := &fakeRuntime{machines: map[string]incus.Machine{}}
 	service := New(config.Config{
 		BaseDomain:         "fascinate.dev",
 		AdminEmails:        []string{"admin@example.com"},
@@ -129,8 +131,9 @@ func TestServiceCreateCloneAndDeleteMachine(t *testing.T) {
 		IncusStoragePool:   "machines",
 		DefaultMachineCPU:  "1",
 		DefaultMachineRAM:  "2GiB",
+		DefaultMachineDisk: "20GiB",
 		DefaultPrimaryPort: 3000,
-	}, store, &fakeRuntime{machines: map[string]incus.Machine{}})
+	}, store, runtime)
 
 	created, err := service.CreateMachine(ctx, CreateMachineInput{
 		Name:       "Habits",
@@ -145,6 +148,9 @@ func TestServiceCreateCloneAndDeleteMachine(t *testing.T) {
 	if created.URL != "https://habits.fascinate.dev" {
 		t.Fatalf("unexpected machine url: %q", created.URL)
 	}
+	if len(runtime.createdReq) != 1 || runtime.createdReq[0].RootDiskSize != "20GiB" {
+		t.Fatalf("expected create request disk size 20GiB, got %+v", runtime.createdReq)
+	}
 
 	cloned, err := service.CloneMachine(ctx, CloneMachineInput{
 		SourceName: "habits",
@@ -156,6 +162,9 @@ func TestServiceCreateCloneAndDeleteMachine(t *testing.T) {
 	}
 	if cloned.Name != "habits-v2" {
 		t.Fatalf("unexpected clone name: %q", cloned.Name)
+	}
+	if len(runtime.clonedReq) != 1 || runtime.clonedReq[0].RootDiskSize != "20GiB" {
+		t.Fatalf("expected clone request disk size 20GiB, got %+v", runtime.clonedReq)
 	}
 
 	list, err := service.ListMachines(ctx, "admin@example.com")
@@ -247,7 +256,7 @@ func TestServiceCloneMachineRollsBackRuntimeOnDBConflict(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	runtime.machines["habits"] = incus.Machine{Name: "habits", Type: "container", State: "RUNNING", CPU: "1", Memory: "2GiB"}
+	runtime.machines["habits"] = incus.Machine{Name: "habits", Type: "container", State: "RUNNING", CPU: "1", Memory: "2GiB", Disk: "20GiB"}
 	service := newTestService(store, runtime)
 
 	_, err = service.CloneMachine(ctx, CloneMachineInput{
@@ -327,7 +336,7 @@ func TestServiceRejectsWrongOwnerForSensitiveOperations(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	runtime.machines["habits"] = incus.Machine{Name: "habits", Type: "container", State: "RUNNING", CPU: "1", Memory: "2GiB"}
+	runtime.machines["habits"] = incus.Machine{Name: "habits", Type: "container", State: "RUNNING", CPU: "1", Memory: "2GiB", Disk: "20GiB"}
 	service := newTestService(store, runtime)
 
 	if _, err := service.GetMachine(ctx, "habits", "other@example.com"); !errors.Is(err, database.ErrNotFound) {
@@ -375,7 +384,7 @@ func TestServiceEnforcesMaxMachinesPerUser(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		runtime.machines[name] = incus.Machine{Name: name, Type: "container", State: "RUNNING", CPU: "1", Memory: "2GiB"}
+		runtime.machines[name] = incus.Machine{Name: name, Type: "container", State: "RUNNING", CPU: "1", Memory: "2GiB", Disk: "20GiB"}
 	}
 
 	service := newTestService(store, runtime)
@@ -404,9 +413,11 @@ func TestServiceRejectsOversizedMachineResources(t *testing.T) {
 		IncusStoragePool:   "machines",
 		DefaultMachineCPU:  "3",
 		DefaultMachineRAM:  "8GiB",
+		DefaultMachineDisk: "20GiB",
 		MaxMachinesPerUser: 3,
 		MaxMachineCPU:      "2",
 		MaxMachineRAM:      "4GiB",
+		MaxMachineDisk:     "20GiB",
 		DefaultPrimaryPort: 3000,
 	}, store, runtime)
 
@@ -444,7 +455,7 @@ func TestServiceRejectsCloneWhenSourceExceedsSizeLimit(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	runtime.machines["habits"] = incus.Machine{Name: "habits", Type: "container", State: "RUNNING", CPU: "4", Memory: "2GiB"}
+	runtime.machines["habits"] = incus.Machine{Name: "habits", Type: "container", State: "RUNNING", CPU: "4", Memory: "2GiB", Disk: "20GiB"}
 	service := newTestService(store, runtime)
 
 	_, err = service.CloneMachine(ctx, CloneMachineInput{
@@ -454,6 +465,76 @@ func TestServiceRejectsCloneWhenSourceExceedsSizeLimit(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "cpu 4 > 2") {
 		t.Fatalf("expected clone size error, got %v", err)
+	}
+	if len(runtime.clonedReq) != 0 {
+		t.Fatalf("expected no runtime clone, got %+v", runtime.clonedReq)
+	}
+}
+
+func TestServiceRejectsOversizedMachineDisk(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, runtime := newTestServiceDeps(t, ctx)
+
+	service := New(config.Config{
+		BaseDomain:         "fascinate.dev",
+		DefaultImage:       "images:ubuntu/24.04",
+		IncusStoragePool:   "machines",
+		DefaultMachineCPU:  "1",
+		DefaultMachineRAM:  "2GiB",
+		DefaultMachineDisk: "25GiB",
+		MaxMachinesPerUser: 3,
+		MaxMachineCPU:      "2",
+		MaxMachineRAM:      "4GiB",
+		MaxMachineDisk:     "20GiB",
+		DefaultPrimaryPort: 3000,
+	}, store, runtime)
+
+	_, err := service.CreateMachine(ctx, CreateMachineInput{
+		Name:       "habits",
+		OwnerEmail: "dev@example.com",
+	})
+	if err == nil || !strings.Contains(err.Error(), "disk 25GiB > 20GiB") {
+		t.Fatalf("expected disk size error, got %v", err)
+	}
+	if len(runtime.createdReq) != 0 {
+		t.Fatalf("expected no runtime create, got %+v", runtime.createdReq)
+	}
+}
+
+func TestServiceRejectsCloneWhenSourceDiskExceedsSizeLimit(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, runtime := newTestServiceDeps(t, ctx)
+
+	user, err := store.UpsertUser(ctx, "dev@example.com", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := store.CreateMachine(ctx, database.CreateMachineParams{
+		ID:          "machine-1",
+		Name:        "habits",
+		OwnerUserID: user.ID,
+		IncusName:   "habits",
+		State:       "RUNNING",
+		PrimaryPort: 3000,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	runtime.machines["habits"] = incus.Machine{Name: "habits", Type: "container", State: "RUNNING", CPU: "1", Memory: "2GiB", Disk: "25GiB"}
+	service := newTestService(store, runtime)
+
+	_, err = service.CloneMachine(ctx, CloneMachineInput{
+		SourceName: "habits",
+		TargetName: "habits-v2",
+		OwnerEmail: "dev@example.com",
+	})
+	if err == nil || !strings.Contains(err.Error(), "disk 25GiB > 20GiB") {
+		t.Fatalf("expected clone disk size error, got %v", err)
 	}
 	if len(runtime.clonedReq) != 0 {
 		t.Fatalf("expected no runtime clone, got %+v", runtime.clonedReq)
@@ -482,7 +563,7 @@ func TestServiceSerializesQuotaCheckedCreates(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		runtime.machines[name] = incus.Machine{Name: name, Type: "container", State: "RUNNING", CPU: "1", Memory: "2GiB"}
+		runtime.machines[name] = incus.Machine{Name: name, Type: "container", State: "RUNNING", CPU: "1", Memory: "2GiB", Disk: "20GiB"}
 	}
 
 	started := make(chan struct{}, 1)
@@ -555,9 +636,11 @@ func newTestService(store *database.Store, runtime *fakeRuntime) *Service {
 		IncusStoragePool:   "machines",
 		DefaultMachineCPU:  "1",
 		DefaultMachineRAM:  "2GiB",
+		DefaultMachineDisk: "20GiB",
 		MaxMachinesPerUser: 3,
 		MaxMachineCPU:      "2",
 		MaxMachineRAM:      "4GiB",
+		MaxMachineDisk:     "20GiB",
 		DefaultPrimaryPort: 3000,
 	}, store, runtime)
 }
