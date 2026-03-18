@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 
 	"fascinate/internal/config"
@@ -12,15 +14,17 @@ import (
 )
 
 type fakeRuntime struct {
-	machines   map[string]incus.Machine
-	createErr  error
-	deleteErr  error
-	cloneErr   error
-	getErr     error
-	listErr    error
-	deleted    []string
-	createdReq []incus.CreateMachineRequest
-	clonedReq  []incus.CloneMachineRequest
+	machines      map[string]incus.Machine
+	createErr     error
+	deleteErr     error
+	cloneErr      error
+	getErr        error
+	listErr       error
+	createStarted chan struct{}
+	createBlock   <-chan struct{}
+	deleted       []string
+	createdReq    []incus.CreateMachineRequest
+	clonedReq     []incus.CloneMachineRequest
 }
 
 func (f *fakeRuntime) HealthCheck(context.Context) error {
@@ -55,12 +59,23 @@ func (f *fakeRuntime) CreateMachine(_ context.Context, req incus.CreateMachineRe
 	if f.createErr != nil {
 		return incus.Machine{}, f.createErr
 	}
+	if f.createStarted != nil {
+		select {
+		case f.createStarted <- struct{}{}:
+		default:
+		}
+	}
+	if f.createBlock != nil {
+		<-f.createBlock
+	}
 
 	f.createdReq = append(f.createdReq, req)
 	machine := incus.Machine{
-		Name:  req.Name,
-		Type:  "container",
-		State: "RUNNING",
+		Name:   req.Name,
+		Type:   "container",
+		State:  "RUNNING",
+		CPU:    req.CPU,
+		Memory: req.Memory,
 	}
 	f.machines[req.Name] = machine
 	return machine, nil
@@ -232,7 +247,7 @@ func TestServiceCloneMachineRollsBackRuntimeOnDBConflict(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	runtime.machines["habits"] = incus.Machine{Name: "habits", Type: "container", State: "RUNNING"}
+	runtime.machines["habits"] = incus.Machine{Name: "habits", Type: "container", State: "RUNNING", CPU: "1", Memory: "2GiB"}
 	service := newTestService(store, runtime)
 
 	_, err = service.CloneMachine(ctx, CloneMachineInput{
@@ -312,7 +327,7 @@ func TestServiceRejectsWrongOwnerForSensitiveOperations(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	runtime.machines["habits"] = incus.Machine{Name: "habits", Type: "container", State: "RUNNING"}
+	runtime.machines["habits"] = incus.Machine{Name: "habits", Type: "container", State: "RUNNING", CPU: "1", Memory: "2GiB"}
 	service := newTestService(store, runtime)
 
 	if _, err := service.GetMachine(ctx, "habits", "other@example.com"); !errors.Is(err, database.ErrNotFound) {
@@ -335,6 +350,182 @@ func TestServiceRejectsWrongOwnerForSensitiveOperations(t *testing.T) {
 	}
 	if _, ok := runtime.machines["habits-v2"]; ok {
 		t.Fatalf("expected no clone to be created")
+	}
+}
+
+func TestServiceEnforcesMaxMachinesPerUser(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, runtime := newTestServiceDeps(t, ctx)
+
+	user, err := store.UpsertUser(ctx, "dev@example.com", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, name := range []string{"one", "two", "three"} {
+		if _, err := store.CreateMachine(ctx, database.CreateMachineParams{
+			ID:          "machine-" + name,
+			Name:        name,
+			OwnerUserID: user.ID,
+			IncusName:   name,
+			State:       "RUNNING",
+			PrimaryPort: 3000,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		runtime.machines[name] = incus.Machine{Name: name, Type: "container", State: "RUNNING", CPU: "1", Memory: "2GiB"}
+	}
+
+	service := newTestService(store, runtime)
+
+	_, err = service.CreateMachine(ctx, CreateMachineInput{
+		Name:       "four",
+		OwnerEmail: "dev@example.com",
+	})
+	if err == nil || !strings.Contains(err.Error(), "maximum 3 machines per user") {
+		t.Fatalf("expected machine quota error, got %v", err)
+	}
+	if len(runtime.createdReq) != 0 {
+		t.Fatalf("expected no runtime create, got %+v", runtime.createdReq)
+	}
+}
+
+func TestServiceRejectsOversizedMachineResources(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, runtime := newTestServiceDeps(t, ctx)
+
+	service := New(config.Config{
+		BaseDomain:         "fascinate.dev",
+		DefaultImage:       "images:ubuntu/24.04",
+		IncusStoragePool:   "machines",
+		DefaultMachineCPU:  "3",
+		DefaultMachineRAM:  "8GiB",
+		MaxMachinesPerUser: 3,
+		MaxMachineCPU:      "2",
+		MaxMachineRAM:      "4GiB",
+		DefaultPrimaryPort: 3000,
+	}, store, runtime)
+
+	_, err := service.CreateMachine(ctx, CreateMachineInput{
+		Name:       "habits",
+		OwnerEmail: "dev@example.com",
+	})
+	if err == nil || !strings.Contains(err.Error(), "cpu 3 > 2") {
+		t.Fatalf("expected cpu size error, got %v", err)
+	}
+	if len(runtime.createdReq) != 0 {
+		t.Fatalf("expected no runtime create, got %+v", runtime.createdReq)
+	}
+}
+
+func TestServiceRejectsCloneWhenSourceExceedsSizeLimit(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, runtime := newTestServiceDeps(t, ctx)
+
+	user, err := store.UpsertUser(ctx, "dev@example.com", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := store.CreateMachine(ctx, database.CreateMachineParams{
+		ID:          "machine-1",
+		Name:        "habits",
+		OwnerUserID: user.ID,
+		IncusName:   "habits",
+		State:       "RUNNING",
+		PrimaryPort: 3000,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	runtime.machines["habits"] = incus.Machine{Name: "habits", Type: "container", State: "RUNNING", CPU: "4", Memory: "2GiB"}
+	service := newTestService(store, runtime)
+
+	_, err = service.CloneMachine(ctx, CloneMachineInput{
+		SourceName: "habits",
+		TargetName: "habits-v2",
+		OwnerEmail: "dev@example.com",
+	})
+	if err == nil || !strings.Contains(err.Error(), "cpu 4 > 2") {
+		t.Fatalf("expected clone size error, got %v", err)
+	}
+	if len(runtime.clonedReq) != 0 {
+		t.Fatalf("expected no runtime clone, got %+v", runtime.clonedReq)
+	}
+}
+
+func TestServiceSerializesQuotaCheckedCreates(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, runtime := newTestServiceDeps(t, ctx)
+
+	user, err := store.UpsertUser(ctx, "dev@example.com", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, name := range []string{"one", "two"} {
+		if _, err := store.CreateMachine(ctx, database.CreateMachineParams{
+			ID:          "machine-" + name,
+			Name:        name,
+			OwnerUserID: user.ID,
+			IncusName:   name,
+			State:       "RUNNING",
+			PrimaryPort: 3000,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		runtime.machines[name] = incus.Machine{Name: name, Type: "container", State: "RUNNING", CPU: "1", Memory: "2GiB"}
+	}
+
+	started := make(chan struct{}, 1)
+	block := make(chan struct{})
+	runtime.createStarted = started
+	runtime.createBlock = block
+	service := newTestService(store, runtime)
+
+	var wg sync.WaitGroup
+	results := make(chan error, 2)
+	create := func(name string) {
+		defer wg.Done()
+		_, err := service.CreateMachine(ctx, CreateMachineInput{
+			Name:       name,
+			OwnerEmail: "dev@example.com",
+		})
+		results <- err
+	}
+
+	wg.Add(2)
+	go create("three")
+	<-started
+	go create("four")
+	close(block)
+	wg.Wait()
+	close(results)
+
+	var successCount int
+	var quotaErrors int
+	for err := range results {
+		if err == nil {
+			successCount++
+			continue
+		}
+		if strings.Contains(err.Error(), "maximum 3 machines per user") {
+			quotaErrors++
+			continue
+		}
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if successCount != 1 || quotaErrors != 1 {
+		t.Fatalf("expected one success and one quota error, got success=%d quota=%d", successCount, quotaErrors)
 	}
 }
 
@@ -364,6 +555,9 @@ func newTestService(store *database.Store, runtime *fakeRuntime) *Service {
 		IncusStoragePool:   "machines",
 		DefaultMachineCPU:  "1",
 		DefaultMachineRAM:  "2GiB",
+		MaxMachinesPerUser: 3,
+		MaxMachineCPU:      "2",
+		MaxMachineRAM:      "4GiB",
 		DefaultPrimaryPort: 3000,
 	}, store, runtime)
 }

@@ -20,6 +20,9 @@ type Config struct {
 	DefaultImage       string
 	DefaultMachineCPU  string
 	DefaultMachineRAM  string
+	MaxMachinesPerUser int
+	MaxMachineCPU      string
+	MaxMachineRAM      string
 	DefaultPrimaryPort int
 	SSHHostKeyPath     string
 	ResendAPIKey       string
@@ -47,6 +50,9 @@ func Load() Config {
 		DefaultImage:       getenv("FASCINATE_DEFAULT_IMAGE", "images:ubuntu/24.04"),
 		DefaultMachineCPU:  getenv("FASCINATE_DEFAULT_MACHINE_CPU", "1"),
 		DefaultMachineRAM:  getenv("FASCINATE_DEFAULT_MACHINE_RAM", "2GiB"),
+		MaxMachinesPerUser: getenvInt("FASCINATE_MAX_MACHINES_PER_USER", 3),
+		MaxMachineCPU:      getenv("FASCINATE_MAX_MACHINE_CPU", "2"),
+		MaxMachineRAM:      getenv("FASCINATE_MAX_MACHINE_RAM", "4GiB"),
 		DefaultPrimaryPort: getenvInt("FASCINATE_DEFAULT_PRIMARY_PORT", 3000),
 		SSHHostKeyPath:     getenv("FASCINATE_SSH_HOST_KEY_PATH", filepath.Join(dataDir, "ssh_host_ed25519_key")),
 		ResendAPIKey:       getenv("FASCINATE_RESEND_API_KEY", ""),

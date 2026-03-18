@@ -27,11 +27,13 @@ type CLI struct {
 }
 
 type Machine struct {
-	Name  string   `json:"name"`
-	Type  string   `json:"type"`
-	State string   `json:"state"`
-	IPv4  []string `json:"ipv4"`
-	IPv6  []string `json:"ipv6"`
+	Name   string   `json:"name"`
+	Type   string   `json:"type"`
+	State  string   `json:"state"`
+	CPU    string   `json:"cpu,omitempty"`
+	Memory string   `json:"memory,omitempty"`
+	IPv4   []string `json:"ipv4"`
+	IPv6   []string `json:"ipv6"`
 }
 
 type CreateMachineRequest struct {
@@ -231,10 +233,11 @@ func (c *CLI) run(ctx context.Context, args ...string) ([]byte, error) {
 }
 
 type rawInstance struct {
-	Name   string    `json:"name"`
-	Status string    `json:"status"`
-	Type   string    `json:"type"`
-	State  *rawState `json:"state"`
+	Name   string            `json:"name"`
+	Status string            `json:"status"`
+	Type   string            `json:"type"`
+	Config map[string]string `json:"config"`
+	State  *rawState         `json:"state"`
 }
 
 type rawState struct {
@@ -253,9 +256,11 @@ type rawAddress struct {
 
 func machineFromRaw(instance rawInstance) Machine {
 	machine := Machine{
-		Name:  instance.Name,
-		Type:  instance.Type,
-		State: instance.Status,
+		Name:   instance.Name,
+		Type:   instance.Type,
+		State:  instance.Status,
+		CPU:    strings.TrimSpace(instance.Config["limits.cpu"]),
+		Memory: strings.TrimSpace(instance.Config["limits.memory"]),
 	}
 
 	if instance.State == nil {
