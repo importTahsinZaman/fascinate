@@ -90,7 +90,7 @@ main() {
   set +a
 
   maybe_open_firewall_port "${FASCINATE_SSH_ADDR}"
-  "${REPO_ROOT}/ops/host/write-caddyfile.sh"
+  bash "${REPO_ROOT}/ops/host/write-caddyfile.sh"
 
   systemctl daemon-reload
   systemctl enable --now fascinate
