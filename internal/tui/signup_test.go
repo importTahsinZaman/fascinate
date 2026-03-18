@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -47,6 +48,9 @@ func TestSignupModelRequestAndVerify(t *testing.T) {
 	if codeStage.stage != signupStageCode {
 		t.Fatalf("expected code stage")
 	}
+	if codeStage.input.Placeholder != "" {
+		t.Fatalf("expected empty code placeholder, got %q", codeStage.input.Placeholder)
+	}
 	if signup.lastEmail != "dev@example.com" {
 		t.Fatalf("unexpected request email: %q", signup.lastEmail)
 	}
@@ -82,5 +86,37 @@ func TestSignupModelHandlesVerifyError(t *testing.T) {
 	final := updated.(SignupModel)
 	if final.errMsg == "" {
 		t.Fatalf("expected error message")
+	}
+}
+
+func TestSignupModelStartsWithoutPlaceholderOrRegistrationWarning(t *testing.T) {
+	t.Parallel()
+
+	model := NewSignup(&fakeSignup{}, "ssh-ed25519 AAAA")
+	if model.input.Placeholder != "" {
+		t.Fatalf("expected empty placeholder, got %q", model.input.Placeholder)
+	}
+
+	view := model.View()
+	if strings.Contains(view, "This SSH key is not registered yet.") {
+		t.Fatalf("unexpected registration warning in view: %q", view)
+	}
+	if strings.Contains(view, "you@example.com") {
+		t.Fatalf("unexpected default email placeholder in view: %q", view)
+	}
+	if strings.Contains(view, "123456") {
+		t.Fatalf("unexpected default code placeholder in view: %q", view)
+	}
+	if !strings.Contains(view, "Fascinate") {
+		t.Fatalf("expected Fascinate header in view: %q", view)
+	}
+	if !strings.Contains(view, "Persistent ai agent dev machines; share apps with a hosted *.fascinate.dev link") {
+		t.Fatalf("expected value prop copy in view: %q", view)
+	}
+	if !strings.Contains(view, "Sign Up:") {
+		t.Fatalf("expected sign up section in view: %q", view)
+	}
+	if !strings.Contains(view, "Email:") {
+		t.Fatalf("expected email label in view: %q", view)
 	}
 }

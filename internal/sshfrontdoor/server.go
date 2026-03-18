@@ -215,7 +215,6 @@ func (s *Server) handleSession(channel ssh.Channel, requests <-chan *ssh.Request
 
 func (s *Server) runCommand(channel ssh.Channel, requests <-chan *ssh.Request, auth sessionAuth, command string, ptyState sessionPTY) uint32 {
 	if auth.signupRequired {
-		fmt.Fprintln(channel, "this SSH key is not registered yet")
 		fmt.Fprintln(channel, "open an interactive SSH session to complete signup")
 		return 1
 	}

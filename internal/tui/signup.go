@@ -48,7 +48,7 @@ type SignupModel struct {
 
 func NewSignup(signup SignupManager, publicKey string) SignupModel {
 	input := textinput.New()
-	input.Placeholder = "you@example.com"
+	input.Placeholder = ""
 	input.Focus()
 
 	return SignupModel{
@@ -80,7 +80,7 @@ func (m SignupModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.stage = signupStageCode
 		m.status = "verification code sent"
 		m.input.SetValue("")
-		m.input.Placeholder = "123456"
+		m.input.Placeholder = ""
 		m.input.Focus()
 		return m, nil
 	case signupVerifiedMsg:
@@ -104,7 +104,7 @@ func (m SignupModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.errMsg = ""
 				m.status = ""
 				m.input.SetValue(m.email)
-				m.input.Placeholder = "you@example.com"
+				m.input.Placeholder = ""
 				m.input.Focus()
 			}
 			return m, nil
@@ -123,33 +123,34 @@ func (m SignupModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m SignupModel) View() string {
 	var out strings.Builder
 
-	out.WriteString(lipgloss.NewStyle().Bold(true).Render("fascinate signup"))
-	out.WriteString("\n")
-	out.WriteString(lipgloss.NewStyle().Faint(true).Render("This SSH key is not registered yet."))
+	out.WriteString(lipgloss.NewStyle().Bold(true).Render("Fascinate"))
+	out.WriteString("\n\n")
+
+	out.WriteString(lipgloss.NewStyle().Faint(true).Render("Persistent ai agent dev machines; share apps with a hosted *.fascinate.dev link"))
 	out.WriteString("\n\n")
 
 	if m.status != "" {
 		out.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("10")).Render(m.status))
-		out.WriteString("\n")
+		out.WriteString("\n\n")
 	}
 	if m.errMsg != "" {
 		out.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Render("error: " + m.errMsg))
-		out.WriteString("\n")
+		out.WriteString("\n\n")
 	}
 	if m.busy {
 		out.WriteString(lipgloss.NewStyle().Faint(true).Render("working..."))
-		out.WriteString("\n")
+		out.WriteString("\n\n")
 	}
 
 	switch m.stage {
 	case signupStageEmail:
-		out.WriteString("Enter your email to receive a verification code.\n\n")
-		out.WriteString("email: ")
+		out.WriteString("Sign Up:\n\n")
+		out.WriteString("Email: ")
 		out.WriteString(m.input.View())
 		out.WriteString("\n\nenter to send code • q to quit")
 	case signupStageCode:
-		out.WriteString("Enter the 6-digit code we just emailed you.\n\n")
-		out.WriteString("code: ")
+		out.WriteString("Verify Code:\n\n")
+		out.WriteString("Code: ")
 		out.WriteString(m.input.View())
 		out.WriteString("\n\nenter to verify • esc to go back • q to quit")
 	}

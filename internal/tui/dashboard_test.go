@@ -214,7 +214,7 @@ func TestViewRendersMachineCardsWithSelectedState(t *testing.T) {
 	updated, _ := model.Update(loadMachinesMsg{machines: manager.listResult})
 	view := updated.(Model).View()
 
-	if !containsAll(view, "Fascinate", "tic-tac-toe", "https://tic-tac-toe.fascinate.dev", "Primary port", "IPv4", "notes", "(enter) shell", "(q) quit") {
+	if !containsAll(view, "Fascinate", "tic-tac-toe", "Port 3000:", "https://tic-tac-toe.fascinate.dev", "IPv4", "notes", "(enter) shell", "(q) quit") {
 		t.Fatalf("unexpected browse view: %q", view)
 	}
 	if strings.Contains(view, "Selected machine") || strings.Contains(view, "Your machines") || strings.Contains(view, "SELECTED") || strings.Contains(view, "enter detail") {

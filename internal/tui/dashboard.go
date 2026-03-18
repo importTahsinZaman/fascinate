@@ -454,13 +454,13 @@ func (m Model) renderMachineCard(machine controlplane.Machine, selected bool, to
 	lines = append(lines, header)
 
 	if strings.TrimSpace(machine.URL) != "" {
-		lines = append(lines, lipgloss.NewStyle().
-			Foreground(lipgloss.Color("117")).
-			Underline(true).
-			Render(m.truncate(machine.URL, innerWidth)))
+		lines = append(lines, m.renderKeyValue(
+			fmt.Sprintf("Port %d:", machine.PrimaryPort),
+			machine.URL,
+		))
+	} else {
+		lines = append(lines, m.renderKeyValue("Port", fmt.Sprintf("%d", machine.PrimaryPort)))
 	}
-
-	lines = append(lines, m.renderKeyValue("Primary port", fmt.Sprintf("%d", machine.PrimaryPort)))
 	if machine.Runtime != nil && len(machine.Runtime.IPv4) > 0 {
 		lines = append(lines, m.renderKeyValue("IPv4", strings.Join(machine.Runtime.IPv4, ", ")))
 	}

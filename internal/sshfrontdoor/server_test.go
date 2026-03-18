@@ -302,7 +302,7 @@ func TestRunCommandRequiresSignupForUnknownKey(t *testing.T) {
 	if status != 1 {
 		t.Fatalf("expected status 1, got %d", status)
 	}
-	if got := channel.String(); !bytes.Contains([]byte(got), []byte("not registered")) {
+	if got := channel.String(); !bytes.Contains([]byte(got), []byte("complete signup")) {
 		t.Fatalf("unexpected output: %q", got)
 	}
 }
