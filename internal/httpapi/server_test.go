@@ -5,9 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 
 	"fascinate/internal/config"
@@ -192,6 +196,99 @@ func TestReadyzReturnsUnavailableWhenRuntimeFails(t *testing.T) {
 
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("expected 503, got %d", rec.Code)
+	}
+}
+
+func TestMachineSubdomainProxiesToRuntime(t *testing.T) {
+	t.Parallel()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Host != "habits.fascinate.dev" {
+			t.Fatalf("unexpected host: %q", r.Host)
+		}
+		if r.URL.Path != "/app" {
+			t.Fatalf("unexpected path: %q", r.URL.Path)
+		}
+		_, _ = io.WriteString(w, "proxied")
+	}))
+	defer upstream.Close()
+
+	host, port, err := net.SplitHostPort(strings.TrimPrefix(upstream.URL, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	primaryPort, err := strconv.Atoi(port)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	handler := newTestHandler(t, &fakeRuntime{}, &fakeMachineManager{
+		getResult: controlplane.Machine{
+			Name:        "habits",
+			OwnerEmail:  "dev@example.com",
+			PrimaryPort: primaryPort,
+			Runtime: &incus.Machine{
+				Name: "habits",
+				IPv4: []string{host},
+			},
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "http://habits.fascinate.dev/app", nil)
+	req.Host = "habits.fascinate.dev"
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	if body := rec.Body.String(); body != "proxied" {
+		t.Fatalf("unexpected body: %q", body)
+	}
+}
+
+func TestMachineSubdomainShowsStatusPageWhenNoRuntimeAddress(t *testing.T) {
+	t.Parallel()
+
+	handler := newTestHandler(t, &fakeRuntime{}, &fakeMachineManager{
+		getResult: controlplane.Machine{
+			Name:        "habits",
+			OwnerEmail:  "dev@example.com",
+			PrimaryPort: 3000,
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "http://habits.fascinate.dev/", nil)
+	req.Host = "habits.fascinate.dev"
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	if body := rec.Body.String(); !strings.Contains(body, "No services detected") {
+		t.Fatalf("unexpected body: %q", body)
+	}
+	if body := rec.Body.String(); !strings.Contains(body, "ssh -tt fascinate.dev shell habits") {
+		t.Fatalf("expected shell command in body: %q", body)
+	}
+}
+
+func TestMachineSubdomainReturnsNotFoundForUnknownMachine(t *testing.T) {
+	t.Parallel()
+
+	handler := newTestHandler(t, &fakeRuntime{}, &fakeMachineManager{getErr: database.ErrNotFound})
+
+	req := httptest.NewRequest(http.MethodGet, "http://missing.fascinate.dev/", nil)
+	req.Host = "missing.fascinate.dev"
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", rec.Code)
+	}
+	if body := rec.Body.String(); !strings.Contains(body, "Unknown machine") {
+		t.Fatalf("unexpected body: %q", body)
 	}
 }
 

@@ -4,7 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"html/template"
+	"net"
 	"net/http"
+	"net/http/httputil"
+	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -204,7 +210,7 @@ func New(cfg config.Config, store *database.Store, runtime runtimeChecker, machi
 		http.NotFound(w, r)
 	})
 
-	return mux
+	return withMachineProxy(cfg, machines, mux)
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {
@@ -240,4 +246,151 @@ func writeServiceError(w http.ResponseWriter, err error) {
 func writeMethodNotAllowed(w http.ResponseWriter, methods ...string) {
 	w.Header().Set("Allow", strings.Join(methods, ", "))
 	writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+}
+
+func withMachineProxy(cfg config.Config, machines machineManager, next http.Handler) http.Handler {
+	baseDomain := normalizeHost(cfg.BaseDomain)
+	if baseDomain == "" {
+		return next
+	}
+
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		host := normalizeHost(r.Host)
+		if host == "" || host == baseDomain || host == "www."+baseDomain {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if !strings.HasSuffix(host, "."+baseDomain) {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		machineName := strings.TrimSuffix(host, "."+baseDomain)
+		if machineName == "" || strings.Contains(machineName, ".") {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+		defer cancel()
+
+		machine, err := machines.GetMachine(ctx, machineName)
+		if err != nil {
+			if errors.Is(err, database.ErrNotFound) || errors.Is(err, incus.ErrMachineNotFound) {
+				writeMachinePage(w, http.StatusNotFound, host, "Unknown machine", "No machine with this name exists.", "")
+				return
+			}
+			writeMachinePage(w, http.StatusBadGateway, host, "Machine unavailable", err.Error(), "")
+			return
+		}
+
+		target, ok := machineUpstream(machine)
+		if !ok {
+			writeMachinePage(w, http.StatusOK, host, "No services detected", "This machine is running but nothing is listening yet.", machineShellCommand(machine.Name))
+			return
+		}
+
+		proxy := httputil.NewSingleHostReverseProxy(target)
+		baseDirector := proxy.Director
+		proxy.Director = func(req *http.Request) {
+			baseDirector(req)
+			req.Host = r.Host
+			if req.Header.Get("X-Forwarded-Host") == "" {
+				req.Header.Set("X-Forwarded-Host", r.Host)
+			}
+		}
+		proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
+			writeMachinePage(w, http.StatusOK, host, "No services detected", "This machine is running but nothing is listening yet.", machineShellCommand(machine.Name))
+		}
+		proxy.ServeHTTP(w, r)
+	})
+}
+
+func machineUpstream(machine controlplane.Machine) (*url.URL, bool) {
+	if machine.Runtime == nil || machine.PrimaryPort <= 0 {
+		return nil, false
+	}
+
+	targetHost := ""
+	for _, candidate := range machine.Runtime.IPv4 {
+		if strings.TrimSpace(candidate) != "" {
+			targetHost = strings.TrimSpace(candidate)
+			break
+		}
+	}
+	if targetHost == "" {
+		for _, candidate := range machine.Runtime.IPv6 {
+			if strings.TrimSpace(candidate) != "" {
+				targetHost = strings.TrimSpace(candidate)
+				break
+			}
+		}
+	}
+	if targetHost == "" {
+		return nil, false
+	}
+
+	return &url.URL{
+		Scheme: "http",
+		Host:   net.JoinHostPort(targetHost, strconv.Itoa(machine.PrimaryPort)),
+	}, true
+}
+
+func machineShellCommand(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return ""
+	}
+	return fmt.Sprintf("ssh -tt fascinate.dev shell %s", name)
+}
+
+func normalizeHost(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+
+	host, _, err := net.SplitHostPort(value)
+	if err == nil && host != "" {
+		value = host
+	}
+
+	return strings.ToLower(strings.TrimSuffix(value, "."))
+}
+
+func writeMachinePage(w http.ResponseWriter, status int, host, title, body, command string) {
+	const page = `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ .Host }}</title>
+  <style>
+    :root { color-scheme: light; }
+    body { margin: 0; font-family: ui-sans-serif, system-ui, sans-serif; background: #f7f7f5; color: #161616; }
+    main { max-width: 720px; margin: 12vh auto; padding: 0 24px; }
+    h1 { margin-bottom: 12px; font-size: 40px; }
+    p { font-size: 18px; line-height: 1.5; color: #4f4f4f; }
+    pre { margin-top: 28px; padding: 18px 20px; border-radius: 14px; background: #111111; color: #f6f6f6; overflow-x: auto; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>{{ .Title }}</h1>
+    <p>{{ .Body }}</p>
+    {{ if .Command }}<pre>{{ .Command }}</pre>{{ end }}
+  </main>
+</body>
+</html>`
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(status)
+
+	tpl := template.Must(template.New("machine-page").Parse(page))
+	_ = tpl.Execute(w, map[string]string{
+		"Host":    host,
+		"Title":   title,
+		"Body":    body,
+		"Command": command,
+	})
 }

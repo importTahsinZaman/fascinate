@@ -22,7 +22,7 @@ This is the first real scaffold, not the full product yet. It gives us:
   - talk to the local `incus` CLI
 
 It does not yet include:
-- dynamic Caddy routing from the control plane
+- automatic host-side Caddy provisioning
 - recovery and account-management flows for additional SSH keys
 
 It now includes a first machine API slice:
@@ -38,6 +38,7 @@ It also includes a first SSH slice:
 - command handling for `help`, `whoami`, `machines`, `create`, `clone`, `delete`, and `shell`
 - a Bubble Tea dashboard for interactive `ssh fascinate.dev` sessions
 - unknown-key signup with emailed 6-digit verification codes
+- wildcard machine routing inside the HTTP server for `https://<machine>.<base-domain>`
 
 For now, machine ownership is bootstrapped by passing `owner_email` in the API request. This is temporary until the SSH auth flow is wired in.
 
@@ -137,6 +138,8 @@ ssh -p 2222 localhost
 
 If the SSH key is unknown and email delivery is configured, the session opens a signup flow instead of rejecting the connection. After verification, the key is persisted and the dashboard opens in the same SSH session.
 
+If your host Caddy config forwards wildcard subdomains to `FASCINATE_HTTP_ADDR`, requests for `https://<machine>.fascinate.dev` are proxied to that machine's primary port. If nothing is listening yet, Fascinate serves a status page with the SSH shell command for that machine.
+
 Available exec-style SSH commands:
 
 ```bash
@@ -168,5 +171,5 @@ esc               back/cancel
 
 1. Add recovery and “attach another SSH key” flows for existing accounts.
 2. Replace the current single-screen dashboard with fuller Bubble Tea flows for machine creation, detail, and errors.
-3. Replace the static host Caddy config with control-plane-managed routing.
+3. Install and manage the host Caddy wildcard proxy config from the repo.
 4. Enforce per-user quotas and approval rules.
