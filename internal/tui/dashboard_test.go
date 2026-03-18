@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -195,4 +196,51 @@ func TestModelShellActionFromDetailMode(t *testing.T) {
 	if got.ShellTarget() != "habits" {
 		t.Fatalf("unexpected shell target: %q", got.ShellTarget())
 	}
+}
+
+func TestViewRendersMachineCardsWithSelectedState(t *testing.T) {
+	t.Parallel()
+
+	manager := &fakeMachines{
+		listResult: []controlplane.Machine{
+			{Name: "tic-tac-toe", State: "RUNNING", URL: "https://tic-tac-toe.fascinate.dev"},
+			{Name: "notes", State: "STOPPED", URL: "https://notes.fascinate.dev"},
+		},
+	}
+	model := NewDashboard("dev@example.com", manager, 100, 30)
+
+	updated, _ := model.Update(loadMachinesMsg{machines: manager.listResult})
+	view := updated.(Model).View()
+
+	if !containsAll(view, "SELECTED", "tic-tac-toe", "RUNNING", "https://tic-tac-toe.fascinate.dev", "+") {
+		t.Fatalf("unexpected browse view: %q", view)
+	}
+}
+
+func TestViewRendersDetailPanel(t *testing.T) {
+	t.Parallel()
+
+	manager := &fakeMachines{
+		listResult: []controlplane.Machine{
+			{Name: "tic-tac-toe", OwnerEmail: "dev@example.com", State: "RUNNING", URL: "https://tic-tac-toe.fascinate.dev", PrimaryPort: 3000},
+		},
+	}
+	model := NewDashboard("dev@example.com", manager, 100, 30)
+
+	updated, _ := model.Update(loadMachinesMsg{machines: manager.listResult})
+	updated, _ = updated.(Model).Update(tea.KeyMsg{Type: tea.KeyEnter})
+	view := updated.(Model).View()
+
+	if !containsAll(view, "MACHINE DETAIL", "primary port:", "3000", "s shell | enter back | esc back") {
+		t.Fatalf("unexpected detail view: %q", view)
+	}
+}
+
+func containsAll(value string, fragments ...string) bool {
+	for _, fragment := range fragments {
+		if !strings.Contains(value, fragment) {
+			return false
+		}
+	}
+	return true
 }

@@ -62,6 +62,11 @@ type Model struct {
 func NewDashboard(userEmail string, machines MachineManager, width, height int) Model {
 	input := textinput.New()
 	input.CharLimit = 63
+	input.Prompt = "> "
+	input.PromptStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12"))
+	input.TextStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("15"))
+	input.PlaceholderStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	input.Cursor.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("12")).Reverse(true)
 
 	return Model{
 		userEmail: strings.TrimSpace(userEmail),
@@ -136,54 +141,49 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) View() string {
-	var out strings.Builder
+	width := m.contentWidth()
 
-	title := lipgloss.NewStyle().Bold(true).Render("fascinate")
-	subtitle := lipgloss.NewStyle().Faint(true).Render(fmt.Sprintf("signed in as %s", m.userEmail))
-	out.WriteString(title)
-	out.WriteString("\n")
-	out.WriteString(subtitle)
-	out.WriteString("\n\n")
+	sections := []string{
+		m.renderHeader(width),
+	}
 
-	if m.status != "" {
-		out.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("10")).Render(m.status))
-		out.WriteString("\n")
-	}
-	if m.errMsg != "" {
-		out.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Render("error: " + m.errMsg))
-		out.WriteString("\n")
-	}
-	if m.busy {
-		out.WriteString(lipgloss.NewStyle().Faint(true).Render("working..."))
-		out.WriteString("\n")
+	if banner := m.renderBanner(width); banner != "" {
+		sections = append(sections, banner)
 	}
 
 	switch m.mode {
 	case modeDetail:
-		out.WriteString(m.renderDetail())
+		sections = append(sections, m.renderDetail())
 	case modeCreate:
-		out.WriteString("Create machine\n")
-		out.WriteString("name: ")
-		out.WriteString(m.input.View())
-		out.WriteString("\n\nenter to create, esc to cancel")
+		sections = append(sections, m.renderInputPanel(
+			"Create Machine",
+			"Provision a fresh Ubuntu development box with Claude Code ready to go.",
+			"name",
+			m.input.View(),
+			"enter create | esc cancel",
+		))
 	case modeClone:
-		out.WriteString(fmt.Sprintf("Clone machine %s\n", m.sourceName))
-		out.WriteString("new name: ")
-		out.WriteString(m.input.View())
-		out.WriteString("\n\nenter to clone, esc to cancel")
+		sections = append(sections, m.renderInputPanel(
+			"Clone Machine",
+			fmt.Sprintf("Create a copy of %s with a new public URL and shell target.", m.sourceName),
+			"new name",
+			m.input.View(),
+			"enter clone | esc cancel",
+		))
 	case modeDeleteConfirm:
-		out.WriteString(fmt.Sprintf("Delete machine %s\n", m.pendingName))
-		out.WriteString("type the machine name to confirm: ")
-		out.WriteString(m.input.View())
-		out.WriteString("\n\nenter to delete, esc to cancel")
+		sections = append(sections, m.renderInputPanel(
+			"Delete Machine",
+			fmt.Sprintf("Type %s exactly to confirm deletion.", m.pendingName),
+			"confirm",
+			m.input.View(),
+			"enter delete | esc cancel",
+		))
 	default:
-		out.WriteString(m.renderList())
+		sections = append(sections, m.renderList())
 	}
 
-	out.WriteString("\n\n")
-	out.WriteString(lipgloss.NewStyle().Faint(true).Render("j/k or arrows move • enter details • s shell • n create • c clone • d delete • r refresh • q quit"))
-
-	return out.String()
+	sections = append(sections, m.renderFooter(width))
+	return strings.Join(sections, "\n\n")
 }
 
 func (m Model) updateBrowseMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -318,44 +318,56 @@ func (m Model) updateInputMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) renderList() string {
+	width := m.contentWidth()
+
 	if len(m.items) == 0 {
-		return "No machines yet.\n\nPress n to create your first one."
+		empty := lipgloss.NewStyle().
+			Foreground(lipgloss.Color("8")).
+			Render("No machines yet.\n\nPress n to create your first machine.")
+		return m.renderPanel(width, "Machines", empty)
 	}
 
 	var out strings.Builder
-	out.WriteString("Your machines\n\n")
+	cardWidth := m.cardWidth(width)
 	for i, machine := range m.items {
-		cursor := "  "
-		if i == m.selected {
-			cursor = "> "
+		if i > 0 {
+			out.WriteString("\n")
 		}
-		out.WriteString(fmt.Sprintf("%s%-18s %-10s %s\n", cursor, machine.Name, machine.State, machine.URL))
+		out.WriteString(m.renderMachineCard(machine, i == m.selected, cardWidth))
 	}
 
-	return out.String()
+	return m.renderPanel(width, "Machines", out.String())
 }
 
 func (m Model) renderDetail() string {
+	width := m.contentWidth()
+
 	selected, ok := m.selectedMachine()
 	if !ok {
-		return "No machine selected.\n\nesc to go back"
+		return m.renderPanel(width, "Machine Detail", "No machine selected.\n\nesc to go back")
 	}
 
 	var out strings.Builder
-	out.WriteString("Machine detail\n\n")
-	out.WriteString(fmt.Sprintf("name: %s\n", selected.Name))
-	out.WriteString(fmt.Sprintf("owner: %s\n", selected.OwnerEmail))
-	out.WriteString(fmt.Sprintf("state: %s\n", selected.State))
-	out.WriteString(fmt.Sprintf("url: %s\n", selected.URL))
-	out.WriteString(fmt.Sprintf("primary port: %d\n", selected.PrimaryPort))
+	out.WriteString(m.renderKeyValue("name", selected.Name))
+	out.WriteString("\n")
+	out.WriteString(m.renderKeyValue("owner", selected.OwnerEmail))
+	out.WriteString("\n")
+	out.WriteString(m.renderKeyValue("state", selected.State))
+	out.WriteString("\n")
+	out.WriteString(m.renderKeyValue("url", selected.URL))
+	out.WriteString("\n")
+	out.WriteString(m.renderKeyValue("primary port", fmt.Sprintf("%d", selected.PrimaryPort)))
 	if selected.Runtime != nil {
-		out.WriteString(fmt.Sprintf("runtime type: %s\n", selected.Runtime.Type))
+		out.WriteString("\n")
+		out.WriteString(m.renderKeyValue("runtime type", selected.Runtime.Type))
 		if len(selected.Runtime.IPv4) > 0 {
-			out.WriteString(fmt.Sprintf("ipv4: %s\n", strings.Join(selected.Runtime.IPv4, ", ")))
+			out.WriteString("\n")
+			out.WriteString(m.renderKeyValue("ipv4", strings.Join(selected.Runtime.IPv4, ", ")))
 		}
 	}
-	out.WriteString("\ns to open shell • enter or esc to go back")
-	return out.String()
+	out.WriteString("\n\n")
+	out.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Render("s shell | enter back | esc back"))
+	return m.renderPanel(width, "Machine Detail", out.String())
 }
 
 func (m Model) WantsShell() bool {
@@ -426,4 +438,235 @@ func (m Model) deleteMachineCmd(name string) tea.Cmd {
 		}
 		return operationDoneMsg{info: fmt.Sprintf("deleted %s", name)}
 	}
+}
+
+func (m Model) contentWidth() int {
+	if m.width <= 0 {
+		return 92
+	}
+	return maxInt(40, m.width-2)
+}
+
+func (m Model) panelInnerWidth(totalWidth int) int {
+	return maxInt(20, totalWidth-4)
+}
+
+func (m Model) cardWidth(totalWidth int) int {
+	return maxInt(16, m.panelInnerWidth(totalWidth)-4)
+}
+
+func (m Model) renderHeader(width int) string {
+	title := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12")).Render("fascinate")
+	modeBadge := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color("0")).
+		Background(lipgloss.Color("12")).
+		Padding(0, 1).
+		Render(strings.ToUpper(m.modeLabel()))
+
+	meta := fmt.Sprintf("%d machine%s", len(m.items), plural(len(m.items)))
+	if m.busy {
+		meta += " | syncing"
+	}
+
+	var out strings.Builder
+	out.WriteString(m.padLine(title, modeBadge, m.panelInnerWidth(width)))
+	out.WriteString("\n")
+	out.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("7")).Render(m.truncate("signed in as "+m.userEmail, m.panelInnerWidth(width))))
+	out.WriteString("\n")
+	out.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Render(m.truncate(meta, m.panelInnerWidth(width))))
+
+	return m.renderPanel(width, "Control Plane", out.String())
+}
+
+func (m Model) renderBanner(width int) string {
+	var messages []string
+	if m.status != "" {
+		messages = append(messages, lipgloss.NewStyle().Foreground(lipgloss.Color("10")).Render("OK  "+m.status))
+	}
+	if m.errMsg != "" {
+		messages = append(messages, lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Render("ERR "+m.errMsg))
+	}
+	if m.busy {
+		messages = append(messages, lipgloss.NewStyle().Foreground(lipgloss.Color("11")).Render("... working"))
+	}
+	if len(messages) == 0 {
+		return ""
+	}
+	return m.renderPanel(width, "Status", strings.Join(messages, "\n"))
+}
+
+func (m Model) renderInputPanel(title, description, label, value, footer string) string {
+	width := m.contentWidth()
+
+	var out strings.Builder
+	out.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("7")).Render(m.truncate(description, m.panelInnerWidth(width))))
+	out.WriteString("\n\n")
+	out.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12")).Render(label + ":"))
+	out.WriteString("\n")
+	out.WriteString(value)
+	out.WriteString("\n\n")
+	out.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Render(footer))
+
+	return m.renderPanel(width, title, out.String())
+}
+
+func (m Model) renderMachineCard(machine controlplane.Machine, selected bool, width int) string {
+	name := lipgloss.NewStyle().Bold(true).Render(m.truncate(machine.Name, width))
+	state := m.statusBadge(machine.State)
+
+	url := lipgloss.NewStyle().Foreground(lipgloss.Color("6")).Render(m.truncate(machine.URL, width))
+	actions := lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Render("enter details | s shell | c clone | d delete")
+
+	var out strings.Builder
+	if selected {
+		out.WriteString(lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color("0")).
+			Background(lipgloss.Color("10")).
+			Padding(0, 1).
+			Render("SELECTED"))
+		out.WriteString("\n")
+	}
+	out.WriteString(name)
+	out.WriteString("\n")
+	out.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Render("state: "))
+	out.WriteString(state)
+	out.WriteString("\n")
+	out.WriteString(url)
+	out.WriteString("\n")
+	out.WriteString(actions)
+
+	style := lipgloss.NewStyle().
+		Padding(0, 1).
+		BorderStyle(asciiBorder()).
+		Width(width)
+	if selected {
+		style = style.
+			BorderForeground(lipgloss.Color("12")).
+			Background(lipgloss.Color("235"))
+	} else {
+		style = style.BorderForeground(lipgloss.Color("8"))
+	}
+
+	return style.Render(out.String())
+}
+
+func (m Model) renderFooter(width int) string {
+	help := "j/k move | enter detail | s shell | n new | c clone | d delete | r refresh | q quit"
+	return m.renderPanel(width, "Keys", lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Render(m.truncate(help, m.panelInnerWidth(width))))
+}
+
+func (m Model) renderPanel(width int, title, content string) string {
+	innerWidth := m.panelInnerWidth(width)
+	titleBar := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color("12")).
+		Render(strings.ToUpper(title))
+
+	style := lipgloss.NewStyle().
+		Padding(0, 1).
+		Width(innerWidth).
+		BorderStyle(asciiBorder()).
+		BorderForeground(lipgloss.Color("8"))
+
+	return style.Render(titleBar + "\n\n" + content)
+}
+
+func (m Model) renderKeyValue(label, value string) string {
+	labelText := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12")).Render(label + ":")
+	return labelText + " " + value
+}
+
+func (m Model) statusBadge(state string) string {
+	value := strings.ToUpper(strings.TrimSpace(state))
+	if value == "" {
+		value = "UNKNOWN"
+	}
+
+	style := lipgloss.NewStyle().Bold(true).Padding(0, 1)
+	switch strings.ToLower(strings.TrimSpace(state)) {
+	case "running":
+		style = style.Foreground(lipgloss.Color("0")).Background(lipgloss.Color("10"))
+	case "starting":
+		style = style.Foreground(lipgloss.Color("0")).Background(lipgloss.Color("11"))
+	case "stopped":
+		style = style.Foreground(lipgloss.Color("15")).Background(lipgloss.Color("8"))
+	case "deleted", "missing":
+		style = style.Foreground(lipgloss.Color("15")).Background(lipgloss.Color("9"))
+	default:
+		style = style.Foreground(lipgloss.Color("15")).Background(lipgloss.Color("8"))
+	}
+	return style.Render(value)
+}
+
+func (m Model) truncate(value string, width int) string {
+	if width <= 0 || lipgloss.Width(value) <= width {
+		return value
+	}
+
+	runes := []rune(value)
+	if width <= 3 {
+		return string(runes[:width])
+	}
+	return string(runes[:width-3]) + "..."
+}
+
+func (m Model) padLine(left, right string, width int) string {
+	leftWidth := lipgloss.Width(left)
+	rightWidth := lipgloss.Width(right)
+	if width <= 0 {
+		return left + " " + right
+	}
+	if leftWidth+rightWidth+1 >= width {
+		return m.truncate(left, maxInt(1, width-rightWidth-1)) + " " + right
+	}
+	return left + strings.Repeat(" ", width-leftWidth-rightWidth) + right
+}
+
+func (m Model) modeLabel() string {
+	switch m.mode {
+	case modeDetail:
+		return "detail"
+	case modeCreate:
+		return "create"
+	case modeClone:
+		return "clone"
+	case modeDeleteConfirm:
+		return "delete"
+	default:
+		return "browse"
+	}
+}
+
+func asciiBorder() lipgloss.Border {
+	return lipgloss.Border{
+		Top:          "-",
+		Bottom:       "-",
+		Left:         "|",
+		Right:        "|",
+		TopLeft:      "+",
+		TopRight:     "+",
+		BottomLeft:   "+",
+		BottomRight:  "+",
+		MiddleLeft:   "|",
+		MiddleRight:  "|",
+		Middle:       "-",
+		MiddleTop:    "+",
+		MiddleBottom: "+",
+	}
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func plural(count int) string {
+	if count == 1 {
+		return ""
+	}
+	return "s"
 }
