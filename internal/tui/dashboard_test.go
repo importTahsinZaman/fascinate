@@ -212,7 +212,7 @@ func TestViewRendersMachineCardsWithSelectedState(t *testing.T) {
 	updated, _ := model.Update(loadMachinesMsg{machines: manager.listResult})
 	view := updated.(Model).View()
 
-	if !containsAll(view, "Fascinate", "MACHINES", "SELECTED MACHINE", "tic-tac-toe", "https://tic-tac-toe.fascinate.dev") {
+	if !containsAll(view, "Fascinate", "MACHINES", "Your machines", "Selected machine", "tic-tac-toe", "https://tic-tac-toe.fascinate.dev") {
 		t.Fatalf("unexpected browse view: %q", view)
 	}
 }

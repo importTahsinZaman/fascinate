@@ -496,33 +496,31 @@ func (m Model) renderBrowse(width int) string {
 
 	selected, _ := m.selectedMachine()
 	if width >= 110 {
-		leftWidth := maxInt(36, width/2-2)
-		rightWidth := maxInt(36, width-leftWidth-2)
-		return lipgloss.JoinHorizontal(
-			lipgloss.Top,
-			m.renderMachineListPanel(leftWidth),
-			"  ",
-			m.renderSelectedPreview(rightWidth, selected),
-		)
+		return m.renderUnifiedBrowsePanel(width, selected, true)
 	}
 
-	return lipgloss.JoinVertical(
-		lipgloss.Left,
-		m.renderMachineListPanel(width),
-		"",
-		m.renderSelectedPreview(width, selected),
-	)
+	return m.renderUnifiedBrowsePanel(width, selected, false)
 }
 
-func (m Model) renderMachineListPanel(width int) string {
-	var out strings.Builder
-	for i, machine := range m.items {
-		if i > 0 {
-			out.WriteString("\n")
-		}
-		out.WriteString(m.renderMachineRow(machine, i == m.selected, width))
+func (m Model) renderUnifiedBrowsePanel(width int, machine controlplane.Machine, split bool) string {
+	if split {
+		leftWidth := maxInt(34, width/2-3)
+		rightWidth := maxInt(34, width-leftWidth-7)
+		left := m.renderMachineListContent(leftWidth)
+		right := m.renderSelectedPreviewContent(rightWidth, machine)
+		body := lipgloss.JoinHorizontal(
+			lipgloss.Top,
+			lipgloss.NewStyle().Width(leftWidth).Render(left),
+			lipgloss.NewStyle().Foreground(lipgloss.Color("238")).Render(" │ "),
+			lipgloss.NewStyle().Width(rightWidth).Render(right),
+		)
+		return m.renderPanel(width, "Machines", body, false)
 	}
-	return m.renderPanel(width, "Machines", out.String(), false)
+
+	body := m.renderMachineListContent(m.panelInnerWidth(width))
+	body += "\n\n" + lipgloss.NewStyle().Foreground(lipgloss.Color("238")).Render(strings.Repeat("─", maxInt(20, m.panelInnerWidth(width))))
+	body += "\n\n" + m.renderSelectedPreviewContent(m.panelInnerWidth(width), machine)
+	return m.renderPanel(width, "Machines", body, false)
 }
 
 func (m Model) renderMachineRow(machine controlplane.Machine, selected bool, totalWidth int) string {
@@ -566,9 +564,24 @@ func (m Model) renderMachineRow(machine controlplane.Machine, selected bool, tot
 	return style.Render(out.String())
 }
 
-func (m Model) renderSelectedPreview(width int, machine controlplane.Machine) string {
+func (m Model) renderMachineListContent(width int) string {
 	var out strings.Builder
-	out.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("255")).Render(m.truncate(machine.Name, m.panelInnerWidth(width))))
+	out.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("250")).Render("Your machines"))
+	out.WriteString("\n\n")
+	for i, machine := range m.items {
+		if i > 0 {
+			out.WriteString("\n")
+		}
+		out.WriteString(m.renderMachineRow(machine, i == m.selected, width))
+	}
+	return out.String()
+}
+
+func (m Model) renderSelectedPreviewContent(width int, machine controlplane.Machine) string {
+	var out strings.Builder
+	out.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("250")).Render("Selected machine"))
+	out.WriteString("\n\n")
+	out.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("255")).Render(m.truncate(machine.Name, width)))
 	out.WriteString("  ")
 	out.WriteString(m.statusBadge(machine.State))
 	out.WriteString("\n\n")
@@ -589,8 +602,7 @@ func (m Model) renderSelectedPreview(width int, machine controlplane.Machine) st
 	}
 	out.WriteString("\n\n")
 	out.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("244")).Render("enter detail | s shell | c clone | d delete"))
-
-	return m.renderPanel(width, "Selected Machine", out.String(), true)
+	return out.String()
 }
 
 func (m Model) renderFooter(width int) string {
