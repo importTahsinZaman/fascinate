@@ -204,11 +204,7 @@ func (m *Manager) CreateMachine(ctx context.Context, req machineruntime.CreateMa
 		_ = os.RemoveAll(machineDir)
 		return machineruntime.Machine{}, err
 	}
-	if err := m.startVM(ctx, meta); err != nil {
-		_ = m.cleanupMachine(context.Background(), meta)
-		return machineruntime.Machine{}, err
-	}
-	if err := m.storeMetadata(meta); err != nil {
+	if err := m.startVM(ctx, &meta); err != nil {
 		_ = m.cleanupMachine(context.Background(), meta)
 		return machineruntime.Machine{}, err
 	}
@@ -292,11 +288,7 @@ func (m *Manager) CloneMachine(ctx context.Context, req machineruntime.CloneMach
 		_ = os.RemoveAll(targetDir)
 		return machineruntime.Machine{}, err
 	}
-	if err := m.startVM(ctx, target); err != nil {
-		_ = m.cleanupMachine(context.Background(), target)
-		return machineruntime.Machine{}, err
-	}
-	if err := m.storeMetadata(target); err != nil {
+	if err := m.startVM(ctx, &target); err != nil {
 		_ = m.cleanupMachine(context.Background(), target)
 		return machineruntime.Machine{}, err
 	}
@@ -493,7 +485,7 @@ func (m *Manager) createTapDevice(ctx context.Context, tapName string) error {
 	return nil
 }
 
-func (m *Manager) startVM(ctx context.Context, meta metadata) error {
+func (m *Manager) startVM(ctx context.Context, meta *metadata) error {
 	logFile, err := os.OpenFile(meta.LogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return err
@@ -528,7 +520,7 @@ func (m *Manager) startVM(ctx context.Context, meta metadata) error {
 		return err
 	}
 
-	return m.storeMetadata(meta)
+	return m.storeMetadata(*meta)
 }
 
 func (m *Manager) cleanupMachine(ctx context.Context, meta metadata) error {
