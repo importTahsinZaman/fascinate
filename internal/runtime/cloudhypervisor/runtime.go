@@ -424,15 +424,19 @@ func (m *Manager) createOverlayDisk(ctx context.Context, baseImage, diskPath, si
 	if _, err := os.Stat(baseImage); err != nil {
 		return fmt.Errorf("base image %q is not available: %w", baseImage, err)
 	}
+	sizeArg, err := qemuImgSizeArg(size)
+	if err != nil {
+		return err
+	}
 	args := []string{
 		"create",
 		"-f", "qcow2",
 		"-F", "qcow2",
 		"-b", baseImage,
 		diskPath,
-		strings.TrimSpace(size),
+		sizeArg,
 	}
-	_, err := m.run(ctx, m.qemuImgBinary, args...)
+	_, err = m.run(ctx, m.qemuImgBinary, args...)
 	return err
 }
 
@@ -445,7 +449,11 @@ func (m *Manager) resizeDisk(ctx context.Context, diskPath, size string) error {
 	if strings.TrimSpace(size) == "" {
 		return nil
 	}
-	_, err := m.run(ctx, m.qemuImgBinary, "resize", diskPath, strings.TrimSpace(size))
+	sizeArg, err := qemuImgSizeArg(size)
+	if err != nil {
+		return err
+	}
+	_, err = m.run(ctx, m.qemuImgBinary, "resize", diskPath, sizeArg)
 	return err
 }
 
@@ -851,6 +859,17 @@ func parseByteSize(value string) (int64, error) {
 		return 0, fmt.Errorf("invalid size %q", value)
 	}
 	return int64(parsed), nil
+}
+
+func qemuImgSizeArg(value string) (string, error) {
+	bytes, err := parseByteSize(value)
+	if err != nil {
+		return "", err
+	}
+	if bytes <= 0 {
+		return "", fmt.Errorf("disk size must be positive")
+	}
+	return strconv.FormatInt(bytes, 10), nil
 }
 
 func tapDeviceName(name string) string {
