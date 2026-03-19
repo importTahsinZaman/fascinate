@@ -475,7 +475,7 @@ func (m *Manager) resizeDisk(ctx context.Context, diskPath, size string) error {
 func (m *Manager) writeSeedImage(ctx context.Context, meta metadata) error {
 	userData := cloudInitUserData(meta, m.guestSSHPublicKey)
 	metaData := fmt.Sprintf("instance-id: fascinate-%s\nlocal-hostname: %s\n", meta.Name, meta.Name)
-	networkConfig := cloudInitNetworkConfig(meta.IPv4, m.guestPrefix, m.bridgePrefix.Addr())
+	networkConfig := cloudInitNetworkConfig(meta.IPv4, meta.MACAddress, m.guestPrefix, m.bridgePrefix.Addr())
 
 	dir := m.machineDir(meta.Name)
 	userDataPath := filepath.Join(dir, "user-data")
@@ -800,10 +800,13 @@ write_files:
 `, meta.Name, meta.GuestUser, strings.TrimSpace(publicKey), indentBlock(bootstrapScript, "      "))
 }
 
-func cloudInitNetworkConfig(ipv4 string, guestPrefix netip.Prefix, gateway netip.Addr) string {
+func cloudInitNetworkConfig(ipv4, macAddress string, guestPrefix netip.Prefix, gateway netip.Addr) string {
 	return fmt.Sprintf(`version: 2
 ethernets:
   eth0:
+    match:
+      macaddress: "%s"
+    set-name: eth0
     dhcp4: false
     addresses:
       - %s/%d
@@ -812,7 +815,7 @@ ethernets:
         via: %s
     nameservers:
       addresses: [1.1.1.1, 1.0.0.1]
-`, ipv4, guestPrefix.Bits(), gateway.String())
+`, strings.ToLower(strings.TrimSpace(macAddress)), ipv4, guestPrefix.Bits(), gateway.String())
 }
 
 func cloudHypervisorMemoryArg(value string) (string, error) {
