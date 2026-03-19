@@ -10,6 +10,8 @@ WorkingDirectory=/opt/fascinate
 EnvironmentFile=-/etc/fascinate/fascinate.env
 Environment=FASCINATE_DATA_DIR=/var/lib/fascinate
 ExecStart=/opt/fascinate/bin/fascinate serve
+# Keep guest VMs alive across control plane restarts.
+KillMode=process
 Restart=on-failure
 RestartSec=2s
 
