@@ -77,7 +77,7 @@ func Load() Config {
 		VMBridgeName:       getenv("FASCINATE_VM_BRIDGE_NAME", "fascbr0"),
 		VMBridgeCIDR:       getenv("FASCINATE_VM_BRIDGE_CIDR", "10.42.0.1/24"),
 		VMGuestCIDR:        getenv("FASCINATE_VM_GUEST_CIDR", "10.42.0.0/24"),
-		VMFirmwarePath:     getenv("FASCINATE_VM_FIRMWARE_PATH", "/usr/share/OVMF/OVMF_CODE_4M.fd"),
+		VMFirmwarePath:     getenv("FASCINATE_VM_FIRMWARE_PATH", "/usr/local/bin/hypervisor-fw"),
 		QemuImgBinary:      getenv("FASCINATE_QEMU_IMG_BINARY", "qemu-img"),
 		CloudLocalDSBinary: getenv("FASCINATE_CLOUD_LOCALDS_BINARY", "cloud-localds"),
 		SSHClientBinary:    getenv("FASCINATE_SSH_CLIENT_BINARY", "ssh"),
