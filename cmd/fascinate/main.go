@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 
 	"fascinate/internal/app"
@@ -17,6 +18,14 @@ import (
 
 func main() {
 	log.SetFlags(0)
+
+	envFile := os.Getenv("FASCINATE_ENV_FILE")
+	if strings.TrimSpace(envFile) == "" {
+		envFile = "/etc/fascinate/fascinate.env"
+	}
+	if err := config.LoadEnvFile(envFile); err != nil {
+		log.Fatal(err)
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
