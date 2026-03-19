@@ -549,13 +549,16 @@ func (m *Manager) cleanupMachine(ctx context.Context, meta metadata) error {
 
 func (m *Manager) waitForGuestSSH(ctx context.Context, ipv4 string) error {
 	address := net.JoinHostPort(strings.TrimSpace(ipv4), "22")
-	deadline := time.Now().Add(2 * time.Minute)
+	deadline := time.Now().Add(15 * time.Minute)
 	for {
 		dialer := net.Dialer{Timeout: 3 * time.Second}
 		conn, err := dialer.DialContext(ctx, "tcp", address)
 		if err == nil {
 			_ = conn.Close()
-			return nil
+			err = m.runGuestCommand(ctx, ipv4, "test -f /var/lib/cloud/instance/boot-finished && command -v claude >/dev/null 2>&1 && command -v node >/dev/null 2>&1 && command -v go >/dev/null 2>&1 && command -v docker >/dev/null 2>&1 && systemctl is-active --quiet docker")
+			if err == nil {
+				return nil
+			}
 		}
 
 		if ctx.Err() != nil {
@@ -568,6 +571,39 @@ func (m *Manager) waitForGuestSSH(ctx context.Context, ipv4 string) error {
 	}
 }
 
+func (m *Manager) runGuestCommand(ctx context.Context, ipv4, command string) error {
+	keyBytes, err := os.ReadFile(m.guestSSHKeyPath)
+	if err != nil {
+		return err
+	}
+
+	signer, err := ssh.ParsePrivateKey(keyBytes)
+	if err != nil {
+		return err
+	}
+
+	sshConfig := &ssh.ClientConfig{
+		User:            m.defaultGuestUser,
+		Auth:            []ssh.AuthMethod{ssh.PublicKeys(signer)},
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		Timeout:         5 * time.Second,
+	}
+
+	client, err := ssh.Dial("tcp", net.JoinHostPort(strings.TrimSpace(ipv4), "22"), sshConfig)
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+
+	session, err := client.NewSession()
+	if err != nil {
+		return err
+	}
+	defer session.Close()
+
+	return session.Run(command)
+}
+
 func (m *Manager) run(ctx context.Context, binary string, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, binary, args...)
 	output, err := cmd.CombinedOutput()
@@ -578,7 +614,148 @@ func (m *Manager) run(ctx context.Context, binary string, args ...string) ([]byt
 }
 
 func cloudInitUserData(meta metadata, publicKey string) string {
-	return fmt.Sprintf(`#cloud-config
+	bootstrapScript := fmt.Sprintf(`#!/usr/bin/env bash
+set -euo pipefail
+
+export DEBIAN_FRONTEND=noninteractive
+
+resolve_node_version() {
+  local requested="${FASCINATE_NODE_VERSION:-latest}"
+
+  case "${requested}" in
+    ""|latest)
+      curl -fsSL https://nodejs.org/dist/index.json | python3 -c 'import json, sys; releases = json.load(sys.stdin); print(releases[0]["version"])'
+      ;;
+    latest-lts)
+      curl -fsSL https://nodejs.org/dist/index.json | python3 -c 'import json, sys; releases = json.load(sys.stdin); print(next(release["version"] for release in releases if release.get("lts")))'
+      ;;
+    v*)
+      printf "%%s\n" "${requested}"
+      ;;
+    *)
+      printf "v%%s\n" "${requested}"
+      ;;
+  esac
+}
+
+resolve_go_version() {
+  local requested="${FASCINATE_GO_VERSION:-latest}"
+
+  case "${requested}" in
+    ""|latest)
+      curl -fsSL https://go.dev/dl/?mode=json | python3 -c 'import json, sys; releases = json.load(sys.stdin); print(releases[0]["version"].removeprefix("go"))'
+      ;;
+    go*)
+      printf "%%s\n" "${requested#go}"
+      ;;
+    *)
+      printf "%%s\n" "${requested}"
+      ;;
+  esac
+}
+
+node_arch() {
+  case "$(dpkg --print-architecture)" in
+    amd64) printf "%%s\n" "x64" ;;
+    arm64) printf "%%s\n" "arm64" ;;
+    *)
+      printf "unsupported node architecture: %%s\n" "$(dpkg --print-architecture)" >&2
+      exit 1
+      ;;
+  esac
+}
+
+go_arch() {
+  case "$(dpkg --print-architecture)" in
+    amd64) printf "%%s\n" "amd64" ;;
+    arm64) printf "%%s\n" "arm64" ;;
+    *)
+      printf "unsupported go architecture: %%s\n" "$(dpkg --print-architecture)" >&2
+      exit 1
+      ;;
+  esac
+}
+
+install_node() {
+  local version="$1"
+  local arch="$2"
+  local file="node-${version}-linux-${arch}.tar.xz"
+  local base_url="https://nodejs.org/dist/${version}"
+
+  curl -fsSLO "${base_url}/${file}"
+  curl -fsSL "${base_url}/SHASUMS256.txt" -o SHASUMS256.txt
+  grep " ${file}$" SHASUMS256.txt | sha256sum -c -
+
+  rm -rf /usr/local/lib/nodejs
+  mkdir -p /usr/local/lib/nodejs
+  tar -xJf "${file}" -C /usr/local/lib/nodejs
+
+  ln -sf "/usr/local/lib/nodejs/node-${version}-linux-${arch}/bin/node" /usr/local/bin/node
+  ln -sf "/usr/local/lib/nodejs/node-${version}-linux-${arch}/bin/npm" /usr/local/bin/npm
+  ln -sf "/usr/local/lib/nodejs/node-${version}-linux-${arch}/bin/npx" /usr/local/bin/npx
+  ln -sf "/usr/local/lib/nodejs/node-${version}-linux-${arch}/bin/corepack" /usr/local/bin/corepack
+  npm config set prefix /usr/local >/dev/null 2>&1 || true
+  corepack enable >/dev/null 2>&1 || true
+
+  rm -f "${file}" SHASUMS256.txt
+}
+
+install_go() {
+  local version="$1"
+  local arch="$2"
+  local file="go${version}.linux-${arch}.tar.gz"
+  local checksum=""
+
+  curl -fsSLo "${file}" "https://dl.google.com/go/${file}"
+  checksum="$(curl -fsSL "https://go.dev/dl/?mode=json&include=all" | python3 -c 'import json, sys; target = sys.argv[1]; releases = json.load(sys.stdin); print(next(entry["sha256"] for release in releases for entry in release.get("files", []) if entry.get("filename") == target))' "${file}")"
+  printf "%%s  %%s\n" "${checksum}" "${file}" | sha256sum -c -
+
+  rm -rf /usr/local/go
+  tar -C /usr/local -xzf "${file}"
+  ln -sf /usr/local/go/bin/go /usr/local/bin/go
+  ln -sf /usr/local/go/bin/gofmt /usr/local/bin/gofmt
+
+  rm -f "${file}"
+}
+
+apt-get update
+apt-get upgrade -y
+apt-get install -y build-essential ca-certificates curl docker.io file fzf git gnupg jq lsb-release make openssh-client procps python-is-python3 python3 python3-pip python3-venv ripgrep rsync sqlite3 tmux unzip wget xz-utils zip
+
+NODE_RESOLVED_VERSION="$(resolve_node_version)"
+GO_RESOLVED_VERSION="$(resolve_go_version)"
+install_node "${NODE_RESOLVED_VERSION}" "$(node_arch)"
+install_go "${GO_RESOLVED_VERSION}" "$(go_arch)"
+npm install -g --force npm@latest @anthropic-ai/claude-code
+
+mkdir -p /etc/systemd/system/docker.service.d
+cat >/etc/systemd/system/docker.service.d/10-fascinate.conf <<'EOF_DOCKER'
+[Service]
+Environment=DOCKER_RAMDISK=true
+EOF_DOCKER
+
+systemctl daemon-reload
+systemctl enable --now docker
+usermod -aG docker %s || true
+
+cat >/root/AGENTS.md <<'EOF_AGENTS'
+The fascinate platform handles public HTTPS for this machine.
+
+Rules:
+- Bind application servers to 0.0.0.0.
+- Port %d is the default public application port right now.
+- Do not configure TLS certificates inside this machine for public app traffic.
+- Docker is available.
+- Data on disk persists across restarts.
+- Claude Code is preinstalled as 'claude'.
+EOF_AGENTS
+
+cp /root/AGENTS.md /etc/skel/AGENTS.md
+apt-get clean
+rm -rf /var/lib/apt/lists/*
+`, meta.GuestUser, meta.PrimaryPort)
+
+return fmt.Sprintf(`#cloud-config
 preserve_hostname: false
 hostname: %s
 users:
@@ -586,12 +763,20 @@ users:
   - name: %s
     shell: /bin/bash
     sudo: ALL=(ALL) NOPASSWD:ALL
-    groups: [adm, sudo, docker]
+    groups: [adm, sudo]
     ssh_authorized_keys:
       - %s
 ssh_pwauth: false
 disable_root: true
-`, meta.Name, meta.GuestUser, strings.TrimSpace(publicKey))
+runcmd:
+  - [bash, /usr/local/sbin/fascinate-firstboot.sh]
+write_files:
+  - path: /usr/local/sbin/fascinate-firstboot.sh
+    permissions: "0755"
+    owner: root:root
+    content: |
+%s
+`, meta.Name, meta.GuestUser, strings.TrimSpace(publicKey), indentBlock(bootstrapScript, "      "))
 }
 
 func cloudInitNetworkConfig(ipv4 string, guestPrefix netip.Prefix, gateway netip.Addr) string {
@@ -619,6 +804,14 @@ func cloudHypervisorMemoryArg(value string) (string, error) {
 		return "", fmt.Errorf("memory must be positive")
 	}
 	return fmt.Sprintf("size=%dM", mebibytes), nil
+}
+
+func indentBlock(value, prefix string) string {
+	lines := strings.Split(strings.TrimRight(value, "\n"), "\n")
+	for i, line := range lines {
+		lines[i] = prefix + line
+	}
+	return strings.Join(lines, "\n")
 }
 
 func parseByteSize(value string) (int64, error) {
