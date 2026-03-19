@@ -107,7 +107,7 @@ func TestNewUsesVMDefaults(t *testing.T) {
 		RuntimeBinary:      "cloud-hypervisor",
 		QemuImgBinary:      "qemu-img",
 		CloudLocalDSBinary: "cloud-localds",
-		VMFirmwarePath:     "/usr/share/OVMF/OVMF_CODE.fd",
+		VMFirmwarePath:     "/usr/share/qemu/OVMF.fd",
 	}
 
 	manager, err := New(cfg)
