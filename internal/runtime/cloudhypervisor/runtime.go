@@ -524,9 +524,7 @@ func (m *Manager) startVM(ctx context.Context, meta *metadata) error {
 		"--api-socket", meta.SocketPath,
 		"--cpus", cpuArg,
 		"--memory", memoryArg,
-		"--kernel", m.firmwarePath,
-		"--cmdline", "console=ttyS0 root=/dev/vda1 rw rootwait",
-		"--serial", "tty",
+		"--firmware", m.firmwarePath,
 		"--disk", "path=" + meta.DiskPath + ",image_type=qcow2,backing_files=on", "path=" + meta.SeedPath + ",readonly=on,image_type=raw",
 		"--net", "tap=" + meta.TapDevice + ",mac=" + meta.MACAddress,
 	}
