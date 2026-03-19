@@ -47,7 +47,7 @@ ufw status verbose
 echo
 
 echo "guest egress:"
-uplink="$(ip route get 1.1.1.1 2>/dev/null | awk '{for (i = 1; i <= NF; i++) if ($i == \"dev\") {print $(i + 1); exit}}')"
+uplink="$(ip route get 1.1.1.1 2>/dev/null | awk '{for (i = 1; i <= NF; i++) if ($i == "dev") {print $(i + 1); exit}}')"
 if [[ -n "${uplink}" ]]; then
   if ufw status numbered | grep -F "ALLOW FWD" | grep -F "incusbr0" | grep -F "${uplink}" >/dev/null 2>&1; then
     echo "ufw route allow present for incusbr0 -> ${uplink}"
