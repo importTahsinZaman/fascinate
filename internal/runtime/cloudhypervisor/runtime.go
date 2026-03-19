@@ -8,6 +8,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"net"
 	"net/netip"
 	"os"
@@ -495,6 +496,7 @@ func (m *Manager) writeSeedImage(ctx context.Context, meta metadata) error {
 }
 
 func (m *Manager) createTapDevice(ctx context.Context, tapName string) error {
+	m.deleteTapDevice(ctx, tapName)
 	if _, err := m.run(ctx, "ip", "tuntap", "add", "dev", tapName, "mode", "tap"); err != nil {
 		return err
 	}
@@ -559,8 +561,7 @@ func (m *Manager) cleanupMachine(ctx context.Context, meta metadata) error {
 		}
 	}
 
-	_, _ = m.run(ctx, "ip", "link", "set", meta.TapDevice, "down")
-	_, _ = m.run(ctx, "ip", "tuntap", "del", "dev", meta.TapDevice, "mode", "tap")
+	m.deleteTapDevice(ctx, meta.TapDevice)
 
 	if err := os.RemoveAll(m.machineDir(meta.Name)); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
@@ -777,7 +778,7 @@ apt-get clean
 rm -rf /var/lib/apt/lists/*
 `, meta.GuestUser, meta.PrimaryPort)
 
-return fmt.Sprintf(`#cloud-config
+	return fmt.Sprintf(`#cloud-config
 preserve_hostname: false
 hostname: %s
 users:
@@ -886,11 +887,35 @@ func qemuImgSizeArg(value string) (string, error) {
 }
 
 func tapDeviceName(name string) string {
-	base := strings.NewReplacer("-", "", "_", "").Replace(strings.TrimSpace(name))
-	if len(base) > 8 {
-		base = base[:8]
+	base := compactTapName(name)
+	if len(base) > 4 {
+		base = base[:4]
 	}
-	return fmt.Sprintf("fsc%s", base)
+	hasher := fnv.New32a()
+	_, _ = hasher.Write([]byte(compactTapName(name)))
+	return fmt.Sprintf("fsc%s%06x", base, hasher.Sum32()&0xffffff)
+}
+
+func compactTapName(name string) string {
+	var builder strings.Builder
+	for _, r := range strings.ToLower(strings.TrimSpace(name)) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			builder.WriteRune(r)
+		}
+	}
+	if builder.Len() == 0 {
+		return "vm"
+	}
+	return builder.String()
+}
+
+func (m *Manager) deleteTapDevice(ctx context.Context, tapName string) {
+	tapName = strings.TrimSpace(tapName)
+	if tapName == "" {
+		return
+	}
+	_, _ = m.run(ctx, "ip", "link", "set", tapName, "down")
+	_, _ = m.run(ctx, "ip", "tuntap", "del", "dev", tapName, "mode", "tap")
 }
 
 func macFromIPv4(ipv4 string) string {

@@ -122,6 +122,24 @@ func TestNewUsesVMDefaults(t *testing.T) {
 	}
 }
 
+func TestTapDeviceNameIsStableAndHashed(t *testing.T) {
+	t.Parallel()
+
+	first := tapDeviceName("tic-tac-toe")
+	second := tapDeviceName("tic_tac_toe")
+	other := tapDeviceName("tic-tac-toes")
+
+	if first != second {
+		t.Fatalf("expected equivalent names to hash the same, got %q vs %q", first, second)
+	}
+	if first == other {
+		t.Fatalf("expected different names to avoid collisions, got %q", first)
+	}
+	if len(first) > 15 {
+		t.Fatalf("tap device name too long: %q", first)
+	}
+}
+
 func mustPrefix(t *testing.T, value string) netip.Prefix {
 	t.Helper()
 	prefix, err := netip.ParsePrefix(value)
