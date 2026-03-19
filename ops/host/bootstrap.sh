@@ -88,6 +88,7 @@ network:
         stp: false
         forward-delay: 0
 EOF
+  chmod 0600 /etc/netplan/60-fascinate-vm-bridge.yaml
 
   netplan generate
   netplan apply
@@ -154,7 +155,7 @@ configure_admin_ssh() {
     return 0
   fi
 
-  FASCINATE_HOST_ADMIN_SSH_PORT="${HOST_ADMIN_SSH_PORT}" "${SCRIPT_DIR}/configure-admin-ssh.sh"
+  FASCINATE_HOST_ADMIN_SSH_PORT="${HOST_ADMIN_SSH_PORT}" bash "${SCRIPT_DIR}/configure-admin-ssh.sh"
 }
 
 print_summary() {
