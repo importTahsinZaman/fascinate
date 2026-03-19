@@ -74,7 +74,7 @@ func TestMachineRecordLifecycle(t *testing.T) {
 		ID:          "machine-1",
 		Name:        "habits",
 		OwnerUserID: user.ID,
-		IncusName:   "habits",
+		RuntimeName:   "habits",
 		State:       "RUNNING",
 		PrimaryPort: 3000,
 	})

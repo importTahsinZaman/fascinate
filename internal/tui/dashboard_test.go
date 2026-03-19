@@ -9,7 +9,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"fascinate/internal/controlplane"
-	"fascinate/internal/runtime/incus"
+	machineruntime "fascinate/internal/runtime"
 )
 
 type fakeMachines struct {
@@ -228,7 +228,7 @@ func TestViewRendersMachineCardsWithSelectedState(t *testing.T) {
 				URL:          "https://tic-tac-toe.fascinate.dev",
 				PrimaryPort:  3000,
 				ShowTutorial: true,
-				Runtime: &incus.Machine{
+				Runtime: &machineruntime.Machine{
 					IPv4: []string{"10.223.166.84"},
 				},
 			},

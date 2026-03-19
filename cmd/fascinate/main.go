@@ -12,7 +12,7 @@ import (
 
 	"fascinate/internal/app"
 	"fascinate/internal/config"
-	"fascinate/internal/runtime/incus"
+	"fascinate/internal/runtime/cloudhypervisor"
 )
 
 func main() {
@@ -63,7 +63,10 @@ func runServe(ctx context.Context, cfg config.Config) error {
 }
 
 func runRuntimeMachines(ctx context.Context, cfg config.Config) error {
-	runtimeClient := incus.NewCLI(cfg.IncusBinary)
+	runtimeClient, err := cloudhypervisor.New(cfg)
+	if err != nil {
+		return err
+	}
 	machines, err := runtimeClient.ListMachines(ctx)
 	if err != nil {
 		return err

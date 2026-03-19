@@ -10,11 +10,11 @@ import (
 
 	"fascinate/internal/config"
 	"fascinate/internal/database"
-	"fascinate/internal/runtime/incus"
+	machineruntime "fascinate/internal/runtime"
 )
 
 type fakeRuntime struct {
-	machines      map[string]incus.Machine
+	machines      map[string]machineruntime.Machine
 	createErr     error
 	deleteErr     error
 	cloneErr      error
@@ -23,41 +23,41 @@ type fakeRuntime struct {
 	createStarted chan struct{}
 	createBlock   <-chan struct{}
 	deleted       []string
-	createdReq    []incus.CreateMachineRequest
-	clonedReq     []incus.CloneMachineRequest
+	createdReq    []machineruntime.CreateMachineRequest
+	clonedReq     []machineruntime.CloneMachineRequest
 }
 
 func (f *fakeRuntime) HealthCheck(context.Context) error {
 	return nil
 }
 
-func (f *fakeRuntime) ListMachines(context.Context) ([]incus.Machine, error) {
+func (f *fakeRuntime) ListMachines(context.Context) ([]machineruntime.Machine, error) {
 	if f.listErr != nil {
 		return nil, f.listErr
 	}
 
-	out := make([]incus.Machine, 0, len(f.machines))
+	out := make([]machineruntime.Machine, 0, len(f.machines))
 	for _, machine := range f.machines {
 		out = append(out, machine)
 	}
 	return out, nil
 }
 
-func (f *fakeRuntime) GetMachine(_ context.Context, name string) (incus.Machine, error) {
+func (f *fakeRuntime) GetMachine(_ context.Context, name string) (machineruntime.Machine, error) {
 	if f.getErr != nil {
-		return incus.Machine{}, f.getErr
+		return machineruntime.Machine{}, f.getErr
 	}
 
 	machine, ok := f.machines[name]
 	if !ok {
-		return incus.Machine{}, incus.ErrMachineNotFound
+		return machineruntime.Machine{}, machineruntime.ErrMachineNotFound
 	}
 	return machine, nil
 }
 
-func (f *fakeRuntime) CreateMachine(_ context.Context, req incus.CreateMachineRequest) (incus.Machine, error) {
+func (f *fakeRuntime) CreateMachine(_ context.Context, req machineruntime.CreateMachineRequest) (machineruntime.Machine, error) {
 	if f.createErr != nil {
-		return incus.Machine{}, f.createErr
+		return machineruntime.Machine{}, f.createErr
 	}
 	if f.createStarted != nil {
 		select {
@@ -70,7 +70,7 @@ func (f *fakeRuntime) CreateMachine(_ context.Context, req incus.CreateMachineRe
 	}
 
 	f.createdReq = append(f.createdReq, req)
-	machine := incus.Machine{
+	machine := machineruntime.Machine{
 		Name:   req.Name,
 		Type:   "container",
 		State:  "RUNNING",
@@ -92,15 +92,15 @@ func (f *fakeRuntime) DeleteMachine(_ context.Context, name string) error {
 	return nil
 }
 
-func (f *fakeRuntime) CloneMachine(_ context.Context, req incus.CloneMachineRequest) (incus.Machine, error) {
+func (f *fakeRuntime) CloneMachine(_ context.Context, req machineruntime.CloneMachineRequest) (machineruntime.Machine, error) {
 	if f.cloneErr != nil {
-		return incus.Machine{}, f.cloneErr
+		return machineruntime.Machine{}, f.cloneErr
 	}
 
 	f.clonedReq = append(f.clonedReq, req)
 	source, ok := f.machines[req.SourceName]
 	if !ok {
-		return incus.Machine{}, incus.ErrMachineNotFound
+		return machineruntime.Machine{}, machineruntime.ErrMachineNotFound
 	}
 
 	clone := source
@@ -123,12 +123,11 @@ func TestServiceCreateCloneAndDeleteMachine(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	runtime := &fakeRuntime{machines: map[string]incus.Machine{}}
+	runtime := &fakeRuntime{machines: map[string]machineruntime.Machine{}}
 	service := New(config.Config{
 		BaseDomain:         "fascinate.dev",
 		AdminEmails:        []string{"admin@example.com"},
 		DefaultImage:       "images:ubuntu/24.04",
-		IncusStoragePool:   "machines",
 		DefaultMachineCPU:  "1",
 		DefaultMachineRAM:  "2GiB",
 		DefaultMachineDisk: "20GiB",
@@ -203,7 +202,7 @@ func TestServiceCreateMachineRollsBackRuntimeOnDBConflict(t *testing.T) {
 		ID:          "machine-1",
 		Name:        "habits",
 		OwnerUserID: user.ID,
-		IncusName:   "habits",
+		RuntimeName: "habits",
 		State:       "RUNNING",
 		PrimaryPort: 3000,
 	}); err != nil {
@@ -238,7 +237,7 @@ func TestServiceCloneMachineRollsBackRuntimeOnDBConflict(t *testing.T) {
 		ID:          "machine-source",
 		Name:        "habits",
 		OwnerUserID: user.ID,
-		IncusName:   "habits",
+		RuntimeName: "habits",
 		State:       "RUNNING",
 		PrimaryPort: 3000,
 	}); err != nil {
@@ -249,14 +248,14 @@ func TestServiceCloneMachineRollsBackRuntimeOnDBConflict(t *testing.T) {
 		ID:          "machine-target",
 		Name:        "habits-v2",
 		OwnerUserID: user.ID,
-		IncusName:   "habits-v2",
+		RuntimeName: "habits-v2",
 		State:       "RUNNING",
 		PrimaryPort: 3000,
 	}); err != nil {
 		t.Fatal(err)
 	}
 
-	runtime.machines["habits"] = incus.Machine{Name: "habits", Type: "container", State: "RUNNING", CPU: "1", Memory: "2GiB", Disk: "20GiB"}
+	runtime.machines["habits"] = machineruntime.Machine{Name: "habits", Type: "container", State: "RUNNING", CPU: "1", Memory: "2GiB", Disk: "20GiB"}
 	service := newTestService(store, runtime)
 
 	_, err = service.CloneMachine(ctx, CloneMachineInput{
@@ -287,14 +286,14 @@ func TestServiceGetMachineMarksMissingWhenRuntimeDoesNotHaveIt(t *testing.T) {
 		ID:          "machine-1",
 		Name:        "habits",
 		OwnerUserID: user.ID,
-		IncusName:   "habits",
+		RuntimeName: "habits",
 		State:       "RUNNING",
 		PrimaryPort: 3000,
 	}); err != nil {
 		t.Fatal(err)
 	}
 
-	runtime.getErr = incus.ErrMachineNotFound
+	runtime.getErr = machineruntime.ErrMachineNotFound
 	service := newTestService(store, runtime)
 
 	machine, err := service.GetMachine(ctx, "habits", "dev@example.com")
@@ -329,14 +328,14 @@ func TestServiceRejectsWrongOwnerForSensitiveOperations(t *testing.T) {
 		ID:          "machine-1",
 		Name:        "habits",
 		OwnerUserID: user.ID,
-		IncusName:   "habits",
+		RuntimeName: "habits",
 		State:       "RUNNING",
 		PrimaryPort: 3000,
 	}); err != nil {
 		t.Fatal(err)
 	}
 
-	runtime.machines["habits"] = incus.Machine{Name: "habits", Type: "container", State: "RUNNING", CPU: "1", Memory: "2GiB", Disk: "20GiB"}
+	runtime.machines["habits"] = machineruntime.Machine{Name: "habits", Type: "container", State: "RUNNING", CPU: "1", Memory: "2GiB", Disk: "20GiB"}
 	service := newTestService(store, runtime)
 
 	if _, err := service.GetMachine(ctx, "habits", "other@example.com"); !errors.Is(err, database.ErrNotFound) {
@@ -378,13 +377,13 @@ func TestServiceEnforcesMaxMachinesPerUser(t *testing.T) {
 			ID:          "machine-" + name,
 			Name:        name,
 			OwnerUserID: user.ID,
-			IncusName:   name,
+			RuntimeName: name,
 			State:       "RUNNING",
 			PrimaryPort: 3000,
 		}); err != nil {
 			t.Fatal(err)
 		}
-		runtime.machines[name] = incus.Machine{Name: name, Type: "container", State: "RUNNING", CPU: "1", Memory: "2GiB", Disk: "20GiB"}
+		runtime.machines[name] = machineruntime.Machine{Name: name, Type: "container", State: "RUNNING", CPU: "1", Memory: "2GiB", Disk: "20GiB"}
 	}
 
 	service := newTestService(store, runtime)
@@ -410,7 +409,6 @@ func TestServiceRejectsOversizedMachineResources(t *testing.T) {
 	service := New(config.Config{
 		BaseDomain:         "fascinate.dev",
 		DefaultImage:       "images:ubuntu/24.04",
-		IncusStoragePool:   "machines",
 		DefaultMachineCPU:  "3",
 		DefaultMachineRAM:  "8GiB",
 		DefaultMachineDisk: "20GiB",
@@ -448,14 +446,14 @@ func TestServiceRejectsCloneWhenSourceExceedsSizeLimit(t *testing.T) {
 		ID:          "machine-1",
 		Name:        "habits",
 		OwnerUserID: user.ID,
-		IncusName:   "habits",
+		RuntimeName: "habits",
 		State:       "RUNNING",
 		PrimaryPort: 3000,
 	}); err != nil {
 		t.Fatal(err)
 	}
 
-	runtime.machines["habits"] = incus.Machine{Name: "habits", Type: "container", State: "RUNNING", CPU: "4", Memory: "2GiB", Disk: "20GiB"}
+	runtime.machines["habits"] = machineruntime.Machine{Name: "habits", Type: "container", State: "RUNNING", CPU: "4", Memory: "2GiB", Disk: "20GiB"}
 	service := newTestService(store, runtime)
 
 	_, err = service.CloneMachine(ctx, CloneMachineInput{
@@ -480,7 +478,6 @@ func TestServiceRejectsOversizedMachineDisk(t *testing.T) {
 	service := New(config.Config{
 		BaseDomain:         "fascinate.dev",
 		DefaultImage:       "images:ubuntu/24.04",
-		IncusStoragePool:   "machines",
 		DefaultMachineCPU:  "1",
 		DefaultMachineRAM:  "2GiB",
 		DefaultMachineDisk: "25GiB",
@@ -518,14 +515,14 @@ func TestServiceRejectsCloneWhenSourceDiskExceedsSizeLimit(t *testing.T) {
 		ID:          "machine-1",
 		Name:        "habits",
 		OwnerUserID: user.ID,
-		IncusName:   "habits",
+		RuntimeName: "habits",
 		State:       "RUNNING",
 		PrimaryPort: 3000,
 	}); err != nil {
 		t.Fatal(err)
 	}
 
-	runtime.machines["habits"] = incus.Machine{Name: "habits", Type: "container", State: "RUNNING", CPU: "1", Memory: "2GiB", Disk: "25GiB"}
+	runtime.machines["habits"] = machineruntime.Machine{Name: "habits", Type: "container", State: "RUNNING", CPU: "1", Memory: "2GiB", Disk: "25GiB"}
 	service := newTestService(store, runtime)
 
 	_, err = service.CloneMachine(ctx, CloneMachineInput{
@@ -557,13 +554,13 @@ func TestServiceSerializesQuotaCheckedCreates(t *testing.T) {
 			ID:          "machine-" + name,
 			Name:        name,
 			OwnerUserID: user.ID,
-			IncusName:   name,
+			RuntimeName: name,
 			State:       "RUNNING",
 			PrimaryPort: 3000,
 		}); err != nil {
 			t.Fatal(err)
 		}
-		runtime.machines[name] = incus.Machine{Name: name, Type: "container", State: "RUNNING", CPU: "1", Memory: "2GiB", Disk: "20GiB"}
+		runtime.machines[name] = machineruntime.Machine{Name: name, Type: "container", State: "RUNNING", CPU: "1", Memory: "2GiB", Disk: "20GiB"}
 	}
 
 	started := make(chan struct{}, 1)
@@ -625,13 +622,13 @@ func TestServiceShowsTutorialForSingleFirstMachine(t *testing.T) {
 		ID:          "machine-1",
 		Name:        "habits",
 		OwnerUserID: user.ID,
-		IncusName:   "habits",
+		RuntimeName: "habits",
 		State:       "RUNNING",
 		PrimaryPort: 3000,
 	}); err != nil {
 		t.Fatal(err)
 	}
-	runtime.machines["habits"] = incus.Machine{Name: "habits", Type: "container", State: "RUNNING", CPU: "1", Memory: "2GiB", Disk: "20GiB"}
+	runtime.machines["habits"] = machineruntime.Machine{Name: "habits", Type: "container", State: "RUNNING", CPU: "1", Memory: "2GiB", Disk: "20GiB"}
 
 	service := newTestService(store, runtime)
 	machines, err := service.ListMachines(ctx, "dev@example.com")
@@ -658,13 +655,13 @@ func TestServiceCreateMachineMarksTutorialCompletedAfterSecondMachine(t *testing
 		ID:          "machine-1",
 		Name:        "habits",
 		OwnerUserID: user.ID,
-		IncusName:   "habits",
+		RuntimeName: "habits",
 		State:       "RUNNING",
 		PrimaryPort: 3000,
 	}); err != nil {
 		t.Fatal(err)
 	}
-	runtime.machines["habits"] = incus.Machine{Name: "habits", Type: "container", State: "RUNNING", CPU: "1", Memory: "2GiB", Disk: "20GiB"}
+	runtime.machines["habits"] = machineruntime.Machine{Name: "habits", Type: "container", State: "RUNNING", CPU: "1", Memory: "2GiB", Disk: "20GiB"}
 
 	service := newTestService(store, runtime)
 	if _, err := service.CreateMachine(ctx, CreateMachineInput{
@@ -698,13 +695,13 @@ func TestServiceCloneMachineMarksTutorialCompleted(t *testing.T) {
 		ID:          "machine-1",
 		Name:        "habits",
 		OwnerUserID: user.ID,
-		IncusName:   "habits",
+		RuntimeName: "habits",
 		State:       "RUNNING",
 		PrimaryPort: 3000,
 	}); err != nil {
 		t.Fatal(err)
 	}
-	runtime.machines["habits"] = incus.Machine{Name: "habits", Type: "container", State: "RUNNING", CPU: "1", Memory: "2GiB", Disk: "20GiB"}
+	runtime.machines["habits"] = machineruntime.Machine{Name: "habits", Type: "container", State: "RUNNING", CPU: "1", Memory: "2GiB", Disk: "20GiB"}
 
 	service := newTestService(store, runtime)
 	if _, err := service.CloneMachine(ctx, CloneMachineInput{
@@ -763,7 +760,7 @@ func newTestServiceDeps(t *testing.T, ctx context.Context) (*database.Store, *fa
 		t.Fatal(err)
 	}
 
-	return store, &fakeRuntime{machines: map[string]incus.Machine{}}
+	return store, &fakeRuntime{machines: map[string]machineruntime.Machine{}}
 }
 
 func newTestService(store *database.Store, runtime *fakeRuntime) *Service {
@@ -771,7 +768,6 @@ func newTestService(store *database.Store, runtime *fakeRuntime) *Service {
 		BaseDomain:         "fascinate.dev",
 		AdminEmails:        []string{"admin@example.com"},
 		DefaultImage:       "images:ubuntu/24.04",
-		IncusStoragePool:   "machines",
 		DefaultMachineCPU:  "1",
 		DefaultMachineRAM:  "2GiB",
 		DefaultMachineDisk: "20GiB",

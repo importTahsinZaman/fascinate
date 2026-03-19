@@ -3,10 +3,13 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 HOSTNAME_VALUE="${FASCINATE_HOSTNAME:-fascinate-01}"
-INCUS_POOL_NAME="${FASCINATE_INCUS_POOL_NAME:-machines}"
-INCUS_POOL_SIZE_GIB="${FASCINATE_INCUS_POOL_SIZE_GIB:-180}"
+VM_BRIDGE_NAME="${FASCINATE_VM_BRIDGE_NAME:-fascbr0}"
+VM_BRIDGE_CIDR="${FASCINATE_VM_BRIDGE_CIDR:-10.42.0.1/24}"
+VM_GUEST_CIDR="${FASCINATE_VM_GUEST_CIDR:-10.42.0.0/24}"
 INSTALL_GO="${FASCINATE_INSTALL_GO:-1}"
 HOST_ADMIN_SSH_PORT="${FASCINATE_HOST_ADMIN_SSH_PORT:-}"
+CLOUD_HYPERVISOR_VERSION="${FASCINATE_CLOUD_HYPERVISOR_VERSION:-v51.0}"
+CLOUD_HYPERVISOR_URL="${FASCINATE_CLOUD_HYPERVISOR_URL:-https://github.com/cloud-hypervisor/cloud-hypervisor/releases/download/${CLOUD_HYPERVISOR_VERSION}/cloud-hypervisor-static}"
 
 require_root() {
   if [[ "${EUID}" -ne 0 ]]; then
@@ -15,48 +18,45 @@ require_root() {
   fi
 }
 
-ensure_zabbly_repo() {
-  mkdir -p /etc/apt/keyrings
-
-  if [[ ! -f /etc/apt/keyrings/zabbly.asc ]]; then
-    curl -fsSL https://pkgs.zabbly.com/key.asc -o /etc/apt/keyrings/zabbly.asc
-  fi
-
-  cat >/etc/apt/sources.list.d/zabbly-incus-stable.sources <<EOF
-Enabled: yes
-Types: deb
-URIs: https://pkgs.zabbly.com/incus/stable
-Suites: $(. /etc/os-release && echo "${VERSION_CODENAME}")
-Components: main
-Architectures: $(dpkg --print-architecture)
-Signed-By: /etc/apt/keyrings/zabbly.asc
-EOF
-}
-
 install_packages() {
   export DEBIAN_FRONTEND=noninteractive
 
   local packages=(
     ca-certificates
-    curl
-    git
-    jq
-    sqlite3
-    build-essential
-    gnupg
-    lsb-release
-    ufw
-    fail2ban
+    cloud-image-utils
     caddy
-    incus
+    curl
+    fail2ban
+    git
+    gnupg
+    iptables
+    jq
+    libguestfs-tools
+    lsb-release
+    openssh-client
+    ovmf
+    qemu-utils
+    sqlite3
+    ufw
+    unzip
+    wget
   )
 
   if [[ "${INSTALL_GO}" == "1" ]]; then
-    packages+=(golang-go)
+    packages+=(golang-go build-essential)
   fi
 
   apt-get update
   apt-get install -y "${packages[@]}"
+}
+
+install_cloud_hypervisor() {
+  if command -v cloud-hypervisor >/dev/null 2>&1; then
+    return 0
+  fi
+
+  curl -fsSL "${CLOUD_HYPERVISOR_URL}" -o /usr/local/bin/cloud-hypervisor
+  chmod 0755 /usr/local/bin/cloud-hypervisor
 }
 
 configure_hostname() {
@@ -73,29 +73,75 @@ configure_firewall() {
   ufw --force enable
 }
 
-allow_incus_bridge_firewall() {
-  if ip link show incusbr0 >/dev/null 2>&1; then
-    ufw allow in on incusbr0 >/dev/null
-  fi
+configure_bridge() {
+  cat >/etc/netplan/60-fascinate-vm-bridge.yaml <<EOF
+network:
+  version: 2
+  renderer: networkd
+  bridges:
+    ${VM_BRIDGE_NAME}:
+      dhcp4: false
+      dhcp6: false
+      addresses:
+        - ${VM_BRIDGE_CIDR}
+      parameters:
+        stp: false
+        forward-delay: 0
+EOF
+
+  netplan generate
+  netplan apply
 }
 
-allow_incus_bridge_routing() {
-  local uplink=""
+install_vm_network_service() {
+  cat >/usr/local/sbin/fascinate-vm-network-up <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
 
-  if ! command -v ufw >/dev/null 2>&1; then
-    return 0
-  fi
+BRIDGE_NAME=${VM_BRIDGE_NAME@Q}
+GUEST_CIDR=${VM_GUEST_CIDR@Q}
 
-  if ! ip link show incusbr0 >/dev/null 2>&1; then
-    return 0
-  fi
+uplink="\$(ip route get 1.1.1.1 2>/dev/null | awk '{for (i = 1; i <= NF; i++) if (\$i == "dev") {print \$(i + 1); exit}}')"
+if [[ -z "\${uplink}" ]]; then
+  echo "could not determine uplink interface" >&2
+  exit 1
+fi
 
-  uplink="$(ip route get 1.1.1.1 2>/dev/null | awk '{for (i = 1; i <= NF; i++) if ($i == "dev") {print $(i + 1); exit}}')"
-  if [[ -z "${uplink}" ]]; then
-    return 0
-  fi
+sysctl -w net.ipv4.ip_forward=1 >/dev/null
 
-  ufw route allow in on incusbr0 out on "${uplink}" >/dev/null
+if command -v ufw >/dev/null 2>&1; then
+  ufw allow in on "\${BRIDGE_NAME}" >/dev/null 2>&1 || true
+  ufw route allow in on "\${BRIDGE_NAME}" out on "\${uplink}" >/dev/null 2>&1 || true
+fi
+
+iptables -t nat -C POSTROUTING -s "\${GUEST_CIDR}" -o "\${uplink}" -j MASQUERADE >/dev/null 2>&1 || \
+  iptables -t nat -A POSTROUTING -s "\${GUEST_CIDR}" -o "\${uplink}" -j MASQUERADE
+EOF
+  chmod 0755 /usr/local/sbin/fascinate-vm-network-up
+
+  cat >/etc/systemd/system/fascinate-vm-network.service <<EOF
+[Unit]
+Description=Configure Fascinate VM bridge NAT
+After=network-online.target ufw.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/fascinate-vm-network-up
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  mkdir -p /etc/sysctl.d
+  cat >/etc/sysctl.d/60-fascinate-vm-network.conf <<EOF
+net.ipv4.ip_forward=1
+EOF
+
+  sysctl --system >/dev/null
+  systemctl daemon-reload
+  systemctl enable --now fascinate-vm-network.service
 }
 
 ensure_services() {
@@ -111,57 +157,26 @@ configure_admin_ssh() {
   FASCINATE_HOST_ADMIN_SSH_PORT="${HOST_ADMIN_SSH_PORT}" "${SCRIPT_DIR}/configure-admin-ssh.sh"
 }
 
-ensure_incus_initialized() {
-  if ! incus info >/dev/null 2>&1; then
-    incus admin init --minimal
-  fi
-}
-
-ensure_incus_network() {
-  if ! incus network show incusbr0 >/dev/null 2>&1; then
-    incus network create incusbr0 ipv4.address=auto ipv4.nat=true ipv6.address=none
-  fi
-
-  if incus profile device get default eth0 network >/dev/null 2>&1; then
-    incus profile device set default eth0 network incusbr0
-  else
-    incus profile device add default eth0 nic name=eth0 network=incusbr0
-  fi
-}
-
-ensure_incus_pool() {
-  if ! incus storage show "${INCUS_POOL_NAME}" >/dev/null 2>&1; then
-    incus storage create "${INCUS_POOL_NAME}" btrfs "size=${INCUS_POOL_SIZE_GIB}GiB"
-  fi
-
-  if incus profile device get default root pool >/dev/null 2>&1; then
-    incus profile device set default root pool "${INCUS_POOL_NAME}"
-  else
-    incus profile device add default root disk path=/ pool="${INCUS_POOL_NAME}"
-  fi
-}
-
 print_summary() {
   echo "fascinate host bootstrap complete"
   echo
   echo "hostname: $(hostname)"
-  echo "incus version: $(incus version | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g')"
+  echo "cloud-hypervisor version: $(cloud-hypervisor --version 2>/dev/null | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g')"
   echo
-  incus storage list
+  echo "bridge:"
+  ip addr show "${VM_BRIDGE_NAME}"
   echo
-  incus network list
+  echo "firewall:"
+  ufw status verbose
 }
 
 require_root
-ensure_zabbly_repo
 install_packages
+install_cloud_hypervisor
 configure_hostname
 configure_firewall
+configure_bridge
+install_vm_network_service
 ensure_services
 configure_admin_ssh
-ensure_incus_initialized
-ensure_incus_network
-allow_incus_bridge_firewall
-allow_incus_bridge_routing
-ensure_incus_pool
 print_summary

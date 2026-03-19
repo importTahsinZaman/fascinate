@@ -16,7 +16,7 @@ import (
 	"fascinate/internal/database"
 	"fascinate/internal/email"
 	"fascinate/internal/httpapi"
-	"fascinate/internal/runtime/incus"
+	"fascinate/internal/runtime/cloudhypervisor"
 	"fascinate/internal/signup"
 	"fascinate/internal/sshfrontdoor"
 )
@@ -43,7 +43,11 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 		return nil, err
 	}
 
-	runtimeClient := incus.NewCLI(cfg.IncusBinary)
+	runtimeClient, err := cloudhypervisor.New(cfg)
+	if err != nil {
+		store.Close()
+		return nil, err
+	}
 	controlPlane := controlplane.New(cfg, store, runtimeClient)
 	handler := httpapi.New(cfg, store, runtimeClient, controlPlane)
 	emailClient := email.NewResendClient(cfg.ResendBaseURL, cfg.ResendAPIKey, cfg.EmailFrom)

@@ -27,7 +27,7 @@ quote_env_value() {
 }
 
 write_env_file() {
-  mkdir -p "${CONFIG_DIR}" "${DATA_DIR}"
+  mkdir -p "${CONFIG_DIR}" "${DATA_DIR}" "${DATA_DIR}/images" "${DATA_DIR}/machines"
 
   cat >"${ENV_FILE}" <<EOF
 FASCINATE_HTTP_ADDR=$(quote_env_value "${FASCINATE_HTTP_ADDR:-127.0.0.1:8080}")
@@ -36,9 +36,18 @@ FASCINATE_DATA_DIR=$(quote_env_value "${DATA_DIR}")
 FASCINATE_DB_PATH=$(quote_env_value "${FASCINATE_DB_PATH:-${DATA_DIR}/fascinate.db}")
 FASCINATE_BASE_DOMAIN=$(quote_env_value "${FASCINATE_BASE_DOMAIN:-}")
 FASCINATE_ADMIN_EMAILS=$(quote_env_value "${FASCINATE_ADMIN_EMAILS:-}")
-FASCINATE_INCUS_BINARY=$(quote_env_value "${FASCINATE_INCUS_BINARY:-incus}")
-FASCINATE_INCUS_STORAGE_POOL=$(quote_env_value "${FASCINATE_INCUS_STORAGE_POOL:-machines}")
-FASCINATE_DEFAULT_IMAGE=$(quote_env_value "${FASCINATE_DEFAULT_IMAGE:-fascinate-base}")
+FASCINATE_RUNTIME_BINARY=$(quote_env_value "${FASCINATE_RUNTIME_BINARY:-cloud-hypervisor}")
+FASCINATE_RUNTIME_STATE_DIR=$(quote_env_value "${FASCINATE_RUNTIME_STATE_DIR:-${DATA_DIR}/machines}")
+FASCINATE_VM_BRIDGE_NAME=$(quote_env_value "${FASCINATE_VM_BRIDGE_NAME:-fascbr0}")
+FASCINATE_VM_BRIDGE_CIDR=$(quote_env_value "${FASCINATE_VM_BRIDGE_CIDR:-10.42.0.1/24}")
+FASCINATE_VM_GUEST_CIDR=$(quote_env_value "${FASCINATE_VM_GUEST_CIDR:-10.42.0.0/24}")
+FASCINATE_VM_FIRMWARE_PATH=$(quote_env_value "${FASCINATE_VM_FIRMWARE_PATH:-/usr/share/OVMF/OVMF_CODE.fd}")
+FASCINATE_QEMU_IMG_BINARY=$(quote_env_value "${FASCINATE_QEMU_IMG_BINARY:-qemu-img}")
+FASCINATE_CLOUD_LOCALDS_BINARY=$(quote_env_value "${FASCINATE_CLOUD_LOCALDS_BINARY:-cloud-localds}")
+FASCINATE_SSH_CLIENT_BINARY=$(quote_env_value "${FASCINATE_SSH_CLIENT_BINARY:-ssh}")
+FASCINATE_GUEST_SSH_KEY_PATH=$(quote_env_value "${FASCINATE_GUEST_SSH_KEY_PATH:-${DATA_DIR}/guest_ssh_ed25519}")
+FASCINATE_GUEST_SSH_USER=$(quote_env_value "${FASCINATE_GUEST_SSH_USER:-ubuntu}")
+FASCINATE_DEFAULT_IMAGE=$(quote_env_value "${FASCINATE_DEFAULT_IMAGE:-${DATA_DIR}/images/fascinate-base.qcow2}")
 FASCINATE_DEFAULT_MACHINE_CPU=$(quote_env_value "${FASCINATE_DEFAULT_MACHINE_CPU:-1}")
 FASCINATE_DEFAULT_MACHINE_RAM=$(quote_env_value "${FASCINATE_DEFAULT_MACHINE_RAM:-2GiB}")
 FASCINATE_DEFAULT_MACHINE_DISK=$(quote_env_value "${FASCINATE_DEFAULT_MACHINE_DISK:-20GiB}")
@@ -80,24 +89,27 @@ maybe_open_firewall_port() {
   ufw allow "${port}/tcp" >/dev/null
 }
 
-maybe_allow_incus_bridge() {
+maybe_allow_vm_bridge() {
+  local bridge_name="${1}"
+
   if ! command -v ufw >/dev/null 2>&1; then
     return 0
   fi
 
-  if ip link show incusbr0 >/dev/null 2>&1; then
-    ufw allow in on incusbr0 >/dev/null
+  if ip link show "${bridge_name}" >/dev/null 2>&1; then
+    ufw allow in on "${bridge_name}" >/dev/null
   fi
 }
 
-maybe_allow_incus_bridge_routing() {
+maybe_allow_vm_bridge_routing() {
+  local bridge_name="${1}"
   local uplink=""
 
   if ! command -v ufw >/dev/null 2>&1; then
     return 0
   fi
 
-  if ! ip link show incusbr0 >/dev/null 2>&1; then
+  if ! ip link show "${bridge_name}" >/dev/null 2>&1; then
     return 0
   fi
 
@@ -106,7 +118,7 @@ maybe_allow_incus_bridge_routing() {
     return 0
   fi
 
-  ufw route allow in on incusbr0 out on "${uplink}" >/dev/null
+  ufw route allow in on "${bridge_name}" out on "${uplink}" >/dev/null
 }
 
 main() {
@@ -124,8 +136,8 @@ main() {
   set +a
 
   maybe_open_firewall_port "${FASCINATE_SSH_ADDR}"
-  maybe_allow_incus_bridge
-  maybe_allow_incus_bridge_routing
+  maybe_allow_vm_bridge "${FASCINATE_VM_BRIDGE_NAME}"
+  maybe_allow_vm_bridge_routing "${FASCINATE_VM_BRIDGE_NAME}"
   bash "${REPO_ROOT}/ops/host/write-caddyfile.sh"
 
   systemctl daemon-reload

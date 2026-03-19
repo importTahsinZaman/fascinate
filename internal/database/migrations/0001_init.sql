@@ -68,4 +68,3 @@ CREATE INDEX IF NOT EXISTS idx_machine_ports_machine_id ON machine_ports (machin
 CREATE INDEX IF NOT EXISTS idx_email_codes_email ON email_codes (email);
 CREATE INDEX IF NOT EXISTS idx_events_machine_id ON events (machine_id);
 CREATE INDEX IF NOT EXISTS idx_events_actor_user_id ON events (actor_user_id);
-

@@ -13,7 +13,7 @@ type MachineRecord struct {
 	Name        string  `json:"name"`
 	OwnerUserID string  `json:"owner_user_id"`
 	OwnerEmail  string  `json:"owner_email"`
-	IncusName   string  `json:"incus_name"`
+	RuntimeName string  `json:"runtime_name"`
 	State       string  `json:"state"`
 	PrimaryPort int     `json:"primary_port"`
 	CreatedAt   string  `json:"created_at"`
@@ -25,7 +25,7 @@ type CreateMachineParams struct {
 	ID          string
 	Name        string
 	OwnerUserID string
-	IncusName   string
+	RuntimeName string
 	State       string
 	PrimaryPort int
 }

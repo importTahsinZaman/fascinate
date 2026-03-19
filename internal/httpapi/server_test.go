@@ -17,20 +17,20 @@ import (
 	"fascinate/internal/config"
 	"fascinate/internal/controlplane"
 	"fascinate/internal/database"
-	"fascinate/internal/runtime/incus"
+	machineruntime "fascinate/internal/runtime"
 )
 
 type fakeRuntime struct {
 	healthErr error
 	listErr   error
-	machines  []incus.Machine
+	machines  []machineruntime.Machine
 }
 
 func (f *fakeRuntime) HealthCheck(context.Context) error {
 	return f.healthErr
 }
 
-func (f *fakeRuntime) ListMachines(context.Context) ([]incus.Machine, error) {
+func (f *fakeRuntime) ListMachines(context.Context) ([]machineruntime.Machine, error) {
 	if f.listErr != nil {
 		return nil, f.listErr
 	}
@@ -275,7 +275,7 @@ func TestMachineSubdomainProxiesToRuntime(t *testing.T) {
 			Name:        "habits",
 			OwnerEmail:  "dev@example.com",
 			PrimaryPort: primaryPort,
-			Runtime: &incus.Machine{
+			Runtime: &machineruntime.Machine{
 				Name: "habits",
 				IPv4: []string{host},
 			},
@@ -354,7 +354,7 @@ func TestMachineSubdomainProxiesToRuntimeIPv6Fallback(t *testing.T) {
 			Name:        "habits",
 			OwnerEmail:  "dev@example.com",
 			PrimaryPort: primaryPort,
-			Runtime: &incus.Machine{
+			Runtime: &machineruntime.Machine{
 				Name: "habits",
 				IPv6: []string{host},
 			},

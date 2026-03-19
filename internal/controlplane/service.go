@@ -14,7 +14,7 @@ import (
 
 	"fascinate/internal/config"
 	"fascinate/internal/database"
-	"fascinate/internal/runtime/incus"
+	machineruntime "fascinate/internal/runtime"
 )
 
 var machineNamePattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
@@ -22,11 +22,11 @@ var memoryLimitPattern = regexp.MustCompile(`(?i)^([0-9]+(?:\.[0-9]+)?)\s*([kmgt
 
 type Runtime interface {
 	HealthCheck(context.Context) error
-	ListMachines(context.Context) ([]incus.Machine, error)
-	GetMachine(context.Context, string) (incus.Machine, error)
-	CreateMachine(context.Context, incus.CreateMachineRequest) (incus.Machine, error)
+	ListMachines(context.Context) ([]machineruntime.Machine, error)
+	GetMachine(context.Context, string) (machineruntime.Machine, error)
+	CreateMachine(context.Context, machineruntime.CreateMachineRequest) (machineruntime.Machine, error)
 	DeleteMachine(context.Context, string) error
-	CloneMachine(context.Context, incus.CloneMachineRequest) (incus.Machine, error)
+	CloneMachine(context.Context, machineruntime.CloneMachineRequest) (machineruntime.Machine, error)
 }
 
 type Service struct {
@@ -46,7 +46,7 @@ type Machine struct {
 	ShowTutorial bool           `json:"show_tutorial,omitempty"`
 	CreatedAt    string         `json:"created_at"`
 	UpdatedAt    string         `json:"updated_at"`
-	Runtime      *incus.Machine `json:"runtime,omitempty"`
+	Runtime      *machineruntime.Machine `json:"runtime,omitempty"`
 }
 
 type CreateMachineInput struct {
@@ -79,7 +79,7 @@ func (s *Service) ListMachines(ctx context.Context, ownerEmail string) ([]Machin
 		return nil, err
 	}
 
-	liveMachines := map[string]incus.Machine{}
+	liveMachines := map[string]machineruntime.Machine{}
 	if runtimeMachines, err := s.runtime.ListMachines(ctx); err == nil {
 		for _, machine := range runtimeMachines {
 			liveMachines[machine.Name] = machine
@@ -88,7 +88,7 @@ func (s *Service) ListMachines(ctx context.Context, ownerEmail string) ([]Machin
 
 	out := make([]Machine, 0, len(records))
 	for _, record := range records {
-		machine := s.machineFromRecord(ctx, record, liveMachines[record.IncusName])
+		machine := s.machineFromRecord(ctx, record, liveMachines[record.RuntimeName])
 		if len(records) == 1 && user.TutorialCompletedAt == nil {
 			machine.ShowTutorial = true
 		}
@@ -117,12 +117,12 @@ func (s *Service) GetMachine(ctx context.Context, name, ownerEmail string) (Mach
 }
 
 func (s *Service) machineFromRecordWithRuntime(ctx context.Context, record database.MachineRecord) (Machine, error) {
-	liveMachine, err := s.runtime.GetMachine(ctx, record.IncusName)
+	liveMachine, err := s.runtime.GetMachine(ctx, record.RuntimeName)
 	if err != nil {
-		if errors.Is(err, incus.ErrMachineNotFound) {
+		if errors.Is(err, machineruntime.ErrMachineNotFound) {
 			_ = s.store.UpdateMachineState(ctx, record.ID, "missing")
 			record.State = "missing"
-			return s.machineFromRecord(ctx, record, incus.Machine{}), nil
+			return s.machineFromRecord(ctx, record, machineruntime.Machine{}), nil
 		}
 		return Machine{}, err
 	}
@@ -155,10 +155,9 @@ func (s *Service) CreateMachine(ctx context.Context, input CreateMachineInput) (
 		return Machine{}, err
 	}
 
-	liveMachine, err := s.runtime.CreateMachine(ctx, incus.CreateMachineRequest{
+	liveMachine, err := s.runtime.CreateMachine(ctx, machineruntime.CreateMachineRequest{
 		Name:         name,
 		Image:        s.cfg.DefaultImage,
-		StoragePool:  s.cfg.IncusStoragePool,
 		CPU:          s.cfg.DefaultMachineCPU,
 		Memory:       s.cfg.DefaultMachineRAM,
 		RootDiskSize: s.cfg.DefaultMachineDisk,
@@ -172,7 +171,7 @@ func (s *Service) CreateMachine(ctx context.Context, input CreateMachineInput) (
 		ID:          uuid.NewString(),
 		Name:        name,
 		OwnerUserID: user.ID,
-		IncusName:   liveMachine.Name,
+		RuntimeName: liveMachine.Name,
 		State:       liveMachine.State,
 		PrimaryPort: s.cfg.DefaultPrimaryPort,
 	})
@@ -199,7 +198,7 @@ func (s *Service) DeleteMachine(ctx context.Context, name, ownerEmail string) er
 		return err
 	}
 
-	if err := s.runtime.DeleteMachine(ctx, record.IncusName); err != nil && !errors.Is(err, incus.ErrMachineNotFound) {
+	if err := s.runtime.DeleteMachine(ctx, record.RuntimeName); err != nil && !errors.Is(err, machineruntime.ErrMachineNotFound) {
 		return err
 	}
 
@@ -238,7 +237,7 @@ func (s *Service) CloneMachine(ctx context.Context, input CloneMachineInput) (Ma
 	if normalizeEmail(sourceRecord.OwnerEmail) != ownerEmail {
 		return Machine{}, database.ErrNotFound
 	}
-	liveSource, err := s.runtime.GetMachine(ctx, sourceRecord.IncusName)
+	liveSource, err := s.runtime.GetMachine(ctx, sourceRecord.RuntimeName)
 	if err != nil {
 		return Machine{}, err
 	}
@@ -255,8 +254,8 @@ func (s *Service) CloneMachine(ctx context.Context, input CloneMachineInput) (Ma
 		return Machine{}, err
 	}
 
-	liveMachine, err := s.runtime.CloneMachine(ctx, incus.CloneMachineRequest{
-		SourceName:   sourceRecord.IncusName,
+	liveMachine, err := s.runtime.CloneMachine(ctx, machineruntime.CloneMachineRequest{
+		SourceName:   sourceRecord.RuntimeName,
 		TargetName:   targetName,
 		RootDiskSize: rootDiskSize,
 	})
@@ -268,7 +267,7 @@ func (s *Service) CloneMachine(ctx context.Context, input CloneMachineInput) (Ma
 		ID:          uuid.NewString(),
 		Name:        targetName,
 		OwnerUserID: user.ID,
-		IncusName:   liveMachine.Name,
+		RuntimeName: liveMachine.Name,
 		State:       liveMachine.State,
 		PrimaryPort: sourceRecord.PrimaryPort,
 	})
@@ -382,13 +381,13 @@ func (s *Service) validateMachineSizeLimit(cpu, memory, disk string) error {
 	return nil
 }
 
-func (s *Service) machineFromRecord(ctx context.Context, record database.MachineRecord, live incus.Machine) Machine {
+func (s *Service) machineFromRecord(ctx context.Context, record database.MachineRecord, live machineruntime.Machine) Machine {
 	if live.Name != "" && live.State != "" && live.State != record.State {
 		_ = s.store.UpdateMachineState(ctx, record.ID, live.State)
 		record.State = live.State
 	}
 
-	var runtimeMachine *incus.Machine
+	var runtimeMachine *machineruntime.Machine
 	if live.Name != "" {
 		copy := live
 		runtimeMachine = &copy

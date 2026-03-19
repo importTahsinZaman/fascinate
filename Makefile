@@ -22,4 +22,4 @@ verify-ops:
 	bash -n ops/host/verify.sh
 	bash -n ops/host/write-caddyfile.sh
 	bash -n ops/host/install-control-plane.sh
-	bash -n ops/incus/build-base-image.sh
+	bash -n ops/cloudhypervisor/build-base-image.sh

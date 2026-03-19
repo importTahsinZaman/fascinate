@@ -41,17 +41,18 @@ type machineManager interface {
 }
 
 type Server struct {
-	addr           string
-	incusBinary    string
-	config         *ssh.ServerConfig
-	machines       machineManager
-	signup         signupManager
-	shellRunner    func(ssh.Channel, <-chan *ssh.Request, windowSize, string) error
-	tutorialRunner func(ssh.Channel, <-chan *ssh.Request, windowSize, string) error
+	addr            string
+	sshClientBinary string
+	guestSSHKeyPath string
+	config          *ssh.ServerConfig
+	machines        machineManager
+	signup          signupManager
+	shellRunner     func(ssh.Channel, <-chan *ssh.Request, windowSize, string) error
+	tutorialRunner  func(ssh.Channel, <-chan *ssh.Request, windowSize, string) error
 }
 
 const (
-	tutorialWorkspace = "/root/fascinate-tutorial"
+	tutorialWorkspace = "~/fascinate-tutorial"
 	tutorialPrompt    = "Build a polished Flappy Bird clone in Next.js and run it on port 3000. Create the project in a new subdirectory named flappy-bird-app instead of using the current directory. Use fully non-interactive scaffolding commands so nothing blocks on prompts, install whatever dependencies you need, and leave the app ready to open in the browser."
 )
 
@@ -100,11 +101,12 @@ func New(cfg config.Config, keys keyLookup, machines machineManager, signup sign
 	serverConfig.AddHostKey(signer)
 
 	return &Server{
-		addr:        strings.TrimSpace(cfg.SSHAddr),
-		incusBinary: strings.TrimSpace(cfg.IncusBinary),
-		config:      serverConfig,
-		machines:    machines,
-		signup:      signup,
+		addr:            strings.TrimSpace(cfg.SSHAddr),
+		sshClientBinary: strings.TrimSpace(cfg.SSHClientBinary),
+		guestSSHKeyPath: strings.TrimSpace(cfg.GuestSSHKeyPath),
+		config:          serverConfig,
+		machines:        machines,
+		signup:          signup,
 	}, nil
 }
 
@@ -521,14 +523,14 @@ func (s *Server) tutorialMachine(channel ssh.Channel, requests <-chan *ssh.Reque
 }
 
 func (s *Server) openAuthorizedMachineShell(channel ssh.Channel, requests <-chan *ssh.Request, ptyState sessionPTY, userEmail, name string) error {
-	return s.openAuthorizedMachineRunner(channel, requests, ptyState, userEmail, name, s.shellRunner, s.runIncusShell, false)
+	return s.openAuthorizedMachineRunner(channel, requests, ptyState, userEmail, name, s.shellRunner, false)
 }
 
 func (s *Server) openAuthorizedMachineTutorial(channel ssh.Channel, requests <-chan *ssh.Request, ptyState sessionPTY, userEmail, name string) error {
-	return s.openAuthorizedMachineRunner(channel, requests, ptyState, userEmail, name, s.tutorialRunner, s.runIncusTutorial, true)
+	return s.openAuthorizedMachineRunner(channel, requests, ptyState, userEmail, name, s.tutorialRunner, true)
 }
 
-func (s *Server) openAuthorizedMachineRunner(channel ssh.Channel, requests <-chan *ssh.Request, ptyState sessionPTY, userEmail, name string, runnerOverride func(ssh.Channel, <-chan *ssh.Request, windowSize, string) error, defaultRunner func(ssh.Channel, <-chan *ssh.Request, windowSize, string) error, markTutorialComplete bool) error {
+func (s *Server) openAuthorizedMachineRunner(channel ssh.Channel, requests <-chan *ssh.Request, ptyState sessionPTY, userEmail, name string, runnerOverride func(ssh.Channel, <-chan *ssh.Request, windowSize, string) error, markTutorialComplete bool) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -545,13 +547,20 @@ func (s *Server) openAuthorizedMachineRunner(channel ssh.Channel, requests <-cha
 		return fmt.Errorf("machine %q is not available", strings.TrimSpace(name))
 	}
 
-	runner := runnerOverride
-	if runner == nil {
-		runner = defaultRunner
-	}
-
-	if err := runner(channel, requests, ptyState.size, runtimeName); err != nil {
-		return err
+	if runnerOverride != nil {
+		if err := runnerOverride(channel, requests, ptyState.size, runtimeName); err != nil {
+			return err
+		}
+	} else {
+		if markTutorialComplete {
+			if err := s.runGuestTutorial(channel, requests, ptyState.size, machine); err != nil {
+				return err
+			}
+		} else {
+			if err := s.runGuestShell(channel, requests, ptyState.size, machine); err != nil {
+				return err
+			}
+		}
 	}
 
 	if markTutorialComplete {
@@ -565,12 +574,12 @@ func (s *Server) openAuthorizedMachineRunner(channel ssh.Channel, requests <-cha
 	return nil
 }
 
-func (s *Server) runIncusShell(channel ssh.Channel, requests <-chan *ssh.Request, size windowSize, machineName string) error {
-	return s.runIncusCommand(channel, requests, size, machineName, "if command -v bash >/dev/null 2>&1; then exec bash -l; else exec sh -l; fi")
+func (s *Server) runGuestShell(channel ssh.Channel, requests <-chan *ssh.Request, size windowSize, machine controlplane.Machine) error {
+	return s.runGuestCommand(channel, requests, size, machine, "if command -v bash >/dev/null 2>&1; then exec bash -l; else exec sh -l; fi")
 }
 
-func (s *Server) runIncusTutorial(channel ssh.Channel, requests <-chan *ssh.Request, size windowSize, machineName string) error {
-	return s.runIncusCommand(channel, requests, size, machineName, tutorialShellCommand())
+func (s *Server) runGuestTutorial(channel ssh.Channel, requests <-chan *ssh.Request, size windowSize, machine controlplane.Machine) error {
+	return s.runGuestCommand(channel, requests, size, machine, tutorialShellCommand())
 }
 
 func tutorialShellCommand() string {
@@ -578,23 +587,43 @@ func tutorialShellCommand() string {
 	return "mkdir -p " + tutorialWorkspace + " && cd " + tutorialWorkspace + " && if ! command -v claude >/dev/null 2>&1; then echo \"Claude Code is not installed on this machine.\"; exec bash -l; fi && exec claude '" + safePrompt + "'"
 }
 
-func (s *Server) runIncusCommand(channel ssh.Channel, requests <-chan *ssh.Request, size windowSize, machineName, shellCommand string) error {
+func (s *Server) runGuestCommand(channel ssh.Channel, requests <-chan *ssh.Request, size windowSize, machine controlplane.Machine, shellCommand string) error {
+	if machine.Runtime == nil {
+		return fmt.Errorf("machine %q is not available", machine.Name)
+	}
+
+	targetIP := firstNonEmpty(machine.Runtime.IPv4)
+	if targetIP == "" {
+		return fmt.Errorf("machine %q does not have a reachable guest IP", machine.Name)
+	}
+
+	guestUser := strings.TrimSpace(machine.Runtime.GuestUser)
+	if guestUser == "" {
+		guestUser = "ubuntu"
+	}
+
 	term := "xterm-256color"
 	args := []string{
-		"exec",
-		strings.TrimSpace(machineName),
-		"--mode=interactive",
-		"--",
+		"-i", s.guestSSHKeyPath,
+		"-o", "BatchMode=yes",
+		"-o", "StrictHostKeyChecking=no",
+		"-o", "UserKnownHostsFile=/dev/null",
+		"-o", "LogLevel=ERROR",
+		"-tt",
+		fmt.Sprintf("%s@%s", guestUser, targetIP),
 		"env",
 		"TERM=" + term,
-		"HOME=/root",
 		"SHELL=/bin/bash",
 		"sh",
 		"-lc",
 		shellCommand,
 	}
 
-	cmd := exec.Command(s.incusBinary, args...)
+	binary := s.sshClientBinary
+	if strings.TrimSpace(binary) == "" {
+		binary = "ssh"
+	}
+	cmd := exec.Command(binary, args...)
 	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{
 		Cols: uint16(max(1, size.width)),
 		Rows: uint16(max(1, size.height)),
@@ -679,6 +708,16 @@ func max(a, b int) int {
 
 func shellQuoteSingle(value string) string {
 	return strings.ReplaceAll(value, `'`, `'\''`)
+}
+
+func firstNonEmpty(values []string) string {
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func writeExitStatus(channel ssh.Channel, status uint32) {

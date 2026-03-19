@@ -6,23 +6,23 @@ This repo now contains:
 - a reproducible host bootstrap path under [`ops/host/bootstrap.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/bootstrap.sh)
 - a host redeploy path under [`ops/host/install-control-plane.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/install-control-plane.sh)
 - a Caddy config writer under [`ops/host/write-caddyfile.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/write-caddyfile.sh)
-- a base image builder under [`ops/incus/build-base-image.sh`](/Users/tahsin/Desktop/vmcloud/ops/incus/build-base-image.sh)
+- a VM base image builder under [`ops/cloudhypervisor/build-base-image.sh`](/Users/tahsin/Desktop/vmcloud/ops/cloudhypervisor/build-base-image.sh)
 - a minimal Go control plane under [`cmd/fascinate/main.go`](/Users/tahsin/Desktop/vmcloud/cmd/fascinate/main.go)
 - SQLite migrations for the first platform tables
-- an Incus runtime wrapper and health endpoints
+- a Cloud Hypervisor runtime wrapper and health endpoints
 - a minimal SSH frontdoor backed by SQLite-stored public keys
 
 ## Current Scope
 
 This is the first real scaffold, not the full product yet. It gives us:
 - repeatable host setup for Ubuntu 24.04
-- a baseline Incus + Caddy + firewall install
+- a baseline Cloud Hypervisor + Caddy + firewall install
 - a Go service that can:
   - load config from env
   - initialize SQLite
   - run migrations
   - expose `/healthz`, `/readyz`, and `/v1/runtime/machines`
-  - talk to the local `incus` CLI
+  - talk to the local `cloud-hypervisor` runtime
 
 It does not yet include:
 - recovery and account-management flows for additional SSH keys
@@ -46,16 +46,16 @@ For now, machine ownership is bootstrapped by passing `owner_email` in the API r
 
 ## Repo Layout
 
-- [`ops/host/bootstrap.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/bootstrap.sh): installs host dependencies and baseline Incus config
+- [`ops/host/bootstrap.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/bootstrap.sh): installs host dependencies and baseline VM networking/runtime config
 - [`ops/host/verify.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/verify.sh): checks the host after bootstrap
 - [`ops/host/write-caddyfile.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/write-caddyfile.sh): writes the host Caddy config for Fascinate
 - [`ops/host/install-control-plane.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/install-control-plane.sh): builds and installs the Fascinate service on a host
-- [`ops/incus/build-base-image.sh`](/Users/tahsin/Desktop/vmcloud/ops/incus/build-base-image.sh): publishes an agent-ready Incus image alias
+- [`ops/cloudhypervisor/build-base-image.sh`](/Users/tahsin/Desktop/vmcloud/ops/cloudhypervisor/build-base-image.sh): builds an agent-ready qcow2 guest image
 - [`ops/systemd/fascinate.service`](/Users/tahsin/Desktop/vmcloud/ops/systemd/fascinate.service): example systemd unit
 - [`cmd/fascinate/main.go`](/Users/tahsin/Desktop/vmcloud/cmd/fascinate/main.go): entrypoint
 - [`internal/config/config.go`](/Users/tahsin/Desktop/vmcloud/internal/config/config.go): env-backed config
 - [`internal/database/migrations/0001_init.sql`](/Users/tahsin/Desktop/vmcloud/internal/database/migrations/0001_init.sql): initial SQLite schema
-- [`internal/runtime/incus/runtime.go`](/Users/tahsin/Desktop/vmcloud/internal/runtime/incus/runtime.go): Incus CLI wrapper
+- [`internal/runtime/cloudhypervisor/runtime.go`](/Users/tahsin/Desktop/vmcloud/internal/runtime/cloudhypervisor/runtime.go): Cloud Hypervisor VM runtime
 - [`internal/sshfrontdoor/server.go`](/Users/tahsin/Desktop/vmcloud/internal/sshfrontdoor/server.go): SSH transport and auth
 - [`internal/tui/dashboard.go`](/Users/tahsin/Desktop/vmcloud/internal/tui/dashboard.go): Bubble Tea dashboard model
 
@@ -77,15 +77,15 @@ sudo ./ops/host/verify.sh
 
 Notes:
 - the bootstrap script assumes a fresh host or a host you are willing to standardize
-- it installs `Incus` from Zabbly's stable repo
-- it creates an Incus storage pool named `machines` by default
-- it opens `incusbr0` in `ufw` so new machines can receive DHCP and talk to the host bridge
+- it installs Cloud Hypervisor plus qcow2/cloud-init image tooling
+- it creates a bridge named `fascbr0` by default
+- it configures NAT and forwarding so guest VMs can reach the internet through the host
 - it does not manage DNS or Cloudflare for you
 
-Build the default agent-ready image alias:
+Build the default agent-ready guest image:
 
 ```bash
-sudo ./ops/incus/build-base-image.sh
+sudo ./ops/cloudhypervisor/build-base-image.sh
 ```
 
 By default, the base image builder also installs Claude Code as `claude`.
@@ -94,7 +94,7 @@ Useful image build env vars:
 ```bash
 export FASCINATE_INSTALL_CLAUDE_CODE=1
 export FASCINATE_CLAUDE_CODE_VERSION=latest
-sudo ./ops/incus/build-base-image.sh
+sudo ./ops/cloudhypervisor/build-base-image.sh
 ```
 
 Set `FASCINATE_INSTALL_CLAUDE_CODE=0` if you want a neutral image without it.
@@ -152,9 +152,18 @@ export FASCINATE_DATA_DIR=./data
 export FASCINATE_DB_PATH=./data/fascinate.db
 export FASCINATE_BASE_DOMAIN=fascinate.dev
 export FASCINATE_ADMIN_EMAILS=you@example.com,ops@example.com
-export FASCINATE_INCUS_BINARY=incus
-export FASCINATE_INCUS_STORAGE_POOL=machines
-export FASCINATE_DEFAULT_IMAGE=images:ubuntu/24.04
+export FASCINATE_RUNTIME_BINARY=cloud-hypervisor
+export FASCINATE_RUNTIME_STATE_DIR=./data/machines
+export FASCINATE_VM_BRIDGE_NAME=fascbr0
+export FASCINATE_VM_BRIDGE_CIDR=10.42.0.1/24
+export FASCINATE_VM_GUEST_CIDR=10.42.0.0/24
+export FASCINATE_VM_FIRMWARE_PATH=/usr/share/OVMF/OVMF_CODE.fd
+export FASCINATE_QEMU_IMG_BINARY=qemu-img
+export FASCINATE_CLOUD_LOCALDS_BINARY=cloud-localds
+export FASCINATE_SSH_CLIENT_BINARY=ssh
+export FASCINATE_GUEST_SSH_KEY_PATH=./data/guest_ssh_ed25519
+export FASCINATE_GUEST_SSH_USER=ubuntu
+export FASCINATE_DEFAULT_IMAGE=./data/images/fascinate-base.qcow2
 export FASCINATE_DEFAULT_MACHINE_CPU=1
 export FASCINATE_DEFAULT_MACHINE_RAM=2GiB
 export FASCINATE_DEFAULT_MACHINE_DISK=20GiB

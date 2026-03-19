@@ -15,8 +15,17 @@ type Config struct {
 	DBPath             string
 	BaseDomain         string
 	AdminEmails        []string
-	IncusBinary        string
-	IncusStoragePool   string
+	RuntimeBinary      string
+	RuntimeStateDir    string
+	VMBridgeName       string
+	VMBridgeCIDR       string
+	VMGuestCIDR        string
+	VMFirmwarePath     string
+	QemuImgBinary      string
+	CloudLocalDSBinary string
+	SSHClientBinary    string
+	GuestSSHKeyPath    string
+	GuestSSHUser       string
 	DefaultImage       string
 	DefaultMachineCPU  string
 	DefaultMachineRAM  string
@@ -39,6 +48,22 @@ func Load() Config {
 	if dbPath == "" {
 		dbPath = filepath.Join(dataDir, "fascinate.db")
 	}
+	defaultImage := getenv("FASCINATE_DEFAULT_IMAGE", "")
+	if defaultImage == "" {
+		defaultImage = filepath.Join(dataDir, "images", "fascinate-base.qcow2")
+	}
+	runtimeBinary := getenv("FASCINATE_RUNTIME_BINARY", "")
+	if runtimeBinary == "" {
+		runtimeBinary = getenv("FASCINATE_INCUS_BINARY", "cloud-hypervisor")
+	}
+	runtimeStateDir := getenv("FASCINATE_RUNTIME_STATE_DIR", "")
+	if runtimeStateDir == "" {
+		runtimeStateDir = filepath.Join(dataDir, "machines")
+	}
+	guestSSHKeyPath := getenv("FASCINATE_GUEST_SSH_KEY_PATH", "")
+	if guestSSHKeyPath == "" {
+		guestSSHKeyPath = filepath.Join(dataDir, "guest_ssh_ed25519")
+	}
 
 	return Config{
 		HTTPAddr:           getenv("FASCINATE_HTTP_ADDR", "127.0.0.1:8080"),
@@ -47,9 +72,18 @@ func Load() Config {
 		DBPath:             dbPath,
 		BaseDomain:         getenv("FASCINATE_BASE_DOMAIN", ""),
 		AdminEmails:        splitCSV(getenv("FASCINATE_ADMIN_EMAILS", "")),
-		IncusBinary:        getenv("FASCINATE_INCUS_BINARY", "incus"),
-		IncusStoragePool:   getenv("FASCINATE_INCUS_STORAGE_POOL", "machines"),
-		DefaultImage:       getenv("FASCINATE_DEFAULT_IMAGE", "images:ubuntu/24.04"),
+		RuntimeBinary:      runtimeBinary,
+		RuntimeStateDir:    runtimeStateDir,
+		VMBridgeName:       getenv("FASCINATE_VM_BRIDGE_NAME", "fascbr0"),
+		VMBridgeCIDR:       getenv("FASCINATE_VM_BRIDGE_CIDR", "10.42.0.1/24"),
+		VMGuestCIDR:        getenv("FASCINATE_VM_GUEST_CIDR", "10.42.0.0/24"),
+		VMFirmwarePath:     getenv("FASCINATE_VM_FIRMWARE_PATH", "/usr/share/OVMF/OVMF_CODE.fd"),
+		QemuImgBinary:      getenv("FASCINATE_QEMU_IMG_BINARY", "qemu-img"),
+		CloudLocalDSBinary: getenv("FASCINATE_CLOUD_LOCALDS_BINARY", "cloud-localds"),
+		SSHClientBinary:    getenv("FASCINATE_SSH_CLIENT_BINARY", "ssh"),
+		GuestSSHKeyPath:    guestSSHKeyPath,
+		GuestSSHUser:       getenv("FASCINATE_GUEST_SSH_USER", "ubuntu"),
+		DefaultImage:       defaultImage,
 		DefaultMachineCPU:  getenv("FASCINATE_DEFAULT_MACHINE_CPU", "1"),
 		DefaultMachineRAM:  getenv("FASCINATE_DEFAULT_MACHINE_RAM", "2GiB"),
 		DefaultMachineDisk: getenv("FASCINATE_DEFAULT_MACHINE_DISK", "20GiB"),

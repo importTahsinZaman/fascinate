@@ -17,12 +17,12 @@ import (
 	"fascinate/internal/config"
 	"fascinate/internal/controlplane"
 	"fascinate/internal/database"
-	"fascinate/internal/runtime/incus"
+	machineruntime "fascinate/internal/runtime"
 )
 
 type runtimeChecker interface {
 	HealthCheck(context.Context) error
-	ListMachines(context.Context) ([]incus.Machine, error)
+	ListMachines(context.Context) ([]machineruntime.Machine, error)
 }
 
 type machineManager interface {
@@ -266,7 +266,7 @@ func requiredOwnerEmail(value string) (string, error) {
 
 func writeServiceError(w http.ResponseWriter, err error) {
 	switch {
-	case errors.Is(err, database.ErrNotFound), errors.Is(err, incus.ErrMachineNotFound):
+	case errors.Is(err, database.ErrNotFound), errors.Is(err, machineruntime.ErrMachineNotFound):
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
 	case errors.Is(err, database.ErrConflict):
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
@@ -308,7 +308,7 @@ func withMachineProxy(cfg config.Config, machines machineManager, next http.Hand
 
 		machine, err := machines.GetPublicMachine(ctx, machineName)
 		if err != nil {
-			if errors.Is(err, database.ErrNotFound) || errors.Is(err, incus.ErrMachineNotFound) {
+			if errors.Is(err, database.ErrNotFound) || errors.Is(err, machineruntime.ErrMachineNotFound) {
 				writeMachinePage(w, http.StatusNotFound, host, "Unknown machine", "No machine with this name exists.", "")
 				return
 			}
