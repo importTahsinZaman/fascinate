@@ -803,16 +803,12 @@ write_files:
 func cloudInitNetworkConfig(ipv4, macAddress string, guestPrefix netip.Prefix, gateway netip.Addr) string {
 	return fmt.Sprintf(`version: 2
 ethernets:
-  eth0:
+  ens4:
     match:
       macaddress: "%s"
-    set-name: eth0
     dhcp4: false
-    addresses:
-      - %s/%d
-    routes:
-      - to: default
-        via: %s
+    addresses: [%s/%d]
+    gateway4: %s
     nameservers:
       addresses: [1.1.1.1, 1.0.0.1]
 `, strings.ToLower(strings.TrimSpace(macAddress)), ipv4, guestPrefix.Bits(), gateway.String())
