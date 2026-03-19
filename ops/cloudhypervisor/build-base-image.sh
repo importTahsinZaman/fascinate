@@ -67,7 +67,7 @@ main() {
   local temp_image="${OUTPUT_IMAGE}.tmp"
   local provision_script
   provision_script="$(mktemp)"
-  trap 'rm -f "${provision_script}" "${temp_image}"' EXIT
+  trap "rm -f '${provision_script}' '${temp_image}'" EXIT
 
   curl -fsSL "${SOURCE_IMAGE_URL}" -o "${source_image}"
   cp "${source_image}" "${temp_image}"
@@ -237,12 +237,8 @@ EOF
     claude_package="$(claude_code_package)"
   fi
 
-  local install_list
-  install_list="$(IFS=,; echo "${PACKAGES[*]}")"
-
   virt-customize \
     -a "${temp_image}" \
-    --install "${install_list}" \
     --copy-in "${provision_script}:/root" \
     --run-command "APT_PACKAGES='${PACKAGES[*]}' APT_MIRROR_BASE_URL='${APT_MIRROR_BASE_URL}' GO_VERSION_REQUESTED='${GO_VERSION}' NODE_VERSION_REQUESTED='${NODE_VERSION}' NPM_VERSION_REQUESTED='${NPM_VERSION}' INSTALL_CLAUDE_CODE='${INSTALL_CLAUDE_CODE}' CLAUDE_PACKAGE='${claude_package}' /root/$(basename -- "${provision_script}")" \
     --firstboot-command 'systemctl enable docker || true'
