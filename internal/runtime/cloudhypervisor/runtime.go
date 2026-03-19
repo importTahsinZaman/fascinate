@@ -525,6 +525,8 @@ func (m *Manager) startVM(ctx context.Context, meta *metadata) error {
 		"--cpus", cpuArg,
 		"--memory", memoryArg,
 		"--firmware", m.firmwarePath,
+		"--serial", "tty",
+		"--console", "off",
 		"--disk", "path=" + meta.DiskPath + ",image_type=qcow2,backing_files=on", "path=" + meta.SeedPath + ",readonly=on,image_type=raw",
 		"--net", "tap=" + meta.TapDevice + ",mac=" + meta.MACAddress,
 	}
