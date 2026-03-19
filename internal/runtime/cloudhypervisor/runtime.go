@@ -416,6 +416,10 @@ func (m *Manager) createOverlayDisk(ctx context.Context, baseImage, diskPath, si
 	if _, err := os.Stat(baseImage); err != nil {
 		return fmt.Errorf("base image %q is not available: %w", baseImage, err)
 	}
+	baseImageFormat, err := m.imageFormat(ctx, baseImage)
+	if err != nil {
+		return err
+	}
 	sizeArg, err := qemuImgSizeArg(size)
 	if err != nil {
 		return err
@@ -423,13 +427,32 @@ func (m *Manager) createOverlayDisk(ctx context.Context, baseImage, diskPath, si
 	args := []string{
 		"create",
 		"-f", "qcow2",
-		"-F", "qcow2",
+		"-F", baseImageFormat,
 		"-b", baseImage,
 		diskPath,
 		sizeArg,
 	}
 	_, err = m.run(ctx, m.qemuImgBinary, args...)
 	return err
+}
+
+func (m *Manager) imageFormat(ctx context.Context, imagePath string) (string, error) {
+	output, err := m.run(ctx, m.qemuImgBinary, "info", "--output=json", imagePath)
+	if err != nil {
+		return "", err
+	}
+
+	var info struct {
+		Format string `json:"format"`
+	}
+	if err := json.Unmarshal([]byte(output), &info); err != nil {
+		return "", fmt.Errorf("parse qemu-img info for %s: %w", imagePath, err)
+	}
+	if strings.TrimSpace(info.Format) == "" {
+		return "", fmt.Errorf("qemu-img info for %s did not report a format", imagePath)
+	}
+
+	return strings.TrimSpace(info.Format), nil
 }
 
 func (m *Manager) copyDisk(ctx context.Context, sourcePath, targetPath string) error {

@@ -50,7 +50,7 @@ func Load() Config {
 	}
 	defaultImage := getenv("FASCINATE_DEFAULT_IMAGE", "")
 	if defaultImage == "" {
-		defaultImage = filepath.Join(dataDir, "images", "fascinate-base.qcow2")
+		defaultImage = filepath.Join(dataDir, "images", "fascinate-base.raw")
 	}
 	runtimeBinary := getenv("FASCINATE_RUNTIME_BINARY", "")
 	if runtimeBinary == "" {
