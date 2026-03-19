@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"fascinate/internal/config"
 	"fascinate/internal/database"
@@ -55,7 +56,7 @@ func (f *fakeRuntime) GetMachine(_ context.Context, name string) (machineruntime
 	return machine, nil
 }
 
-func (f *fakeRuntime) CreateMachine(_ context.Context, req machineruntime.CreateMachineRequest) (machineruntime.Machine, error) {
+func (f *fakeRuntime) CreateMachine(ctx context.Context, req machineruntime.CreateMachineRequest) (machineruntime.Machine, error) {
 	if f.createErr != nil {
 		return machineruntime.Machine{}, f.createErr
 	}
@@ -66,13 +67,17 @@ func (f *fakeRuntime) CreateMachine(_ context.Context, req machineruntime.Create
 		}
 	}
 	if f.createBlock != nil {
-		<-f.createBlock
+		select {
+		case <-f.createBlock:
+		case <-ctx.Done():
+			return machineruntime.Machine{}, ctx.Err()
+		}
 	}
 
 	f.createdReq = append(f.createdReq, req)
 	machine := machineruntime.Machine{
 		Name:   req.Name,
-		Type:   "container",
+		Type:   "vm",
 		State:  "RUNNING",
 		CPU:    req.CPU,
 		Memory: req.Memory,
@@ -127,7 +132,7 @@ func TestServiceCreateCloneAndDeleteMachine(t *testing.T) {
 	service := New(config.Config{
 		BaseDomain:         "fascinate.dev",
 		AdminEmails:        []string{"admin@example.com"},
-		DefaultImage:       "images:ubuntu/24.04",
+		DefaultImage:       "/var/lib/fascinate/images/fascinate-base.raw",
 		DefaultMachineCPU:  "1",
 		DefaultMachineRAM:  "2GiB",
 		DefaultMachineDisk: "20GiB",
@@ -144,12 +149,20 @@ func TestServiceCreateCloneAndDeleteMachine(t *testing.T) {
 	if created.Name != "habits" {
 		t.Fatalf("expected normalized name, got %q", created.Name)
 	}
+	if created.State != machineStateCreating {
+		t.Fatalf("expected create to return %s, got %q", machineStateCreating, created.State)
+	}
 	if created.URL != "https://habits.fascinate.dev" {
 		t.Fatalf("unexpected machine url: %q", created.URL)
 	}
-	if len(runtime.createdReq) != 1 || runtime.createdReq[0].RootDiskSize != "20GiB" {
+	waitForTestCondition(t, func() bool { return len(runtime.createdReq) == 1 })
+	if runtime.createdReq[0].RootDiskSize != "20GiB" {
 		t.Fatalf("expected create request disk size 20GiB, got %+v", runtime.createdReq)
 	}
+	waitForTestCondition(t, func() bool {
+		record, err := store.GetMachineByName(ctx, "habits")
+		return err == nil && strings.EqualFold(record.State, machineStateRunning)
+	})
 
 	cloned, err := service.CloneMachine(ctx, CloneMachineInput{
 		SourceName: "habits",
@@ -217,8 +230,8 @@ func TestServiceCreateMachineRollsBackRuntimeOnDBConflict(t *testing.T) {
 	if !errors.Is(err, database.ErrConflict) {
 		t.Fatalf("expected conflict, got %v", err)
 	}
-	if len(runtime.deleted) != 1 || runtime.deleted[0] != "habits" {
-		t.Fatalf("expected runtime cleanup of habits, got %+v", runtime.deleted)
+	if len(runtime.deleted) != 0 {
+		t.Fatalf("expected no runtime cleanup on preflight conflict, got %+v", runtime.deleted)
 	}
 }
 
@@ -255,7 +268,7 @@ func TestServiceCloneMachineRollsBackRuntimeOnDBConflict(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	runtime.machines["habits"] = machineruntime.Machine{Name: "habits", Type: "container", State: "RUNNING", CPU: "1", Memory: "2GiB", Disk: "20GiB"}
+	runtime.machines["habits"] = machineruntime.Machine{Name: "habits", Type: "vm", State: "RUNNING", CPU: "1", Memory: "2GiB", Disk: "20GiB"}
 	service := newTestService(store, runtime)
 
 	_, err = service.CloneMachine(ctx, CloneMachineInput{
@@ -294,30 +307,40 @@ func TestServiceReconcileRuntimeStateDeletesOrphans(t *testing.T) {
 	}
 }
 
-func TestServiceCreateMachineReconcilesRuntimeBeforeCreate(t *testing.T) {
+func TestServiceReconcileRuntimeStateQueuesCreatingMachines(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
 	store, runtime := newTestServiceDeps(t, ctx)
-	runtime.machines["orphan-vm"] = machineruntime.Machine{
-		Name:   "orphan-vm",
-		Type:   "vm",
-		State:  "RUNNING",
-		CPU:    "1",
-		Memory: "2GiB",
-		Disk:   "20GiB",
-	}
 
-	service := newTestService(store, runtime)
-	_, err := service.CreateMachine(ctx, CreateMachineInput{
-		Name:       "habits",
-		OwnerEmail: "dev@example.com",
-	})
+	user, err := store.UpsertUser(ctx, "dev@example.com", false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(runtime.deleted) == 0 || runtime.deleted[0] != "orphan-vm" {
-		t.Fatalf("expected orphan cleanup before create, got %+v", runtime.deleted)
+
+	if _, err := store.CreateMachine(ctx, database.CreateMachineParams{
+		ID:          "machine-creating",
+		Name:        "habits",
+		OwnerUserID: user.ID,
+		RuntimeName: "habits",
+		State:       machineStateCreating,
+		PrimaryPort: 3000,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	runtime.createStarted = make(chan struct{}, 1)
+
+	service := newTestService(store, runtime)
+	if err := service.ReconcileRuntimeState(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	waitForTestCondition(t, func() bool {
+		return len(runtime.createdReq) == 1
+	})
+	if runtime.createdReq[0].Name != "habits" {
+		t.Fatalf("expected queued create for habits, got %+v", runtime.createdReq)
 	}
 }
 
@@ -363,6 +386,48 @@ func TestServiceGetMachineMarksMissingWhenRuntimeDoesNotHaveIt(t *testing.T) {
 	}
 }
 
+func TestServiceGetMachineKeepsCreatingStateWhenRuntimeMissing(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, runtime := newTestServiceDeps(t, ctx)
+
+	user, err := store.UpsertUser(ctx, "dev@example.com", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := store.CreateMachine(ctx, database.CreateMachineParams{
+		ID:          "machine-creating",
+		Name:        "habits",
+		OwnerUserID: user.ID,
+		RuntimeName: "habits",
+		State:       machineStateCreating,
+		PrimaryPort: 3000,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	runtime.getErr = machineruntime.ErrMachineNotFound
+	service := newTestService(store, runtime)
+
+	machine, err := service.GetMachine(ctx, "habits", "dev@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if machine.State != machineStateCreating {
+		t.Fatalf("expected creating state, got %q", machine.State)
+	}
+
+	record, err := store.GetMachineByName(ctx, "habits")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.State != machineStateCreating {
+		t.Fatalf("expected persisted creating state, got %q", record.State)
+	}
+}
+
 func TestServiceRejectsWrongOwnerForSensitiveOperations(t *testing.T) {
 	t.Parallel()
 
@@ -385,7 +450,7 @@ func TestServiceRejectsWrongOwnerForSensitiveOperations(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	runtime.machines["habits"] = machineruntime.Machine{Name: "habits", Type: "container", State: "RUNNING", CPU: "1", Memory: "2GiB", Disk: "20GiB"}
+	runtime.machines["habits"] = machineruntime.Machine{Name: "habits", Type: "vm", State: "RUNNING", CPU: "1", Memory: "2GiB", Disk: "20GiB"}
 	service := newTestService(store, runtime)
 
 	if _, err := service.GetMachine(ctx, "habits", "other@example.com"); !errors.Is(err, database.ErrNotFound) {
@@ -433,7 +498,7 @@ func TestServiceEnforcesMaxMachinesPerUser(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		runtime.machines[name] = machineruntime.Machine{Name: name, Type: "container", State: "RUNNING", CPU: "1", Memory: "2GiB", Disk: "20GiB"}
+		runtime.machines[name] = machineruntime.Machine{Name: name, Type: "vm", State: "RUNNING", CPU: "1", Memory: "2GiB", Disk: "20GiB"}
 	}
 
 	service := newTestService(store, runtime)
@@ -458,7 +523,7 @@ func TestServiceRejectsOversizedMachineResources(t *testing.T) {
 
 	service := New(config.Config{
 		BaseDomain:         "fascinate.dev",
-		DefaultImage:       "images:ubuntu/24.04",
+		DefaultImage:       "/var/lib/fascinate/images/fascinate-base.raw",
 		DefaultMachineCPU:  "3",
 		DefaultMachineRAM:  "8GiB",
 		DefaultMachineDisk: "20GiB",
@@ -503,7 +568,7 @@ func TestServiceRejectsCloneWhenSourceExceedsSizeLimit(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	runtime.machines["habits"] = machineruntime.Machine{Name: "habits", Type: "container", State: "RUNNING", CPU: "4", Memory: "2GiB", Disk: "20GiB"}
+	runtime.machines["habits"] = machineruntime.Machine{Name: "habits", Type: "vm", State: "RUNNING", CPU: "4", Memory: "2GiB", Disk: "20GiB"}
 	service := newTestService(store, runtime)
 
 	_, err = service.CloneMachine(ctx, CloneMachineInput{
@@ -527,7 +592,7 @@ func TestServiceRejectsOversizedMachineDisk(t *testing.T) {
 
 	service := New(config.Config{
 		BaseDomain:         "fascinate.dev",
-		DefaultImage:       "images:ubuntu/24.04",
+		DefaultImage:       "/var/lib/fascinate/images/fascinate-base.raw",
 		DefaultMachineCPU:  "1",
 		DefaultMachineRAM:  "2GiB",
 		DefaultMachineDisk: "25GiB",
@@ -572,7 +637,7 @@ func TestServiceRejectsCloneWhenSourceDiskExceedsSizeLimit(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	runtime.machines["habits"] = machineruntime.Machine{Name: "habits", Type: "container", State: "RUNNING", CPU: "1", Memory: "2GiB", Disk: "25GiB"}
+	runtime.machines["habits"] = machineruntime.Machine{Name: "habits", Type: "vm", State: "RUNNING", CPU: "1", Memory: "2GiB", Disk: "25GiB"}
 	service := newTestService(store, runtime)
 
 	_, err = service.CloneMachine(ctx, CloneMachineInput{
@@ -610,7 +675,7 @@ func TestServiceSerializesQuotaCheckedCreates(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		runtime.machines[name] = machineruntime.Machine{Name: name, Type: "container", State: "RUNNING", CPU: "1", Memory: "2GiB", Disk: "20GiB"}
+		runtime.machines[name] = machineruntime.Machine{Name: name, Type: "vm", State: "RUNNING", CPU: "1", Memory: "2GiB", Disk: "20GiB"}
 	}
 
 	started := make(chan struct{}, 1)
@@ -632,7 +697,6 @@ func TestServiceSerializesQuotaCheckedCreates(t *testing.T) {
 
 	wg.Add(2)
 	go create("three")
-	<-started
 	go create("four")
 	close(block)
 	wg.Wait()
@@ -678,7 +742,7 @@ func TestServiceShowsTutorialForSingleFirstMachine(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	runtime.machines["habits"] = machineruntime.Machine{Name: "habits", Type: "container", State: "RUNNING", CPU: "1", Memory: "2GiB", Disk: "20GiB"}
+	runtime.machines["habits"] = machineruntime.Machine{Name: "habits", Type: "vm", State: "RUNNING", CPU: "1", Memory: "2GiB", Disk: "20GiB"}
 
 	service := newTestService(store, runtime)
 	machines, err := service.ListMachines(ctx, "dev@example.com")
@@ -711,7 +775,7 @@ func TestServiceCreateMachineMarksTutorialCompletedAfterSecondMachine(t *testing
 	}); err != nil {
 		t.Fatal(err)
 	}
-	runtime.machines["habits"] = machineruntime.Machine{Name: "habits", Type: "container", State: "RUNNING", CPU: "1", Memory: "2GiB", Disk: "20GiB"}
+	runtime.machines["habits"] = machineruntime.Machine{Name: "habits", Type: "vm", State: "RUNNING", CPU: "1", Memory: "2GiB", Disk: "20GiB"}
 
 	service := newTestService(store, runtime)
 	if _, err := service.CreateMachine(ctx, CreateMachineInput{
@@ -751,7 +815,7 @@ func TestServiceCloneMachineMarksTutorialCompleted(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	runtime.machines["habits"] = machineruntime.Machine{Name: "habits", Type: "container", State: "RUNNING", CPU: "1", Memory: "2GiB", Disk: "20GiB"}
+	runtime.machines["habits"] = machineruntime.Machine{Name: "habits", Type: "vm", State: "RUNNING", CPU: "1", Memory: "2GiB", Disk: "20GiB"}
 
 	service := newTestService(store, runtime)
 	if _, err := service.CloneMachine(ctx, CloneMachineInput{
@@ -817,7 +881,7 @@ func newTestService(store *database.Store, runtime *fakeRuntime) *Service {
 	return New(config.Config{
 		BaseDomain:         "fascinate.dev",
 		AdminEmails:        []string{"admin@example.com"},
-		DefaultImage:       "images:ubuntu/24.04",
+		DefaultImage:       "/var/lib/fascinate/images/fascinate-base.raw",
 		DefaultMachineCPU:  "1",
 		DefaultMachineRAM:  "2GiB",
 		DefaultMachineDisk: "20GiB",
@@ -827,4 +891,18 @@ func newTestService(store *database.Store, runtime *fakeRuntime) *Service {
 		MaxMachineDisk:     "20GiB",
 		DefaultPrimaryPort: 3000,
 	}, store, runtime)
+}
+
+func waitForTestCondition(t *testing.T, condition func() bool) {
+	t.Helper()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if condition() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	t.Fatalf("condition not met before timeout")
 }

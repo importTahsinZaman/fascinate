@@ -127,7 +127,7 @@ func New(cfg config.Config, store *database.Store, runtime runtimeChecker, machi
 				return
 			}
 
-			ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
+			ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 			defer cancel()
 
 			machine, err := machines.CreateMachine(ctx, controlplane.CreateMachineInput{
@@ -139,7 +139,7 @@ func New(cfg config.Config, store *database.Store, runtime runtimeChecker, machi
 				return
 			}
 
-			writeJSON(w, http.StatusCreated, machine)
+			writeJSON(w, http.StatusAccepted, machine)
 		default:
 			writeMethodNotAllowed(w, http.MethodGet, http.MethodPost)
 		}

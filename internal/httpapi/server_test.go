@@ -160,6 +160,25 @@ func TestCreateMachineEndpointReturnsConflict(t *testing.T) {
 	}
 }
 
+func TestCreateMachineEndpointReturnsAcceptedForAsyncProvisioning(t *testing.T) {
+	t.Parallel()
+
+	manager := &fakeMachineManager{
+		createResult: controlplane.Machine{Name: "habits", State: "CREATING", URL: "https://habits.fascinate.dev"},
+	}
+	handler := newTestHandler(t, &fakeRuntime{}, manager)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/machines", bytes.NewBufferString(`{"name":"habits","owner_email":"dev@example.com"}`))
+	req.Header.Set("Content-Type", "application/json")
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d", rec.Code)
+	}
+}
+
 func TestCreateMachineEndpointRejectsUnknownFields(t *testing.T) {
 	t.Parallel()
 

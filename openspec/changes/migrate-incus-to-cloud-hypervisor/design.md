@@ -65,7 +65,7 @@ Alternatives considered:
 
 ### 4. Replace the Incus image alias flow with a qcow2 base-image pipeline
 
-The current image builder in [ops/incus/build-base-image.sh](/Users/tahsin/Desktop/vmcloud/ops/incus/build-base-image.sh) will be replaced by a VM-oriented build flow that produces an immutable base qcow2 image and the metadata needed to boot new guests with cloud-init. New VM disks will be created as qcow2 overlays on top of that base image.
+The current image builder in [ops/cloudhypervisor/build-base-image.sh](/Users/tahsin/Desktop/vmcloud/ops/cloudhypervisor/build-base-image.sh) produces a VM-oriented raw base image that new guests boot with cloud-init. New VM disks are created as qcow2 overlays on top of that base image.
 
 Why:
 - qcow2 overlays preserve fast machine creation from a prebuilt image.

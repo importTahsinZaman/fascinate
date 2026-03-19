@@ -26,12 +26,12 @@ There are no live users, no machines worth preserving, and no compatibility surf
 ## Impact
 
 - Affected code:
-  - `internal/runtime/incus`
+  - `internal/runtime/cloudhypervisor`
   - `internal/controlplane`
   - `internal/sshfrontdoor`
   - `internal/httpapi`
   - `ops/host`
-  - `ops/incus`
+  - `ops/cloudhypervisor`
   - runtime-related database fields and migrations
 - Affected host systems:
   - bare-metal networking and firewall rules

@@ -42,8 +42,6 @@ It also includes a first SSH slice:
 - unknown-key signup with emailed 6-digit verification codes
 - wildcard machine routing inside the HTTP server for `https://<machine>.<base-domain>`
 
-For now, machine ownership is bootstrapped by passing `owner_email` in the API request. This is temporary until the SSH auth flow is wired in.
-
 ## Repo Layout
 
 - [`ops/host/bootstrap.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/bootstrap.sh): installs host dependencies and baseline VM networking/runtime config
@@ -73,6 +71,12 @@ Then verify:
 
 ```bash
 sudo ./ops/host/verify.sh
+```
+
+Run the host smoke path after deploys or major runtime changes:
+
+```bash
+sudo ./ops/host/smoke.sh
 ```
 
 Notes:
@@ -181,6 +185,13 @@ export FASCINATE_EMAIL_FROM='Fascinate <hello@example.com>'
 export FASCINATE_RESEND_BASE_URL=https://api.resend.com
 export FASCINATE_SIGNUP_CODE_TTL=15m
 export FASCINATE_ACME_EMAIL=you@example.com
+```
+
+For manual host smoke runs you can also override:
+
+```bash
+export FASCINATE_SMOKE_EMAIL=smoke@example.com
+export FASCINATE_SMOKE_NAME=smoke-$(date +%s)
 ```
 
 Seed an SSH key into the local SQLite DB:

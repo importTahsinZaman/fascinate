@@ -54,7 +54,7 @@ func Load() Config {
 	}
 	runtimeBinary := getenv("FASCINATE_RUNTIME_BINARY", "")
 	if runtimeBinary == "" {
-		runtimeBinary = getenv("FASCINATE_INCUS_BINARY", "cloud-hypervisor")
+		runtimeBinary = "cloud-hypervisor"
 	}
 	runtimeStateDir := getenv("FASCINATE_RUNTIME_STATE_DIR", "")
 	if runtimeStateDir == "" {

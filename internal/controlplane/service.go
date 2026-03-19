@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"regexp"
 	"strconv"
 	"strings"
@@ -20,20 +21,19 @@ import (
 var machineNamePattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
 var memoryLimitPattern = regexp.MustCompile(`(?i)^([0-9]+(?:\.[0-9]+)?)\s*([kmgt]i?b?|b)?$`)
 
-type Runtime interface {
-	HealthCheck(context.Context) error
-	ListMachines(context.Context) ([]machineruntime.Machine, error)
-	GetMachine(context.Context, string) (machineruntime.Machine, error)
-	CreateMachine(context.Context, machineruntime.CreateMachineRequest) (machineruntime.Machine, error)
-	DeleteMachine(context.Context, string) error
-	CloneMachine(context.Context, machineruntime.CloneMachineRequest) (machineruntime.Machine, error)
-}
+const (
+	machineStateCreating = "CREATING"
+	machineStateRunning  = "RUNNING"
+	machineStateFailed   = "FAILED"
+)
 
 type Service struct {
 	cfg     config.Config
 	store   *database.Store
-	runtime Runtime
+	runtime machineruntime.Manager
 	mu      sync.Mutex
+
+	createCancels map[string]context.CancelFunc
 }
 
 type Machine struct {
@@ -60,11 +60,12 @@ type CloneMachineInput struct {
 	OwnerEmail string
 }
 
-func New(cfg config.Config, store *database.Store, runtime Runtime) *Service {
+func New(cfg config.Config, store *database.Store, runtime machineruntime.Manager) *Service {
 	return &Service{
-		cfg:     cfg,
-		store:   store,
-		runtime: runtime,
+		cfg:           cfg,
+		store:         store,
+		runtime:       runtime,
+		createCancels: map[string]context.CancelFunc{},
 	}
 }
 
@@ -88,8 +89,8 @@ func (s *Service) ListMachines(ctx context.Context, ownerEmail string) ([]Machin
 
 	out := make([]Machine, 0, len(records))
 	for _, record := range records {
-		machine := s.machineFromRecord(ctx, record, liveMachines[record.RuntimeName])
-		if len(records) == 1 && user.TutorialCompletedAt == nil {
+		machine := s.machineFromRecord(ctx, record, liveMachines[runtimeNameForRecord(record)])
+		if len(records) == 1 && user.TutorialCompletedAt == nil && strings.EqualFold(machine.State, machineStateRunning) {
 			machine.ShowTutorial = true
 		}
 		out = append(out, machine)
@@ -117,9 +118,12 @@ func (s *Service) GetMachine(ctx context.Context, name, ownerEmail string) (Mach
 }
 
 func (s *Service) machineFromRecordWithRuntime(ctx context.Context, record database.MachineRecord) (Machine, error) {
-	liveMachine, err := s.runtime.GetMachine(ctx, record.RuntimeName)
+	liveMachine, err := s.runtime.GetMachine(ctx, runtimeNameForRecord(record))
 	if err != nil {
 		if errors.Is(err, machineruntime.ErrMachineNotFound) {
+			if machineStateAllowsMissingRuntime(record.State) {
+				return s.machineFromRecord(ctx, record, machineruntime.Machine{}), nil
+			}
 			_ = s.store.UpdateMachineState(ctx, record.ID, "missing")
 			record.State = "missing"
 			return s.machineFromRecord(ctx, record, machineruntime.Machine{}), nil
@@ -133,13 +137,6 @@ func (s *Service) machineFromRecordWithRuntime(ctx context.Context, record datab
 func (s *Service) CreateMachine(ctx context.Context, input CreateMachineInput) (Machine, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
-	reconcileCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	if err := s.ReconcileRuntimeState(reconcileCtx); err != nil {
-		cancel()
-		return Machine{}, err
-	}
-	cancel()
 
 	name, err := validateMachineName(input.Name)
 	if err != nil {
@@ -162,18 +159,6 @@ func (s *Service) CreateMachine(ctx context.Context, input CreateMachineInput) (
 		return Machine{}, err
 	}
 
-	liveMachine, err := s.runtime.CreateMachine(ctx, machineruntime.CreateMachineRequest{
-		Name:         name,
-		Image:        s.cfg.DefaultImage,
-		CPU:          s.cfg.DefaultMachineCPU,
-		Memory:       s.cfg.DefaultMachineRAM,
-		RootDiskSize: s.cfg.DefaultMachineDisk,
-		PrimaryPort:  s.cfg.DefaultPrimaryPort,
-	})
-	if err != nil {
-		return Machine{}, err
-	}
-
 	persistCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -181,12 +166,11 @@ func (s *Service) CreateMachine(ctx context.Context, input CreateMachineInput) (
 		ID:          uuid.NewString(),
 		Name:        name,
 		OwnerUserID: user.ID,
-		RuntimeName: liveMachine.Name,
-		State:       liveMachine.State,
+		RuntimeName: name,
+		State:       machineStateCreating,
 		PrimaryPort: s.cfg.DefaultPrimaryPort,
 	})
 	if err != nil {
-		s.cleanupRuntimeMachine(name)
 		return Machine{}, err
 	}
 
@@ -196,7 +180,9 @@ func (s *Service) CreateMachine(ctx context.Context, input CreateMachineInput) (
 		}
 	}
 
-	return s.machineFromRecord(ctx, record, liveMachine), nil
+	s.queueMachineCreateLocked(record)
+
+	return s.machineFromRecord(ctx, record, machineruntime.Machine{}), nil
 }
 
 func (s *Service) DeleteMachine(ctx context.Context, name, ownerEmail string) error {
@@ -211,7 +197,13 @@ func (s *Service) DeleteMachine(ctx context.Context, name, ownerEmail string) er
 	deleteCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	if err := s.runtime.DeleteMachine(deleteCtx, record.RuntimeName); err != nil && !errors.Is(err, machineruntime.ErrMachineNotFound) {
+	runtimeName := runtimeNameForRecord(record)
+	if cancelCreate, ok := s.createCancels[runtimeName]; ok {
+		cancelCreate()
+		delete(s.createCancels, runtimeName)
+	}
+
+	if err := s.runtime.DeleteMachine(deleteCtx, runtimeName); err != nil && !errors.Is(err, machineruntime.ErrMachineNotFound) {
 		return err
 	}
 
@@ -250,7 +242,7 @@ func (s *Service) CloneMachine(ctx context.Context, input CloneMachineInput) (Ma
 	if normalizeEmail(sourceRecord.OwnerEmail) != ownerEmail {
 		return Machine{}, database.ErrNotFound
 	}
-	liveSource, err := s.runtime.GetMachine(ctx, sourceRecord.RuntimeName)
+	liveSource, err := s.runtime.GetMachine(ctx, runtimeNameForRecord(sourceRecord))
 	if err != nil {
 		return Machine{}, err
 	}
@@ -268,7 +260,7 @@ func (s *Service) CloneMachine(ctx context.Context, input CloneMachineInput) (Ma
 	}
 
 	liveMachine, err := s.runtime.CloneMachine(ctx, machineruntime.CloneMachineRequest{
-		SourceName:   sourceRecord.RuntimeName,
+		SourceName:   runtimeNameForRecord(sourceRecord),
 		TargetName:   targetName,
 		RootDiskSize: rootDiskSize,
 	})
@@ -438,6 +430,7 @@ func (s *Service) ReconcileRuntimeState(ctx context.Context) error {
 	}
 
 	known := make(map[string]struct{}, len(records))
+	recordByRuntime := make(map[string]database.MachineRecord, len(records))
 	for _, record := range records {
 		runtimeName := strings.TrimSpace(record.RuntimeName)
 		if runtimeName == "" {
@@ -447,11 +440,21 @@ func (s *Service) ReconcileRuntimeState(ctx context.Context) error {
 			continue
 		}
 		known[runtimeName] = struct{}{}
+		recordByRuntime[runtimeName] = record
 	}
 
 	runtimeMachines, err := s.runtime.ListMachines(ctx)
 	if err != nil {
 		return err
+	}
+
+	liveMachines := make(map[string]machineruntime.Machine, len(runtimeMachines))
+	for _, machine := range runtimeMachines {
+		name := strings.TrimSpace(machine.Name)
+		if name == "" {
+			continue
+		}
+		liveMachines[name] = machine
 	}
 
 	for _, machine := range runtimeMachines {
@@ -464,6 +467,24 @@ func (s *Service) ReconcileRuntimeState(ctx context.Context) error {
 		}
 		if err := s.runtime.DeleteMachine(ctx, name); err != nil && !errors.Is(err, machineruntime.ErrMachineNotFound) {
 			return err
+		}
+	}
+
+	for runtimeName, record := range recordByRuntime {
+		liveMachine, ok := liveMachines[runtimeName]
+		if !ok {
+			if strings.EqualFold(record.State, machineStateCreating) {
+				s.mu.Lock()
+				s.queueMachineCreateLocked(record)
+				s.mu.Unlock()
+			}
+			continue
+		}
+
+		if !strings.EqualFold(record.State, liveMachine.State) {
+			if err := s.store.UpdateMachineState(ctx, record.ID, liveMachine.State); err != nil && !errors.Is(err, database.ErrNotFound) {
+				return err
+			}
 		}
 	}
 
@@ -484,6 +505,111 @@ func (s *Service) cleanupRuntimeMachine(name string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	_ = s.runtime.DeleteMachine(ctx, name)
+}
+
+func (s *Service) queueMachineCreateLocked(record database.MachineRecord) {
+	runtimeName := strings.TrimSpace(record.RuntimeName)
+	if runtimeName == "" {
+		runtimeName = strings.TrimSpace(record.Name)
+	}
+	if runtimeName == "" {
+		return
+	}
+	if _, ok := s.createCancels[runtimeName]; ok {
+		return
+	}
+
+	createCtx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
+	s.createCancels[runtimeName] = cancel
+
+	go s.runMachineCreate(createCtx, record, machineruntime.CreateMachineRequest{
+		Name:         runtimeName,
+		Image:        s.cfg.DefaultImage,
+		CPU:          s.cfg.DefaultMachineCPU,
+		Memory:       s.cfg.DefaultMachineRAM,
+		RootDiskSize: s.cfg.DefaultMachineDisk,
+		PrimaryPort:  record.PrimaryPort,
+	})
+}
+
+func (s *Service) runMachineCreate(ctx context.Context, record database.MachineRecord, req machineruntime.CreateMachineRequest) {
+	defer func() {
+		s.mu.Lock()
+		if cancel, ok := s.createCancels[req.Name]; ok {
+			cancel()
+			delete(s.createCancels, req.Name)
+		}
+		s.mu.Unlock()
+	}()
+
+	liveMachine, err := s.runtime.CreateMachine(ctx, req)
+	if err != nil {
+		s.finishCreateFailure(record, req.Name, err)
+		return
+	}
+
+	s.finishCreateSuccess(record, liveMachine)
+}
+
+func (s *Service) finishCreateSuccess(record database.MachineRecord, liveMachine machineruntime.Machine) {
+	persistCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	currentRecord, err := s.store.GetMachineByName(persistCtx, record.Name)
+	if err != nil {
+		if errors.Is(err, database.ErrNotFound) {
+			s.cleanupRuntimeMachine(runtimeNameForRecord(record))
+			return
+		}
+		log.Printf("fascinate: finalize machine %s: %v", record.Name, err)
+		s.cleanupRuntimeMachine(runtimeNameForRecord(record))
+		return
+	}
+
+	if err := s.store.UpdateMachineState(persistCtx, currentRecord.ID, liveMachine.State); err != nil {
+		if errors.Is(err, database.ErrNotFound) {
+			s.cleanupRuntimeMachine(runtimeNameForRecord(record))
+			return
+		}
+		log.Printf("fascinate: update machine %s state: %v", record.Name, err)
+	}
+}
+
+func (s *Service) finishCreateFailure(record database.MachineRecord, runtimeName string, createErr error) {
+	log.Printf("fascinate: machine create failed for %s: %v", record.Name, createErr)
+	s.cleanupRuntimeMachine(runtimeName)
+
+	persistCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	currentRecord, err := s.store.GetMachineByName(persistCtx, record.Name)
+	if err != nil {
+		if !errors.Is(err, database.ErrNotFound) {
+			log.Printf("fascinate: load failed machine %s: %v", record.Name, err)
+		}
+		return
+	}
+
+	if err := s.store.UpdateMachineState(persistCtx, currentRecord.ID, machineStateFailed); err != nil && !errors.Is(err, database.ErrNotFound) {
+		log.Printf("fascinate: mark machine %s failed: %v", record.Name, err)
+	}
+}
+
+func machineStateAllowsMissingRuntime(state string) bool {
+	switch strings.ToUpper(strings.TrimSpace(state)) {
+	case machineStateCreating, machineStateFailed:
+		return true
+	default:
+		return false
+	}
+}
+
+func runtimeNameForRecord(record database.MachineRecord) string {
+	runtimeName := strings.TrimSpace(record.RuntimeName)
+	if runtimeName != "" {
+		return runtimeName
+	}
+	return strings.TrimSpace(record.Name)
 }
 
 func validateMachineName(value string) (string, error) {

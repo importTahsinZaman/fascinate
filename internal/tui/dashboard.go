@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -36,9 +37,13 @@ type loadMachinesMsg struct {
 }
 
 type operationDoneMsg struct {
-	info string
-	err  error
+	info    string
+	machine *controlplane.Machine
+	reload  bool
+	err     error
 }
+
+type refreshTickMsg struct{}
 
 type Model struct {
 	userEmail string
@@ -88,6 +93,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		return m, nil
+	case refreshTickMsg:
+		return m, m.loadMachinesCmd()
 	case loadMachinesMsg:
 		m.busy = false
 		if msg.err != nil {
@@ -110,10 +117,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.selected < 0 {
 			m.selected = 0
 		}
-		return m, nil
+		return m, m.autoRefreshCmd()
 	case operationDoneMsg:
 		m.busy = false
 		if msg.err != nil {
+			m.status = ""
 			m.errMsg = msg.err.Error()
 			return m, nil
 		}
@@ -124,8 +132,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.sourceName = ""
 		m.pendingName = ""
 		m.input.SetValue("")
-		m.busy = true
-		return m, m.loadMachinesCmd()
+		if msg.machine != nil {
+			m.upsertMachine(*msg.machine)
+		}
+		if msg.reload {
+			m.busy = true
+			return m, m.loadMachinesCmd()
+		}
+		return m, m.autoRefreshCmd()
 	case tea.KeyMsg:
 		switch m.mode {
 		case modeCreate, modeClone, modeDeleteConfirm:
@@ -203,14 +217,14 @@ func (m Model) updateBrowseMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.loadMachinesCmd()
 	case "enter":
 		selected, ok := m.selectedMachine()
-		if !ok {
+		if !ok || !machineAllowsShell(selected) {
 			return m, nil
 		}
 		m.shellTarget = selected.Name
 		return m, tea.Quit
 	case "t":
 		selected, ok := m.selectedMachine()
-		if !ok || !selected.ShowTutorial {
+		if !ok || !machineAllowsTutorial(selected) {
 			return m, nil
 		}
 		m.tutorialTarget = selected.Name
@@ -225,7 +239,7 @@ func (m Model) updateBrowseMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "c":
 		selected, ok := m.selectedMachine()
-		if !ok {
+		if !ok || !machineAllowsClone(selected) {
 			return m, nil
 		}
 		m.mode = modeClone
@@ -269,7 +283,9 @@ func (m Model) updateInputMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.errMsg = "machine name is required"
 				return m, nil
 			}
-			m.busy = true
+			m.mode = modeBrowse
+			m.status = fmt.Sprintf("creating %s", value)
+			m.errMsg = ""
 			m.input.Blur()
 			return m, m.createMachineCmd(value)
 		case modeClone:
@@ -331,7 +347,7 @@ func (m Model) loadMachinesCmd() tea.Cmd {
 
 func (m Model) createMachineCmd(name string) tea.Cmd {
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 
 		machine, err := m.machines.CreateMachine(ctx, controlplane.CreateMachineInput{
@@ -341,7 +357,10 @@ func (m Model) createMachineCmd(name string) tea.Cmd {
 		if err != nil {
 			return operationDoneMsg{err: err}
 		}
-		return operationDoneMsg{info: fmt.Sprintf("created %s", machine.Name)}
+		return operationDoneMsg{
+			info:    fmt.Sprintf("creating %s", machine.Name),
+			machine: &machine,
+		}
 	}
 }
 
@@ -358,7 +377,11 @@ func (m Model) cloneMachineCmd(sourceName, targetName string) tea.Cmd {
 		if err != nil {
 			return operationDoneMsg{err: err}
 		}
-		return operationDoneMsg{info: fmt.Sprintf("cloned %s to %s", sourceName, machine.Name)}
+		return operationDoneMsg{
+			info:    fmt.Sprintf("cloned %s to %s", sourceName, machine.Name),
+			machine: &machine,
+			reload:  true,
+		}
 	}
 }
 
@@ -370,7 +393,7 @@ func (m Model) deleteMachineCmd(name string) tea.Cmd {
 		if err := m.machines.DeleteMachine(ctx, name, m.userEmail); err != nil {
 			return operationDoneMsg{err: err}
 		}
-		return operationDoneMsg{info: fmt.Sprintf("deleted %s", name)}
+		return operationDoneMsg{info: fmt.Sprintf("deleted %s", name), reload: true}
 	}
 }
 
@@ -396,6 +419,8 @@ func (m Model) renderHeader(width int) string {
 	meta := fmt.Sprintf("%d machine%s", len(m.items), plural(len(m.items)))
 	if m.busy {
 		meta += " | syncing"
+	} else if m.hasPendingProvisioning() {
+		meta += " | provisioning"
 	}
 
 	var out strings.Builder
@@ -487,11 +512,22 @@ func (m Model) renderMachineCard(machine controlplane.Machine, selected bool, to
 
 	if selected {
 		lines = append(lines, "")
-		actions := []string{"(enter) shell"}
-		if machine.ShowTutorial {
+		actions := make([]string, 0, 4)
+		if machineAllowsShell(machine) {
+			actions = append(actions, "(enter) shell")
+		}
+		if machineAllowsTutorial(machine) {
 			actions = append(actions, "(t) tutorial")
 		}
-		actions = append(actions, "(c) clone", "(d) delete")
+		if machineAllowsClone(machine) {
+			actions = append(actions, "(c) clone")
+		}
+		actions = append(actions, "(d) delete")
+		if strings.EqualFold(machine.State, "CREATING") {
+			lines = append(lines, lipgloss.NewStyle().
+				Foreground(lipgloss.Color("117")).
+				Render("Provisioning VM and waiting for the guest to become ready."))
+		}
 		lines = append(lines, lipgloss.NewStyle().
 			Foreground(lipgloss.Color("244")).
 			Render(strings.Join(actions, "  •  ")))
@@ -555,8 +591,10 @@ func (m Model) statusBadge(state string) string {
 	switch strings.ToLower(strings.TrimSpace(state)) {
 	case "running":
 		style = style.Foreground(lipgloss.Color("22")).Background(lipgloss.Color("120"))
-	case "starting":
+	case "starting", "creating":
 		style = style.Foreground(lipgloss.Color("58")).Background(lipgloss.Color("221"))
+	case "failed":
+		style = style.Foreground(lipgloss.Color("52")).Background(lipgloss.Color("204"))
 	case "stopped":
 		style = style.Foreground(lipgloss.Color("251")).Background(lipgloss.Color("238"))
 	case "deleted", "missing":
@@ -629,4 +667,57 @@ func plural(count int) string {
 		return ""
 	}
 	return "s"
+}
+
+func (m Model) autoRefreshCmd() tea.Cmd {
+	if !m.hasPendingProvisioning() {
+		return nil
+	}
+
+	return tea.Tick(2*time.Second, func(time.Time) tea.Msg {
+		return refreshTickMsg{}
+	})
+}
+
+func (m *Model) upsertMachine(machine controlplane.Machine) {
+	for idx, item := range m.items {
+		if item.Name != machine.Name {
+			continue
+		}
+		m.items[idx] = machine
+		m.selected = idx
+		return
+	}
+
+	m.items = append(m.items, machine)
+	sort.Slice(m.items, func(i, j int) bool {
+		return m.items[i].Name < m.items[j].Name
+	})
+	for idx, item := range m.items {
+		if item.Name == machine.Name {
+			m.selected = idx
+			return
+		}
+	}
+}
+
+func (m Model) hasPendingProvisioning() bool {
+	for _, machine := range m.items {
+		if strings.EqualFold(machine.State, "CREATING") {
+			return true
+		}
+	}
+	return false
+}
+
+func machineAllowsShell(machine controlplane.Machine) bool {
+	return strings.EqualFold(machine.State, "RUNNING")
+}
+
+func machineAllowsClone(machine controlplane.Machine) bool {
+	return strings.EqualFold(machine.State, "RUNNING")
+}
+
+func machineAllowsTutorial(machine controlplane.Machine) bool {
+	return machine.ShowTutorial && machineAllowsShell(machine)
 }

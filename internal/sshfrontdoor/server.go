@@ -437,7 +437,7 @@ func (s *Server) createMachine(channel ssh.Channel, userEmail string, fields []s
 		return 2
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
 	machine, err := s.machines.CreateMachine(ctx, controlplane.CreateMachineInput{
@@ -449,7 +449,7 @@ func (s *Server) createMachine(channel ssh.Channel, userEmail string, fields []s
 		return 1
 	}
 
-	fmt.Fprintf(channel, "created %s\t%s\n", machine.Name, machine.URL)
+	fmt.Fprintf(channel, "creating %s\t%s\n", machine.Name, machine.URL)
 	return 0
 }
 
@@ -537,6 +537,9 @@ func (s *Server) openAuthorizedMachineRunner(channel ssh.Channel, requests <-cha
 	machine, err := s.machines.GetMachine(ctx, name, userEmail)
 	if err != nil {
 		return err
+	}
+	if !strings.EqualFold(machine.State, "RUNNING") {
+		return fmt.Errorf("machine %q is %s", strings.TrimSpace(name), strings.ToLower(strings.TrimSpace(machine.State)))
 	}
 
 	runtimeName := machine.Name

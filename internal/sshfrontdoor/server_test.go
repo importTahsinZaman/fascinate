@@ -218,7 +218,7 @@ func TestRunCommandCreateMachine(t *testing.T) {
 	t.Parallel()
 
 	machines := &fakeMachines{
-		createResult: controlplane.Machine{Name: "habits", URL: "https://habits.fascinate.dev"},
+		createResult: controlplane.Machine{Name: "habits", State: "CREATING", URL: "https://habits.fascinate.dev"},
 	}
 	server := newTestServer(t, &fakeKeyLookup{}, machines)
 
@@ -230,7 +230,7 @@ func TestRunCommandCreateMachine(t *testing.T) {
 	if machines.createInput.OwnerEmail != "dev@example.com" || machines.createInput.Name != "habits" {
 		t.Fatalf("unexpected create input: %+v", machines.createInput)
 	}
-	if got := channel.String(); !bytes.Contains([]byte(got), []byte("created habits")) {
+	if got := channel.String(); !bytes.Contains([]byte(got), []byte("creating habits")) {
 		t.Fatalf("unexpected channel output: %q", got)
 	}
 }
@@ -321,6 +321,7 @@ func TestRunCommandShellMachine(t *testing.T) {
 		getResult: controlplane.Machine{
 			Name:       "habits",
 			OwnerEmail: "dev@example.com",
+			State:      "RUNNING",
 		},
 	}
 	server := newTestServer(t, &fakeKeyLookup{}, machines)
@@ -351,6 +352,7 @@ func TestRunCommandTutorialMachine(t *testing.T) {
 		getResult: controlplane.Machine{
 			Name:         "habits",
 			OwnerEmail:   "dev@example.com",
+			State:        "RUNNING",
 			ShowTutorial: true,
 		},
 	}

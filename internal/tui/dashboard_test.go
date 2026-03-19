@@ -38,7 +38,12 @@ func (f *fakeMachines) CreateMachine(_ context.Context, input controlplane.Creat
 	if f.createErr != nil {
 		return controlplane.Machine{}, f.createErr
 	}
-	return controlplane.Machine{Name: input.Name}, nil
+	return controlplane.Machine{
+		Name:        input.Name,
+		State:       "CREATING",
+		PrimaryPort: 3000,
+		URL:         "https://" + input.Name + ".fascinate.dev",
+	}, nil
 }
 
 func (f *fakeMachines) DeleteMachine(_ context.Context, name, ownerEmail string) error {
@@ -88,17 +93,22 @@ func TestModelCreateMachineFlow(t *testing.T) {
 
 	updated, cmd := createdModel.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	inFlight := updated.(Model)
-	if !inFlight.busy {
-		t.Fatalf("expected busy state after submit")
+	if inFlight.mode != modeBrowse {
+		t.Fatalf("expected browse mode after create submit, got %v", inFlight.mode)
 	}
 
 	resultMsg := cmd()
 	updated, cmd = inFlight.Update(resultMsg)
 	afterResult := updated.(Model)
-	if !afterResult.busy {
-		t.Fatalf("expected refresh after operation")
+	if afterResult.mode != modeBrowse {
+		t.Fatalf("expected browse mode after create result, got %v", afterResult.mode)
 	}
-	_ = cmd()
+	if len(afterResult.items) != 1 || afterResult.items[0].State != "CREATING" {
+		t.Fatalf("expected creating machine card, got %+v", afterResult.items)
+	}
+	if cmd == nil {
+		t.Fatalf("expected auto-refresh command for creating machine")
+	}
 
 	if manager.createInput.Name != "habits" || manager.createInput.OwnerEmail != "dev@example.com" {
 		t.Fatalf("unexpected create input: %+v", manager.createInput)
@@ -174,6 +184,26 @@ func TestModelShellActionFromBrowseMode(t *testing.T) {
 	}
 	if got.ShellTarget() != "habits" {
 		t.Fatalf("unexpected shell target: %q", got.ShellTarget())
+	}
+}
+
+func TestModelShellActionIgnoredWhileMachineCreating(t *testing.T) {
+	t.Parallel()
+
+	manager := &fakeMachines{
+		listResult: []controlplane.Machine{{Name: "habits", State: "CREATING"}},
+	}
+	model := NewDashboard("dev@example.com", manager, 80, 24)
+
+	updated, _ := model.Update(loadMachinesMsg{machines: manager.listResult})
+	withItems := updated.(Model)
+	updated, cmd := withItems.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	got := updated.(Model)
+	if cmd != nil {
+		t.Fatalf("expected no shell command while creating")
+	}
+	if got.WantsShell() {
+		t.Fatalf("expected no shell action while creating")
 	}
 }
 
