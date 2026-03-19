@@ -393,6 +393,15 @@ func TestTutorialShellCommandUsesParentWorkspace(t *testing.T) {
 	}
 }
 
+func TestGuestSSHRemoteCommandQuotesShellCommand(t *testing.T) {
+	t.Parallel()
+
+	command := guestSSHRemoteCommand("xterm-256color", "if command -v bash >/dev/null 2>&1; then exec bash -l; else exec sh -l; fi")
+	if !bytes.Contains([]byte(command), []byte("sh -lc 'if command -v bash >/dev/null 2>&1; then exec bash -l; else exec sh -l; fi'")) {
+		t.Fatalf("unexpected guest ssh command: %q", command)
+	}
+}
+
 func TestRunCommandShellMachineRejectsWrongOwner(t *testing.T) {
 	t.Parallel()
 

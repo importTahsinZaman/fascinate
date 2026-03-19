@@ -603,6 +603,7 @@ func (s *Server) runGuestCommand(channel ssh.Channel, requests <-chan *ssh.Reque
 	}
 
 	term := "xterm-256color"
+	remoteCommand := guestSSHRemoteCommand(term, shellCommand)
 	args := []string{
 		"-i", s.guestSSHKeyPath,
 		"-o", "BatchMode=yes",
@@ -611,12 +612,7 @@ func (s *Server) runGuestCommand(channel ssh.Channel, requests <-chan *ssh.Reque
 		"-o", "LogLevel=ERROR",
 		"-tt",
 		fmt.Sprintf("%s@%s", guestUser, targetIP),
-		"env",
-		"TERM=" + term,
-		"SHELL=/bin/bash",
-		"sh",
-		"-lc",
-		shellCommand,
+		remoteCommand,
 	}
 
 	binary := s.sshClientBinary
@@ -656,6 +652,14 @@ func (s *Server) runGuestCommand(channel ssh.Channel, requests <-chan *ssh.Reque
 	}
 
 	return nil
+}
+
+func guestSSHRemoteCommand(term, shellCommand string) string {
+	return fmt.Sprintf(
+		"env TERM=%s SHELL=/bin/bash sh -lc '%s'",
+		shellQuoteSingle(strings.TrimSpace(term)),
+		shellQuoteSingle(shellCommand),
+	)
 }
 
 func (s *Server) forwardShellRequests(requests <-chan *ssh.Request, ptmx *os.File, size windowSize, stop <-chan struct{}) {

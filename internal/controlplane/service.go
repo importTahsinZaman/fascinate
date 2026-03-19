@@ -37,15 +37,15 @@ type Service struct {
 }
 
 type Machine struct {
-	ID           string         `json:"id"`
-	Name         string         `json:"name"`
-	OwnerEmail   string         `json:"owner_email"`
-	State        string         `json:"state"`
-	PrimaryPort  int            `json:"primary_port"`
-	URL          string         `json:"url,omitempty"`
-	ShowTutorial bool           `json:"show_tutorial,omitempty"`
-	CreatedAt    string         `json:"created_at"`
-	UpdatedAt    string         `json:"updated_at"`
+	ID           string                  `json:"id"`
+	Name         string                  `json:"name"`
+	OwnerEmail   string                  `json:"owner_email"`
+	State        string                  `json:"state"`
+	PrimaryPort  int                     `json:"primary_port"`
+	URL          string                  `json:"url,omitempty"`
+	ShowTutorial bool                    `json:"show_tutorial,omitempty"`
+	CreatedAt    string                  `json:"created_at"`
+	UpdatedAt    string                  `json:"updated_at"`
 	Runtime      *machineruntime.Machine `json:"runtime,omitempty"`
 }
 
@@ -134,6 +134,13 @@ func (s *Service) CreateMachine(ctx context.Context, input CreateMachineInput) (
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	reconcileCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	if err := s.ReconcileRuntimeState(reconcileCtx); err != nil {
+		cancel()
+		return Machine{}, err
+	}
+	cancel()
+
 	name, err := validateMachineName(input.Name)
 	if err != nil {
 		return Machine{}, err
@@ -167,7 +174,10 @@ func (s *Service) CreateMachine(ctx context.Context, input CreateMachineInput) (
 		return Machine{}, err
 	}
 
-	record, err := s.store.CreateMachine(ctx, database.CreateMachineParams{
+	persistCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	record, err := s.store.CreateMachine(persistCtx, database.CreateMachineParams{
 		ID:          uuid.NewString(),
 		Name:        name,
 		OwnerUserID: user.ID,
@@ -181,7 +191,7 @@ func (s *Service) CreateMachine(ctx context.Context, input CreateMachineInput) (
 	}
 
 	if len(existingRecords) > 0 {
-		if err := s.store.MarkUserTutorialCompleted(ctx, user.ID); err != nil {
+		if err := s.store.MarkUserTutorialCompleted(persistCtx, user.ID); err != nil {
 			return Machine{}, err
 		}
 	}
@@ -198,11 +208,14 @@ func (s *Service) DeleteMachine(ctx context.Context, name, ownerEmail string) er
 		return err
 	}
 
-	if err := s.runtime.DeleteMachine(ctx, record.RuntimeName); err != nil && !errors.Is(err, machineruntime.ErrMachineNotFound) {
+	deleteCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	if err := s.runtime.DeleteMachine(deleteCtx, record.RuntimeName); err != nil && !errors.Is(err, machineruntime.ErrMachineNotFound) {
 		return err
 	}
 
-	return s.store.MarkMachineDeleted(ctx, record.ID)
+	return s.store.MarkMachineDeleted(deleteCtx, record.ID)
 }
 
 func (s *Service) CloneMachine(ctx context.Context, input CloneMachineInput) (Machine, error) {
@@ -263,7 +276,10 @@ func (s *Service) CloneMachine(ctx context.Context, input CloneMachineInput) (Ma
 		return Machine{}, err
 	}
 
-	record, err := s.store.CreateMachine(ctx, database.CreateMachineParams{
+	persistCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	record, err := s.store.CreateMachine(persistCtx, database.CreateMachineParams{
 		ID:          uuid.NewString(),
 		Name:        targetName,
 		OwnerUserID: user.ID,
@@ -276,7 +292,7 @@ func (s *Service) CloneMachine(ctx context.Context, input CloneMachineInput) (Ma
 		return Machine{}, err
 	}
 
-	if err := s.store.MarkUserTutorialCompleted(ctx, user.ID); err != nil {
+	if err := s.store.MarkUserTutorialCompleted(persistCtx, user.ID); err != nil {
 		return Machine{}, err
 	}
 
@@ -413,6 +429,45 @@ func (s *Service) ensureUser(ctx context.Context, email string) (database.User, 
 	}
 
 	return s.store.UpsertUser(ctx, email, s.isAdminEmail(email))
+}
+
+func (s *Service) ReconcileRuntimeState(ctx context.Context) error {
+	records, err := s.store.ListMachines(ctx, "")
+	if err != nil {
+		return err
+	}
+
+	known := make(map[string]struct{}, len(records))
+	for _, record := range records {
+		runtimeName := strings.TrimSpace(record.RuntimeName)
+		if runtimeName == "" {
+			runtimeName = strings.TrimSpace(record.Name)
+		}
+		if runtimeName == "" {
+			continue
+		}
+		known[runtimeName] = struct{}{}
+	}
+
+	runtimeMachines, err := s.runtime.ListMachines(ctx)
+	if err != nil {
+		return err
+	}
+
+	for _, machine := range runtimeMachines {
+		name := strings.TrimSpace(machine.Name)
+		if name == "" {
+			continue
+		}
+		if _, ok := known[name]; ok {
+			continue
+		}
+		if err := s.runtime.DeleteMachine(ctx, name); err != nil && !errors.Is(err, machineruntime.ErrMachineNotFound) {
+			return err
+		}
+	}
+
+	return nil
 }
 
 func (s *Service) isAdminEmail(email string) bool {

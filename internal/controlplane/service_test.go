@@ -271,6 +271,56 @@ func TestServiceCloneMachineRollsBackRuntimeOnDBConflict(t *testing.T) {
 	}
 }
 
+func TestServiceReconcileRuntimeStateDeletesOrphans(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, runtime := newTestServiceDeps(t, ctx)
+	runtime.machines["orphan-vm"] = machineruntime.Machine{
+		Name:   "orphan-vm",
+		Type:   "vm",
+		State:  "RUNNING",
+		CPU:    "1",
+		Memory: "2GiB",
+		Disk:   "20GiB",
+	}
+
+	service := newTestService(store, runtime)
+	if err := service.ReconcileRuntimeState(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(runtime.deleted) != 1 || runtime.deleted[0] != "orphan-vm" {
+		t.Fatalf("expected orphan runtime cleanup, got %+v", runtime.deleted)
+	}
+}
+
+func TestServiceCreateMachineReconcilesRuntimeBeforeCreate(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, runtime := newTestServiceDeps(t, ctx)
+	runtime.machines["orphan-vm"] = machineruntime.Machine{
+		Name:   "orphan-vm",
+		Type:   "vm",
+		State:  "RUNNING",
+		CPU:    "1",
+		Memory: "2GiB",
+		Disk:   "20GiB",
+	}
+
+	service := newTestService(store, runtime)
+	_, err := service.CreateMachine(ctx, CreateMachineInput{
+		Name:       "habits",
+		OwnerEmail: "dev@example.com",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runtime.deleted) == 0 || runtime.deleted[0] != "orphan-vm" {
+		t.Fatalf("expected orphan cleanup before create, got %+v", runtime.deleted)
+	}
+}
+
 func TestServiceGetMachineMarksMissingWhenRuntimeDoesNotHaveIt(t *testing.T) {
 	t.Parallel()
 

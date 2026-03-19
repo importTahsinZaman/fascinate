@@ -49,6 +49,13 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 		return nil, err
 	}
 	controlPlane := controlplane.New(cfg, store, runtimeClient)
+	reconcileCtx, reconcileCancel := context.WithTimeout(context.Background(), 60*time.Second)
+	if err := controlPlane.ReconcileRuntimeState(reconcileCtx); err != nil {
+		reconcileCancel()
+		store.Close()
+		return nil, err
+	}
+	reconcileCancel()
 	handler := httpapi.New(cfg, store, runtimeClient, controlPlane)
 	emailClient := email.NewResendClient(cfg.ResendBaseURL, cfg.ResendAPIKey, cfg.EmailFrom)
 	signupService := signup.New(cfg, store, emailClient)
