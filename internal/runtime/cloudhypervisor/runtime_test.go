@@ -107,7 +107,7 @@ func TestNewUsesVMDefaults(t *testing.T) {
 		RuntimeBinary:      "cloud-hypervisor",
 		QemuImgBinary:      "qemu-img",
 		CloudLocalDSBinary: "cloud-localds",
-		VMFirmwarePath:     "/usr/local/bin/hypervisor-fw",
+		VMFirmwarePath:     "/usr/local/share/cloud-hypervisor/CLOUDHV.fd",
 	}
 
 	manager, err := New(cfg)

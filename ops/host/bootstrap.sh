@@ -10,8 +10,8 @@ INSTALL_GO="${FASCINATE_INSTALL_GO:-1}"
 HOST_ADMIN_SSH_PORT="${FASCINATE_HOST_ADMIN_SSH_PORT:-}"
 CLOUD_HYPERVISOR_VERSION="${FASCINATE_CLOUD_HYPERVISOR_VERSION:-v51.0}"
 CLOUD_HYPERVISOR_URL="${FASCINATE_CLOUD_HYPERVISOR_URL:-https://github.com/cloud-hypervisor/cloud-hypervisor/releases/download/${CLOUD_HYPERVISOR_VERSION}/cloud-hypervisor-static}"
-HYPERVISOR_FW_VERSION="${FASCINATE_HYPERVISOR_FW_VERSION:-0.5.0}"
-HYPERVISOR_FW_URL="${FASCINATE_HYPERVISOR_FW_URL:-https://github.com/cloud-hypervisor/rust-hypervisor-firmware/releases/download/${HYPERVISOR_FW_VERSION}/hypervisor-fw}"
+CLOUDHV_FIRMWARE_VERSION="${FASCINATE_CLOUDHV_FIRMWARE_VERSION:-ch-a54f262b09}"
+CLOUDHV_FIRMWARE_URL="${FASCINATE_CLOUDHV_FIRMWARE_URL:-https://github.com/cloud-hypervisor/edk2/releases/download/${CLOUDHV_FIRMWARE_VERSION}/CLOUDHV.fd}"
 
 require_root() {
   if [[ "${EUID}" -ne 0 ]]; then
@@ -61,13 +61,14 @@ install_cloud_hypervisor() {
   chmod 0755 /usr/local/bin/cloud-hypervisor
 }
 
-install_hypervisor_fw() {
-  if [[ -x /usr/local/bin/hypervisor-fw ]]; then
+install_cloudhv_firmware() {
+  if [[ -f /usr/local/share/cloud-hypervisor/CLOUDHV.fd ]]; then
     return 0
   fi
 
-  curl -fsSL "${HYPERVISOR_FW_URL}" -o /usr/local/bin/hypervisor-fw
-  chmod 0755 /usr/local/bin/hypervisor-fw
+  mkdir -p /usr/local/share/cloud-hypervisor
+  curl -fsSL "${CLOUDHV_FIRMWARE_URL}" -o /usr/local/share/cloud-hypervisor/CLOUDHV.fd
+  chmod 0644 /usr/local/share/cloud-hypervisor/CLOUDHV.fd
 }
 
 configure_hostname() {
@@ -185,7 +186,7 @@ print_summary() {
 require_root
 install_packages
 install_cloud_hypervisor
-install_hypervisor_fw
+install_cloudhv_firmware
 configure_hostname
 configure_firewall
 configure_bridge

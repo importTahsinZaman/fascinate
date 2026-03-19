@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
-	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -938,15 +937,12 @@ func loadOrCreateGuestSSHKey(path string) (string, error) {
 		return "", err
 	}
 
-	privateKeyBytes, err := x509.MarshalPKCS8PrivateKey(privateKey)
+	privateKeyPEMBlock, err := ssh.MarshalPrivateKey(privateKey, "")
 	if err != nil {
 		return "", err
 	}
 
-	privateKeyPEM := pem.EncodeToMemory(&pem.Block{
-		Type:  "PRIVATE KEY",
-		Bytes: privateKeyBytes,
-	})
+	privateKeyPEM := pem.EncodeToMemory(privateKeyPEMBlock)
 	if err := os.WriteFile(path, privateKeyPEM, 0o600); err != nil {
 		return "", err
 	}
