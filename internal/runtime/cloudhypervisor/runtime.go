@@ -511,8 +511,7 @@ func (m *Manager) startVM(ctx context.Context, meta metadata) error {
 		"--memory", memoryArg,
 		"--firmware", m.firmwarePath,
 		"--serial", "tty",
-		"--disk", "path=" + meta.DiskPath,
-		"--disk", "path=" + meta.SeedPath + ",readonly=on",
+		"--disk", "path=" + meta.DiskPath, "path=" + meta.SeedPath + ",readonly=on",
 		"--net", "tap=" + meta.TapDevice + ",mac=" + meta.MACAddress,
 	}
 
