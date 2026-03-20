@@ -57,6 +57,7 @@ type Manager struct {
 	qemuImgBinary     string
 	cloudLocalDS      string
 	stateDir          string
+	baseDomain        string
 	bridgeName        string
 	bridgePrefix      netip.Prefix
 	guestPrefix       netip.Prefix
@@ -92,6 +93,7 @@ func New(cfg config.Config) (*Manager, error) {
 		qemuImgBinary:     strings.TrimSpace(cfg.QemuImgBinary),
 		cloudLocalDS:      strings.TrimSpace(cfg.CloudLocalDSBinary),
 		stateDir:          strings.TrimSpace(cfg.RuntimeStateDir),
+		baseDomain:        strings.TrimSpace(cfg.BaseDomain),
 		bridgeName:        strings.TrimSpace(cfg.VMBridgeName),
 		bridgePrefix:      bridgePrefix,
 		guestPrefix:       guestPrefix,
@@ -473,7 +475,7 @@ func (m *Manager) resizeDisk(ctx context.Context, diskPath, size string) error {
 }
 
 func (m *Manager) writeSeedImage(ctx context.Context, meta metadata) error {
-	userData := cloudInitUserData(meta, m.guestSSHPublicKey)
+	userData := cloudInitUserData(meta, m.baseDomain, m.guestSSHPublicKey)
 	metaData := fmt.Sprintf("instance-id: fascinate-%s\nlocal-hostname: %s\n", meta.Name, meta.Name)
 	networkConfig := cloudInitNetworkConfig(meta.IPv4, meta.MACAddress, m.guestPrefix, m.bridgePrefix.Addr())
 
@@ -636,7 +638,8 @@ func (m *Manager) run(ctx context.Context, binary string, args ...string) ([]byt
 	return output, nil
 }
 
-func cloudInitUserData(meta metadata, publicKey string) string {
+func cloudInitUserData(meta metadata, baseDomain, publicKey string) string {
+	publicHost := machinePublicHost(meta.Name, baseDomain)
 	bootstrapScript := fmt.Sprintf(`#!/usr/bin/env bash
 set -euo pipefail
 
@@ -761,22 +764,45 @@ systemctl daemon-reload
 systemctl enable --now docker
 usermod -aG docker %s || true
 
-cat >/root/AGENTS.md <<'EOF_AGENTS'
-The fascinate platform handles public HTTPS for this machine.
+mkdir -p /etc/fascinate /etc/claude-code
+mkdir -p /root/.claude /root/.codex
+mkdir -p /home/%s/.claude /home/%s/.codex
+mkdir -p /etc/skel/.claude /etc/skel/.codex
+
+cat >/etc/fascinate/AGENTS.md <<'EOF_AGENTS'
+You are running inside a Fascinate VM.
+
+Fascinate handles public HTTPS for this machine at https://%s.
 
 Rules:
 - Bind application servers to 0.0.0.0.
-- Port %d is the default public application port right now.
+- Port %d is exposed at https://%s.
 - Do not configure TLS certificates inside this machine for public app traffic.
+- Verify that apps are actually usable from the Fascinate URL, not just localhost.
+- If a framework restricts allowed hostnames or development origins, include %s.
+- For Next.js development, add this hostname to allowedDevOrigins.
 - Docker is available.
 - Data on disk persists across restarts.
 - Claude Code is preinstalled as 'claude'.
 EOF_AGENTS
 
-cp /root/AGENTS.md /etc/skel/AGENTS.md
+chmod 0644 /etc/fascinate/AGENTS.md
+
+ln -sfn /etc/fascinate/AGENTS.md /etc/claude-code/CLAUDE.md
+ln -sfn /etc/fascinate/AGENTS.md /root/AGENTS.md
+ln -sfn /etc/fascinate/AGENTS.md /root/.claude/CLAUDE.md
+ln -sfn /etc/fascinate/AGENTS.md /root/.codex/AGENTS.md
+ln -sfn /etc/fascinate/AGENTS.md /home/%s/AGENTS.md
+ln -sfn /etc/fascinate/AGENTS.md /home/%s/.claude/CLAUDE.md
+ln -sfn /etc/fascinate/AGENTS.md /home/%s/.codex/AGENTS.md
+ln -sfn /etc/fascinate/AGENTS.md /etc/skel/AGENTS.md
+ln -sfn /etc/fascinate/AGENTS.md /etc/skel/.claude/CLAUDE.md
+ln -sfn /etc/fascinate/AGENTS.md /etc/skel/.codex/AGENTS.md
+
+chown -h %s:%s /home/%s/AGENTS.md /home/%s/.claude/CLAUDE.md /home/%s/.codex/AGENTS.md || true
 apt-get clean
 rm -rf /var/lib/apt/lists/*
-`, meta.GuestUser, meta.PrimaryPort)
+`, meta.GuestUser, meta.GuestUser, meta.GuestUser, publicHost, meta.PrimaryPort, publicHost, publicHost, meta.GuestUser, meta.GuestUser, meta.GuestUser, meta.GuestUser, meta.GuestUser, meta.GuestUser, meta.GuestUser, meta.GuestUser)
 
 	return fmt.Sprintf(`#cloud-config
 preserve_hostname: false
@@ -814,6 +840,18 @@ ethernets:
     nameservers:
       addresses: [1.1.1.1, 1.0.0.1]
 `, strings.ToLower(strings.TrimSpace(macAddress)), ipv4, guestPrefix.Bits(), gateway.String())
+}
+
+func machinePublicHost(name, baseDomain string) string {
+	name = strings.TrimSpace(name)
+	baseDomain = strings.TrimSpace(baseDomain)
+	if name == "" {
+		return baseDomain
+	}
+	if baseDomain == "" {
+		return name
+	}
+	return name + "." + baseDomain
 }
 
 func cloudHypervisorMemoryArg(value string) (string, error) {

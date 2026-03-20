@@ -4,6 +4,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"fascinate/internal/config"
@@ -137,6 +138,31 @@ func TestTapDeviceNameIsStableAndHashed(t *testing.T) {
 	}
 	if len(first) > 15 {
 		t.Fatalf("tap device name too long: %q", first)
+	}
+}
+
+func TestCloudInitUserDataInstallsCanonicalAgentDocs(t *testing.T) {
+	t.Parallel()
+
+	userData := cloudInitUserData(metadata{
+		Name:        "tic-tac-toe",
+		PrimaryPort: 3000,
+		GuestUser:   "ubuntu",
+	}, "fascinate.dev", "ssh-ed25519 AAAATEST fascinate")
+
+	for _, snippet := range []string{
+		"/etc/fascinate/AGENTS.md",
+		"/etc/claude-code/CLAUDE.md",
+		"/root/.claude/CLAUDE.md",
+		"/root/.codex/AGENTS.md",
+		"/home/ubuntu/.claude/CLAUDE.md",
+		"/home/ubuntu/.codex/AGENTS.md",
+		"https://tic-tac-toe.fascinate.dev",
+		"add this hostname to allowedDevOrigins",
+	} {
+		if !strings.Contains(userData, snippet) {
+			t.Fatalf("expected cloud-init user-data to contain %q", snippet)
+		}
 	}
 }
 
