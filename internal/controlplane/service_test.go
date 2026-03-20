@@ -28,6 +28,18 @@ type fakeRuntime struct {
 	clonedReq     []machineruntime.CloneMachineRequest
 }
 
+type fakeToolAuth struct {
+	restoreUserID    string
+	restoreRuntime   string
+	restoreGuestUser string
+	restoreErr       error
+
+	captureUserID    string
+	captureRuntime   string
+	captureGuestUser string
+	captureErr       error
+}
+
 func (f *fakeRuntime) HealthCheck(context.Context) error {
 	return nil
 }
@@ -114,6 +126,20 @@ func (f *fakeRuntime) CloneMachine(_ context.Context, req machineruntime.CloneMa
 	return clone, nil
 }
 
+func (f *fakeToolAuth) RestoreAll(_ context.Context, userID, runtimeName, guestUser string) error {
+	f.restoreUserID = userID
+	f.restoreRuntime = runtimeName
+	f.restoreGuestUser = guestUser
+	return f.restoreErr
+}
+
+func (f *fakeToolAuth) CaptureAll(_ context.Context, userID, runtimeName, guestUser string) error {
+	f.captureUserID = userID
+	f.captureRuntime = runtimeName
+	f.captureGuestUser = guestUser
+	return f.captureErr
+}
+
 func TestServiceCreateCloneAndDeleteMachine(t *testing.T) {
 	t.Parallel()
 
@@ -197,6 +223,130 @@ func TestServiceCreateCloneAndDeleteMachine(t *testing.T) {
 	}
 	if len(list) != 1 {
 		t.Fatalf("expected 1 machine after delete, got %d", len(list))
+	}
+}
+
+func TestServiceCreateMachineRestoresToolAuthBeforeRunning(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, runtime := newTestServiceDeps(t, ctx)
+	auth := &fakeToolAuth{}
+
+	service := New(config.Config{
+		BaseDomain:         "fascinate.dev",
+		DefaultImage:       "/var/lib/fascinate/images/fascinate-base.raw",
+		DefaultMachineCPU:  "1",
+		DefaultMachineRAM:  "2GiB",
+		DefaultMachineDisk: "20GiB",
+		DefaultPrimaryPort: 3000,
+		GuestSSHUser:       "ubuntu",
+	}, store, runtime, auth)
+
+	created, err := service.CreateMachine(ctx, CreateMachineInput{
+		Name:       "space-shooter",
+		OwnerEmail: "dev@example.com",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForTestCondition(t, func() bool {
+		return auth.restoreRuntime == "space-shooter"
+	})
+	if auth.restoreGuestUser != "ubuntu" {
+		t.Fatalf("expected ubuntu guest user, got %q", auth.restoreGuestUser)
+	}
+
+	record, err := store.GetMachineByName(ctx, created.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if auth.restoreUserID != record.OwnerUserID {
+		t.Fatalf("expected restore user %q, got %q", record.OwnerUserID, auth.restoreUserID)
+	}
+}
+
+func TestServiceCreateMachineFailsWhenToolAuthRestoreFails(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, runtime := newTestServiceDeps(t, ctx)
+	auth := &fakeToolAuth{restoreErr: errors.New("restore failed")}
+
+	service := New(config.Config{
+		BaseDomain:         "fascinate.dev",
+		DefaultImage:       "/var/lib/fascinate/images/fascinate-base.raw",
+		DefaultMachineCPU:  "1",
+		DefaultMachineRAM:  "2GiB",
+		DefaultMachineDisk: "20GiB",
+		DefaultPrimaryPort: 3000,
+		GuestSSHUser:       "ubuntu",
+	}, store, runtime, auth)
+
+	created, err := service.CreateMachine(ctx, CreateMachineInput{
+		Name:       "space-shooter",
+		OwnerEmail: "dev@example.com",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	waitForTestCondition(t, func() bool {
+		record, err := store.GetMachineByName(ctx, created.Name)
+		return err == nil && strings.EqualFold(record.State, machineStateFailed)
+	})
+	if len(runtime.deleted) != 1 || runtime.deleted[0] != "space-shooter" {
+		t.Fatalf("expected failed create cleanup, got %+v", runtime.deleted)
+	}
+}
+
+func TestServiceDeleteMachineCapturesToolAuthBestEffort(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, runtime := newTestServiceDeps(t, ctx)
+	auth := &fakeToolAuth{captureErr: errors.New("boom")}
+
+	user, err := store.UpsertUser(ctx, "dev@example.com", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := store.CreateMachine(ctx, database.CreateMachineParams{
+		ID:          "machine-1",
+		Name:        "habits",
+		OwnerUserID: user.ID,
+		RuntimeName: "habits",
+		State:       machineStateRunning,
+		PrimaryPort: 3000,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	runtime.machines["habits"] = machineruntime.Machine{
+		Name:      "habits",
+		Type:      "vm",
+		State:     machineStateRunning,
+		GuestUser: "ubuntu",
+	}
+
+	service := New(config.Config{
+		BaseDomain:         "fascinate.dev",
+		DefaultImage:       "/var/lib/fascinate/images/fascinate-base.raw",
+		DefaultMachineCPU:  "1",
+		DefaultMachineRAM:  "2GiB",
+		DefaultMachineDisk: "20GiB",
+		DefaultPrimaryPort: 3000,
+		GuestSSHUser:       "ubuntu",
+	}, store, runtime, auth)
+
+	if err := service.DeleteMachine(ctx, "habits", "dev@example.com"); err != nil {
+		t.Fatal(err)
+	}
+	if auth.captureRuntime != "habits" || auth.captureUserID != user.ID {
+		t.Fatalf("expected capture before delete, got runtime=%q user=%q", auth.captureRuntime, auth.captureUserID)
+	}
+	if len(runtime.deleted) != 1 || runtime.deleted[0] != "habits" {
+		t.Fatalf("expected runtime delete, got %+v", runtime.deleted)
 	}
 }
 

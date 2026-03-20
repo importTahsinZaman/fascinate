@@ -79,6 +79,12 @@ Run the host smoke path after deploys or major runtime changes:
 sudo ./ops/host/smoke.sh
 ```
 
+Run the manual tool-auth smoke path when validating Claude subscription persistence across VMs:
+
+```bash
+sudo ./ops/host/smoke-tool-auth.sh
+```
+
 Notes:
 - the bootstrap script assumes a fresh host or a host you are willing to standardize
 - it installs Cloud Hypervisor plus qcow2/cloud-init image tooling
@@ -176,6 +182,9 @@ export FASCINATE_MAX_MACHINE_CPU=2
 export FASCINATE_MAX_MACHINE_RAM=4GiB
 export FASCINATE_MAX_MACHINE_DISK=20GiB
 export FASCINATE_DEFAULT_PRIMARY_PORT=3000
+export FASCINATE_TOOL_AUTH_DIR=./data/tool-auth
+export FASCINATE_TOOL_AUTH_KEY_PATH=./data/tool_auth.key
+export FASCINATE_TOOL_AUTH_SYNC_INTERVAL=2m
 export FASCINATE_NODE_VERSION=latest
 export FASCINATE_GO_VERSION=latest
 export FASCINATE_NPM_VERSION=latest
@@ -226,6 +235,27 @@ New machines built from `fascinate-base` come with:
 - npm upgraded from the upstream registry at image-build time (`FASCINATE_NPM_VERSION=latest` by default)
 - Python 3, git, jq, ripgrep, sqlite3, tmux, fzf, curl, wget, unzip, zip, rsync, and common build tooling
 - Claude Code available as `claude`
+
+## Persistent Tool Auth
+
+Fascinate now keeps tool auth as a per-user host asset instead of a per-VM-only state.
+
+Current scope:
+- framework supports `session_state`, `secret_material`, and `provider_credentials` storage modes
+- first shipped adapter is Claude Code subscription login
+- running VM sync happens on shell/tutorial exit and on a background interval
+- later VMs for the same user restore the stored tool auth before the machine becomes `RUNNING`
+
+Host storage:
+- encrypted bundles live under `FASCINATE_TOOL_AUTH_DIR`
+- the encryption key lives at `FASCINATE_TOOL_AUTH_KEY_PATH`
+- the current implementation stores profiles by `user_id/tool_id/auth_method_id`
+
+Security and recovery notes:
+- rotating `FASCINATE_TOOL_AUTH_KEY_PATH` invalidates existing encrypted bundles unless you re-encrypt them first
+- the safe rotation flow is: stop `fascinate`, back up `FASCINATE_TOOL_AUTH_DIR` and the current key, replace the key, remove or migrate old bundles, then restart
+- per-user cleanup is done by deleting the matching subtree under `FASCINATE_TOOL_AUTH_DIR`
+- if host recovery is needed, restore both the tool-auth directory and its matching key backup together
 
 Available exec-style SSH commands:
 

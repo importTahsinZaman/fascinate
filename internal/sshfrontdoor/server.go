@@ -37,6 +37,7 @@ type machineManager interface {
 	CreateMachine(context.Context, controlplane.CreateMachineInput) (controlplane.Machine, error)
 	DeleteMachine(context.Context, string, string) error
 	CloneMachine(context.Context, controlplane.CloneMachineInput) (controlplane.Machine, error)
+	SyncToolAuth(context.Context, string, string) error
 	CompleteTutorial(context.Context, string) error
 }
 
@@ -571,6 +572,8 @@ func (s *Server) openAuthorizedMachineRunner(channel ssh.Channel, requests <-cha
 		}
 	}
 
+	s.syncToolAuthAfterSession(channel, userEmail, name)
+
 	if markTutorialComplete {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
@@ -580,6 +583,15 @@ func (s *Server) openAuthorizedMachineRunner(channel ssh.Channel, requests <-cha
 	}
 
 	return nil
+}
+
+func (s *Server) syncToolAuthAfterSession(channel ssh.Channel, userEmail, machineName string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	if err := s.machines.SyncToolAuth(ctx, machineName, userEmail); err != nil {
+		fmt.Fprintf(channel, "\r\nwarning: failed to save tool auth state: %v\r\n", err)
+	}
 }
 
 func (s *Server) runGuestShell(channel ssh.Channel, requests <-chan *ssh.Request, size windowSize, machine controlplane.Machine) error {

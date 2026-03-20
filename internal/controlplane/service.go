@@ -28,10 +28,11 @@ const (
 )
 
 type Service struct {
-	cfg     config.Config
-	store   *database.Store
-	runtime machineruntime.Manager
-	mu      sync.Mutex
+	cfg      config.Config
+	store    *database.Store
+	runtime  machineruntime.Manager
+	toolAuth toolAuthManager
+	mu       sync.Mutex
 
 	createCancels map[string]context.CancelFunc
 }
@@ -60,11 +61,22 @@ type CloneMachineInput struct {
 	OwnerEmail string
 }
 
-func New(cfg config.Config, store *database.Store, runtime machineruntime.Manager) *Service {
+type toolAuthManager interface {
+	RestoreAll(context.Context, string, string, string) error
+	CaptureAll(context.Context, string, string, string) error
+}
+
+func New(cfg config.Config, store *database.Store, runtime machineruntime.Manager, extras ...toolAuthManager) *Service {
+	var toolAuth toolAuthManager
+	if len(extras) > 0 {
+		toolAuth = extras[0]
+	}
+
 	return &Service{
 		cfg:           cfg,
 		store:         store,
 		runtime:       runtime,
+		toolAuth:      toolAuth,
 		createCancels: map[string]context.CancelFunc{},
 	}
 }
@@ -203,6 +215,8 @@ func (s *Service) DeleteMachine(ctx context.Context, name, ownerEmail string) er
 		delete(s.createCancels, runtimeName)
 	}
 
+	s.captureToolAuthBestEffort(deleteCtx, record)
+
 	if err := s.runtime.DeleteMachine(deleteCtx, runtimeName); err != nil && !errors.Is(err, machineruntime.ErrMachineNotFound) {
 		return err
 	}
@@ -267,6 +281,12 @@ func (s *Service) CloneMachine(ctx context.Context, input CloneMachineInput) (Ma
 	if err != nil {
 		return Machine{}, err
 	}
+	if s.toolAuth != nil {
+		if err := s.toolAuth.RestoreAll(ctx, user.ID, liveMachine.Name, liveMachine.GuestUser); err != nil {
+			s.cleanupRuntimeMachine(targetName)
+			return Machine{}, err
+		}
+	}
 
 	persistCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -298,6 +318,14 @@ func (s *Service) CompleteTutorial(ctx context.Context, ownerEmail string) error
 	}
 
 	return s.store.MarkUserTutorialCompleted(ctx, user.ID)
+}
+
+func (s *Service) SyncToolAuth(ctx context.Context, name, ownerEmail string) error {
+	record, err := s.ownedMachineRecord(ctx, name, ownerEmail)
+	if err != nil {
+		return err
+	}
+	return s.syncToolAuthForRecord(ctx, record)
 }
 
 func (s *Service) ownedMachineRecord(ctx context.Context, name, ownerEmail string) (database.MachineRecord, error) {
@@ -508,6 +536,29 @@ func (s *Service) ReconcileRuntimeState(ctx context.Context) error {
 	return nil
 }
 
+func (s *Service) SyncRunningToolAuth(ctx context.Context) error {
+	if s.toolAuth == nil {
+		return nil
+	}
+
+	records, err := s.store.ListMachines(ctx, "")
+	if err != nil {
+		return err
+	}
+
+	var syncErrs []error
+	for _, record := range records {
+		if !strings.EqualFold(record.State, machineStateRunning) {
+			continue
+		}
+		if err := s.syncToolAuthForRecord(ctx, record); err != nil && !errors.Is(err, database.ErrNotFound) && !errors.Is(err, machineruntime.ErrMachineNotFound) {
+			syncErrs = append(syncErrs, fmt.Errorf("%s: %w", record.Name, err))
+		}
+	}
+
+	return errors.Join(syncErrs...)
+}
+
 func (s *Service) isAdminEmail(email string) bool {
 	for _, candidate := range s.cfg.AdminEmails {
 		if normalizeEmail(candidate) == normalizeEmail(email) {
@@ -565,6 +616,11 @@ func (s *Service) runMachineCreate(ctx context.Context, record database.MachineR
 		return
 	}
 
+	if err := s.restoreToolAuth(ctx, record, liveMachine); err != nil {
+		s.finishCreateFailure(record, req.Name, err)
+		return
+	}
+
 	s.finishCreateSuccess(record, liveMachine)
 }
 
@@ -609,6 +665,61 @@ func (s *Service) finishCreateFailure(record database.MachineRecord, runtimeName
 
 	if err := s.store.UpdateMachineState(persistCtx, currentRecord.ID, machineStateFailed); err != nil && !errors.Is(err, database.ErrNotFound) {
 		log.Printf("fascinate: mark machine %s failed: %v", record.Name, err)
+	}
+}
+
+func (s *Service) restoreToolAuth(ctx context.Context, record database.MachineRecord, liveMachine machineruntime.Machine) error {
+	if s.toolAuth == nil {
+		return nil
+	}
+
+	runtimeName := strings.TrimSpace(liveMachine.Name)
+	if runtimeName == "" {
+		runtimeName = runtimeNameForRecord(record)
+	}
+	guestUser := strings.TrimSpace(liveMachine.GuestUser)
+	if guestUser == "" {
+		guestUser = strings.TrimSpace(s.cfg.GuestSSHUser)
+	}
+	if runtimeName == "" || guestUser == "" {
+		return nil
+	}
+
+	return s.toolAuth.RestoreAll(ctx, record.OwnerUserID, runtimeName, guestUser)
+}
+
+func (s *Service) syncToolAuthForRecord(ctx context.Context, record database.MachineRecord) error {
+	if s.toolAuth == nil {
+		return nil
+	}
+
+	runtimeName := runtimeNameForRecord(record)
+	if runtimeName == "" {
+		return nil
+	}
+
+	liveMachine, err := s.runtime.GetMachine(ctx, runtimeName)
+	if err != nil {
+		return err
+	}
+	if !strings.EqualFold(liveMachine.State, machineStateRunning) {
+		return nil
+	}
+
+	guestUser := strings.TrimSpace(liveMachine.GuestUser)
+	if guestUser == "" {
+		guestUser = strings.TrimSpace(s.cfg.GuestSSHUser)
+	}
+	if guestUser == "" {
+		return nil
+	}
+
+	return s.toolAuth.CaptureAll(ctx, record.OwnerUserID, runtimeName, guestUser)
+}
+
+func (s *Service) captureToolAuthBestEffort(ctx context.Context, record database.MachineRecord) {
+	if err := s.syncToolAuthForRecord(ctx, record); err != nil && !errors.Is(err, database.ErrNotFound) && !errors.Is(err, machineruntime.ErrMachineNotFound) {
+		log.Printf("fascinate: capture tool auth for %s: %v", record.Name, err)
 	}
 }
 

@@ -19,11 +19,13 @@ import (
 	"fascinate/internal/runtime/cloudhypervisor"
 	"fascinate/internal/signup"
 	"fascinate/internal/sshfrontdoor"
+	"fascinate/internal/toolauth"
 )
 
 type App struct {
 	cfg        config.Config
 	db         *database.Store
+	control    *controlplane.Service
 	httpServer *http.Server
 	sshServer  *sshfrontdoor.Server
 }
@@ -48,7 +50,17 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 		store.Close()
 		return nil, err
 	}
-	controlPlane := controlplane.New(cfg, store, runtimeClient)
+	toolAuthStore, err := toolauth.NewStore(cfg)
+	if err != nil {
+		store.Close()
+		return nil, err
+	}
+	toolAuthManager, err := toolauth.NewManager(toolAuthStore, runtimeClient, toolauth.ClaudeSubscriptionAdapter{})
+	if err != nil {
+		store.Close()
+		return nil, err
+	}
+	controlPlane := controlplane.New(cfg, store, runtimeClient, toolAuthManager)
 	reconcileCtx, reconcileCancel := context.WithTimeout(context.Background(), 60*time.Second)
 	if err := controlPlane.ReconcileRuntimeState(reconcileCtx); err != nil {
 		reconcileCancel()
@@ -74,6 +86,7 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 	return &App{
 		cfg:        cfg,
 		db:         store,
+		control:    controlPlane,
 		httpServer: httpServer,
 		sshServer:  sshServer,
 	}, nil
@@ -95,6 +108,8 @@ func (a *App) Run(ctx context.Context) error {
 		errCh <- a.sshServer.Run(ctx)
 	}()
 
+	go a.runToolAuthSyncLoop(ctx)
+
 	select {
 	case <-ctx.Done():
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -102,6 +117,28 @@ func (a *App) Run(ctx context.Context) error {
 		return a.httpServer.Shutdown(shutdownCtx)
 	case err := <-errCh:
 		return err
+	}
+}
+
+func (a *App) runToolAuthSyncLoop(ctx context.Context) {
+	if a == nil || a.control == nil || a.cfg.ToolAuthSyncInterval <= 0 {
+		return
+	}
+
+	ticker := time.NewTicker(a.cfg.ToolAuthSyncInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			syncCtx, cancel := context.WithTimeout(context.Background(), a.cfg.ToolAuthSyncInterval)
+			if err := a.control.SyncRunningToolAuth(syncCtx); err != nil {
+				log.Printf("fascinate: sync tool auth: %v", err)
+			}
+			cancel()
+		}
 	}
 }
 

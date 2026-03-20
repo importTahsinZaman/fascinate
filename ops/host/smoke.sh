@@ -36,6 +36,10 @@ guest_ip() {
   curl -fsS "$(api_url "/v1/machines/${SMOKE_NAME}?owner_email=${SMOKE_EMAIL}")" | jq -r '.runtime.ipv4[0] // empty'
 }
 
+machine_state() {
+  curl -fsS "$(api_url "/v1/machines/${SMOKE_NAME}?owner_email=${SMOKE_EMAIL}")" | jq -r '.state // empty'
+}
+
 run_guest_command() {
   local guest_ip="$1"
   shift
@@ -64,6 +68,28 @@ wait_for_guest() {
   exit 1
 }
 
+wait_for_machine_ready() {
+  local attempts=120
+
+  while (( attempts > 0 )); do
+    local state
+    state="$(machine_state)"
+    if [[ "${state}" == "RUNNING" ]]; then
+      local ip
+      ip="$(guest_ip)"
+      if [[ -n "${ip}" ]]; then
+        printf '%s\n' "${ip}"
+        return 0
+      fi
+    fi
+    attempts=$((attempts - 1))
+    sleep 2
+  done
+
+  echo "machine never became ready" >&2
+  exit 1
+}
+
 wait_for_route() {
   local host_header
   host_header="$(machine_url)"
@@ -78,6 +104,21 @@ wait_for_route() {
   done
 
   echo "machine route never became reachable" >&2
+  exit 1
+}
+
+wait_for_health() {
+  local attempts=30
+
+  while (( attempts > 0 )); do
+    if curl -fsS "$(api_url '/healthz')" >/dev/null 2>&1; then
+      return 0
+    fi
+    attempts=$((attempts - 1))
+    sleep 2
+  done
+
+  echo "control plane never became healthy" >&2
   exit 1
 }
 
@@ -116,11 +157,7 @@ main() {
     "$(api_url '/v1/machines')" >/dev/null
 
   local ip
-  ip="$(guest_ip)"
-  if [[ -z "${ip}" ]]; then
-    echo "guest IP missing from control plane response" >&2
-    exit 1
-  fi
+  ip="$(wait_for_machine_ready)"
 
   echo "waiting for guest toolchain on ${ip}"
   wait_for_guest "${ip}"
@@ -133,7 +170,7 @@ main() {
 
   echo "restarting fascinate"
   systemctl restart fascinate
-  curl -fsS "$(api_url '/healthz')" >/dev/null
+  wait_for_health
   wait_for_route
 
   echo "deleting ${SMOKE_NAME}"

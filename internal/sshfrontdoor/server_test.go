@@ -45,6 +45,9 @@ type fakeMachines struct {
 	cloneInput    controlplane.CloneMachineInput
 	cloneResult   controlplane.Machine
 	cloneErr      error
+	syncName      string
+	syncOwner     string
+	syncErr       error
 	tutorialOwner string
 	tutorialErr   error
 }
@@ -100,6 +103,12 @@ func (f *fakeMachines) CloneMachine(_ context.Context, input controlplane.CloneM
 		return controlplane.Machine{}, f.cloneErr
 	}
 	return f.cloneResult, nil
+}
+
+func (f *fakeMachines) SyncToolAuth(_ context.Context, name, ownerEmail string) error {
+	f.syncName = name
+	f.syncOwner = ownerEmail
+	return f.syncErr
 }
 
 func (f *fakeMachines) CompleteTutorial(_ context.Context, ownerEmail string) error {
@@ -343,6 +352,9 @@ func TestRunCommandShellMachine(t *testing.T) {
 	}
 	if machines.getOwner != "dev@example.com" {
 		t.Fatalf("expected owner lookup for dev@example.com, got %q", machines.getOwner)
+	}
+	if machines.syncName != "habits" || machines.syncOwner != "dev@example.com" {
+		t.Fatalf("expected auth sync for habits/dev@example.com, got name=%q owner=%q", machines.syncName, machines.syncOwner)
 	}
 }
 

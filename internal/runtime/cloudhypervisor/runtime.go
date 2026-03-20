@@ -1,6 +1,7 @@
 package cloudhypervisor
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -9,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
+	"io"
 	"net"
 	"net/netip"
 	"os"
@@ -24,6 +26,7 @@ import (
 
 	"fascinate/internal/config"
 	machineruntime "fascinate/internal/runtime"
+	"fascinate/internal/toolauth"
 )
 
 const (
@@ -597,14 +600,88 @@ func (m *Manager) waitForGuestSSH(ctx context.Context, ipv4 string) error {
 }
 
 func (m *Manager) runGuestCommand(ctx context.Context, ipv4, command string) error {
+	_, err := m.runGuestCommandOutput(ctx, ipv4, command, nil)
+	return err
+}
+
+func (m *Manager) CaptureSessionState(ctx context.Context, runtimeName string, spec toolauth.SessionStateSpec) ([]byte, error) {
+	meta, err := m.loadMetadata(strings.TrimSpace(runtimeName))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, machineruntime.ErrMachineNotFound
+		}
+		return nil, err
+	}
+
+	output, err := m.runGuestCommandOutput(ctx, meta.IPv4, captureSessionStateCommand(spec), nil)
+	if err != nil {
+		return nil, err
+	}
+	if len(output) == 0 {
+		return toolauth.EmptySessionStateArchive()
+	}
+
+	return output, nil
+}
+
+func (m *Manager) RestoreSessionState(ctx context.Context, runtimeName string, spec toolauth.SessionStateSpec, archive []byte) error {
+	meta, err := m.loadMetadata(strings.TrimSpace(runtimeName))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return machineruntime.ErrMachineNotFound
+		}
+		return err
+	}
+
+	_, err = m.runGuestCommandOutput(ctx, meta.IPv4, restoreSessionStateCommand(spec), bytes.NewReader(archive))
+	return err
+}
+
+func (m *Manager) runGuestCommandOutput(ctx context.Context, ipv4, command string, stdin io.Reader) ([]byte, error) {
+	client, err := m.guestClient(ipv4)
+	if err != nil {
+		return nil, err
+	}
+	defer client.Close()
+
+	session, err := client.NewSession()
+	if err != nil {
+		return nil, err
+	}
+	defer session.Close()
+
+	if stdin != nil {
+		session.Stdin = stdin
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	session.Stdout = &stdout
+	session.Stderr = &stderr
+
+	if err := session.Run(command); err != nil {
+		message := strings.TrimSpace(stderr.String())
+		if message == "" {
+			message = strings.TrimSpace(stdout.String())
+		}
+		if message == "" {
+			return nil, err
+		}
+		return nil, fmt.Errorf("%w: %s", err, message)
+	}
+
+	return stdout.Bytes(), nil
+}
+
+func (m *Manager) guestClient(ipv4 string) (*ssh.Client, error) {
 	keyBytes, err := os.ReadFile(m.guestSSHKeyPath)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	signer, err := ssh.ParsePrivateKey(keyBytes)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	sshConfig := &ssh.ClientConfig{
@@ -616,17 +693,9 @@ func (m *Manager) runGuestCommand(ctx context.Context, ipv4, command string) err
 
 	client, err := ssh.Dial("tcp", net.JoinHostPort(strings.TrimSpace(ipv4), "22"), sshConfig)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	defer client.Close()
-
-	session, err := client.NewSession()
-	if err != nil {
-		return err
-	}
-	defer session.Close()
-
-	return session.Run(command)
+	return client, nil
 }
 
 func (m *Manager) run(ctx context.Context, binary string, args ...string) ([]byte, error) {
@@ -639,7 +708,6 @@ func (m *Manager) run(ctx context.Context, binary string, args ...string) ([]byt
 }
 
 func cloudInitUserData(meta metadata, baseDomain, publicKey string) string {
-	publicHost := machinePublicHost(meta.Name, baseDomain)
 	bootstrapScript := fmt.Sprintf(`#!/usr/bin/env bash
 set -euo pipefail
 
@@ -771,20 +839,7 @@ mkdir -p /etc/skel/.claude /etc/skel/.codex
 chown %s:%s /home/%s/.claude /home/%s/.codex || true
 
 cat >/etc/fascinate/AGENTS.md <<'EOF_AGENTS'
-You are running inside a Fascinate VM.
-
-Fascinate handles public HTTPS for this machine at https://%s.
-
-Rules:
-- Bind application servers to 0.0.0.0.
-- Port %d is exposed at https://%s.
-- Do not configure TLS certificates inside this machine for public app traffic.
-- Verify that apps are actually usable from the Fascinate URL, not just localhost.
-- If a framework restricts allowed hostnames or development origins, include %s.
-- For Next.js development, add this hostname to allowedDevOrigins.
-- Docker is available.
-- Data on disk persists across restarts.
-- Claude Code is preinstalled as 'claude'.
+%s
 EOF_AGENTS
 
 chmod 0644 /etc/fascinate/AGENTS.md
@@ -803,7 +858,7 @@ ln -sfn /etc/fascinate/AGENTS.md /etc/skel/.codex/AGENTS.md
 chown -h %s:%s /home/%s/AGENTS.md /home/%s/.claude/CLAUDE.md /home/%s/.codex/AGENTS.md || true
 apt-get clean
 rm -rf /var/lib/apt/lists/*
-`, meta.GuestUser, meta.GuestUser, meta.GuestUser, meta.GuestUser, meta.GuestUser, meta.GuestUser, meta.GuestUser, publicHost, meta.PrimaryPort, publicHost, publicHost, meta.GuestUser, meta.GuestUser, meta.GuestUser, meta.GuestUser, meta.GuestUser, meta.GuestUser, meta.GuestUser, meta.GuestUser)
+`, meta.GuestUser, meta.GuestUser, meta.GuestUser, meta.GuestUser, meta.GuestUser, meta.GuestUser, meta.GuestUser, toolauth.ClaudeMachineInstructions(meta.Name, baseDomain, meta.PrimaryPort), meta.GuestUser, meta.GuestUser, meta.GuestUser, meta.GuestUser, meta.GuestUser, meta.GuestUser, meta.GuestUser, meta.GuestUser)
 
 	return fmt.Sprintf(`#cloud-config
 preserve_hostname: false
@@ -841,6 +896,82 @@ ethernets:
     nameservers:
       addresses: [1.1.1.1, 1.0.0.1]
 `, strings.ToLower(strings.TrimSpace(macAddress)), ipv4, guestPrefix.Bits(), gateway.String())
+}
+
+func captureSessionStateCommand(spec toolauth.SessionStateSpec) string {
+	var script strings.Builder
+	script.WriteString("set -euo pipefail\n")
+	script.WriteString("declare -a paths=()\n")
+	for _, root := range spec.Roots {
+		if strings.TrimSpace(root.Path) == "" {
+			continue
+		}
+		script.WriteString("if [ -e ")
+		script.WriteString(shellQuote(root.Path))
+		script.WriteString(" ]; then paths+=(")
+		script.WriteString(shellQuote(root.Path))
+		script.WriteString("); fi\n")
+	}
+	script.WriteString("if [ \"${#paths[@]}\" -eq 0 ]; then exit 0; fi\n")
+	script.WriteString("tar -czf - -P --ignore-failed-read")
+	for _, root := range spec.Roots {
+		for _, baseName := range root.ExcludeBaseNames {
+			if strings.TrimSpace(root.Path) == "" || strings.TrimSpace(baseName) == "" {
+				continue
+			}
+			script.WriteString(" --exclude=")
+			script.WriteString(shellQuote(filepath.Join(root.Path, baseName)))
+		}
+	}
+	script.WriteString(" \"${paths[@]}\"\n")
+	return "bash -lc " + shellQuote(script.String())
+}
+
+func restoreSessionStateCommand(spec toolauth.SessionStateSpec) string {
+	var script strings.Builder
+	script.WriteString("set -euo pipefail\n")
+	script.WriteString("archive=\"$(mktemp)\"\n")
+	script.WriteString("trap 'rm -f \"$archive\"' EXIT\n")
+	script.WriteString("cat >\"$archive\"\n")
+	for _, root := range spec.Roots {
+		path := strings.TrimSpace(root.Path)
+		if path == "" {
+			continue
+		}
+		script.WriteString("mkdir -p ")
+		script.WriteString(shellQuote(path))
+		script.WriteString("\n")
+		if root.DirectoryMode > 0 {
+			script.WriteString("chmod ")
+			script.WriteString(fmt.Sprintf("%04o ", root.DirectoryMode))
+			script.WriteString(shellQuote(path))
+			script.WriteString("\n")
+		}
+		if strings.TrimSpace(root.Owner) != "" || strings.TrimSpace(root.Group) != "" {
+			script.WriteString("chown ")
+			script.WriteString(shellQuote(strings.TrimSpace(root.Owner) + ":" + strings.TrimSpace(root.Group)))
+			script.WriteString(" ")
+			script.WriteString(shellQuote(path))
+			script.WriteString(" || true\n")
+		}
+		script.WriteString("find ")
+		script.WriteString(shellQuote(path))
+		script.WriteString(" -mindepth 1")
+		for _, baseName := range root.ExcludeBaseNames {
+			if strings.TrimSpace(baseName) == "" {
+				continue
+			}
+			script.WriteString(" ! -name ")
+			script.WriteString(shellQuote(baseName))
+		}
+		script.WriteString(" -exec rm -rf {} +\n")
+	}
+	script.WriteString("if [ -s \"$archive\" ]; then tar -xzf \"$archive\" -P; fi\n")
+	return "bash -lc " + shellQuote(script.String())
+}
+
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", `'\''`) + "'"
 }
 
 func machinePublicHost(name, baseDomain string) string {
