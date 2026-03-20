@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -37,6 +38,9 @@ type machineManager interface {
 	CreateMachine(context.Context, controlplane.CreateMachineInput) (controlplane.Machine, error)
 	DeleteMachine(context.Context, string, string) error
 	CloneMachine(context.Context, controlplane.CloneMachineInput) (controlplane.Machine, error)
+	ListSnapshots(context.Context, string) ([]controlplane.Snapshot, error)
+	CreateSnapshot(context.Context, controlplane.CreateSnapshotInput) (controlplane.Snapshot, error)
+	DeleteSnapshot(context.Context, string, string) error
 	SyncToolAuth(context.Context, string, string) error
 	CompleteTutorial(context.Context, string) error
 }
@@ -253,19 +257,27 @@ func (s *Server) runCommand(channel ssh.Channel, requests <-chan *ssh.Request, a
 			return 1
 		}
 		return 0
+	case "snapshots":
+		if err := s.renderSnapshots(channel, auth.userEmail); err != nil {
+			fmt.Fprintf(channel, "error: %v\n", err)
+			return 1
+		}
+		return 0
 	case "create":
 		return s.createMachine(channel, auth.userEmail, fields)
 	case "clone":
 		return s.cloneMachine(channel, auth.userEmail, fields)
 	case "delete":
 		return s.deleteMachine(channel, auth.userEmail, fields)
+	case "snapshot":
+		return s.snapshotCommand(channel, auth.userEmail, fields)
 	case "shell":
 		return s.shellMachine(channel, requests, auth.userEmail, fields, ptyState)
 	case "tutorial":
 		return s.tutorialMachine(channel, requests, auth.userEmail, fields, ptyState)
 	default:
 		fmt.Fprintf(channel, "unknown command: %s\n", fields[0])
-		fmt.Fprintln(channel, "available commands: help, dashboard, whoami, machines, create, clone, delete, shell, tutorial, exit")
+		fmt.Fprintln(channel, "available commands: help, dashboard, whoami, machines, snapshots, create, clone, delete, snapshot, shell, tutorial, exit")
 		return 127
 	}
 }
@@ -413,7 +425,7 @@ func (s *Server) renderDashboard(channel ssh.Channel, userEmail string) {
 	if err := s.renderMachines(channel, userEmail); err != nil {
 		fmt.Fprintf(channel, "error loading machines: %v\n", err)
 	}
-	fmt.Fprintln(channel, "\ncommands: machines, create <name>, clone <source> <target>, delete <name> --confirm <name>, shell <name>, tutorial <name>, whoami, help, exit")
+	fmt.Fprintln(channel, "\ncommands: machines, snapshots, create <name> [--from-snapshot <snapshot>], clone <source> <target>, snapshot save <machine> <name>, snapshot delete <name>, delete <name> --confirm <name>, shell <name>, tutorial <name>, whoami, help, exit")
 }
 
 func (s *Server) renderMachines(channel ssh.Channel, userEmail string) error {
@@ -437,19 +449,45 @@ func (s *Server) renderMachines(channel ssh.Channel, userEmail string) error {
 	return nil
 }
 
+func (s *Server) renderSnapshots(channel ssh.Channel, userEmail string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	snapshots, err := s.machines.ListSnapshots(ctx, userEmail)
+	if err != nil {
+		return err
+	}
+	if len(snapshots) == 0 {
+		fmt.Fprintln(channel, "no snapshots yet")
+		return nil
+	}
+	for _, snapshot := range snapshots {
+		fmt.Fprintf(channel, "- %s\t%s\t%s\n", snapshot.Name, snapshot.State, snapshot.SourceMachineName)
+	}
+	return nil
+}
+
 func (s *Server) createMachine(channel ssh.Channel, userEmail string, fields []string) uint32 {
-	if len(fields) != 2 {
-		fmt.Fprintln(channel, "usage: create <name>")
+	if len(fields) != 2 && len(fields) != 4 {
+		fmt.Fprintln(channel, "usage: create <name> [--from-snapshot <snapshot>]")
 		return 2
+	}
+	input := controlplane.CreateMachineInput{
+		Name:       fields[1],
+		OwnerEmail: userEmail,
+	}
+	if len(fields) == 4 {
+		if fields[2] != "--from-snapshot" {
+			fmt.Fprintln(channel, "usage: create <name> [--from-snapshot <snapshot>]")
+			return 2
+		}
+		input.SnapshotName = fields[3]
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	machine, err := s.machines.CreateMachine(ctx, controlplane.CreateMachineInput{
-		Name:       fields[1],
-		OwnerEmail: userEmail,
-	})
+	machine, err := s.machines.CreateMachine(ctx, input)
 	if err != nil {
 		fmt.Fprintf(channel, "error: %v\n", err)
 		return 1
@@ -459,13 +497,56 @@ func (s *Server) createMachine(channel ssh.Channel, userEmail string, fields []s
 	return 0
 }
 
+func (s *Server) snapshotCommand(channel ssh.Channel, userEmail string, fields []string) uint32 {
+	if len(fields) < 2 {
+		fmt.Fprintln(channel, "usage: snapshot save <machine> <name> | snapshot delete <name>")
+		return 2
+	}
+	switch fields[1] {
+	case "save":
+		if len(fields) != 4 {
+			fmt.Fprintln(channel, "usage: snapshot save <machine> <name>")
+			return 2
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		snapshot, err := s.machines.CreateSnapshot(ctx, controlplane.CreateSnapshotInput{
+			MachineName:  fields[2],
+			SnapshotName: fields[3],
+			OwnerEmail:   userEmail,
+		})
+		if err != nil {
+			fmt.Fprintf(channel, "error: %v\n", err)
+			return 1
+		}
+		fmt.Fprintf(channel, "snapshotting %s -> %s\t%s\n", fields[2], snapshot.Name, snapshot.State)
+		return 0
+	case "delete":
+		if len(fields) != 3 {
+			fmt.Fprintln(channel, "usage: snapshot delete <name>")
+			return 2
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := s.machines.DeleteSnapshot(ctx, fields[2], userEmail); err != nil {
+			fmt.Fprintf(channel, "error: %v\n", err)
+			return 1
+		}
+		fmt.Fprintf(channel, "deleted snapshot %s\n", fields[2])
+		return 0
+	default:
+		fmt.Fprintln(channel, "usage: snapshot save <machine> <name> | snapshot delete <name>")
+		return 2
+	}
+}
+
 func (s *Server) cloneMachine(channel ssh.Channel, userEmail string, fields []string) uint32 {
 	if len(fields) != 3 {
 		fmt.Fprintln(channel, "usage: clone <source> <target>")
 		return 2
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()
 
 	machine, err := s.machines.CloneMachine(ctx, controlplane.CloneMachineInput{
@@ -612,22 +693,24 @@ func (s *Server) runGuestCommand(channel ssh.Channel, requests <-chan *ssh.Reque
 		return fmt.Errorf("machine %q is not available", machine.Name)
 	}
 
-	targetIP := firstNonEmpty(machine.Runtime.IPv4)
-	if targetIP == "" {
-		return fmt.Errorf("machine %q does not have a reachable guest IP", machine.Name)
+	targetHost := strings.TrimSpace(machine.Runtime.SSHHost)
+	targetPort := machine.Runtime.SSHPort
+	if targetHost == "" || targetPort <= 0 {
+		return fmt.Errorf("machine %q does not have a reachable guest shell endpoint", machine.Name)
 	}
 
 	guestUser := strings.TrimSpace(machine.Runtime.GuestUser)
 	if guestUser == "" {
 		guestUser = "ubuntu"
 	}
-	if err := s.waitForGuestAccess(context.Background(), machine, targetIP, guestUser); err != nil {
+	targetAddress := net.JoinHostPort(targetHost, strconv.Itoa(targetPort))
+	if err := s.waitForGuestAccess(context.Background(), machine, targetAddress, guestUser); err != nil {
 		return err
 	}
 
 	term := "xterm-256color"
 	remoteCommand := guestSSHRemoteCommand(term, shellCommand)
-	args := append(s.guestSSHArgs(guestUser, targetIP), "-tt", remoteCommand)
+	args := append(s.guestSSHArgs(guestUser, targetAddress), "-tt", remoteCommand)
 
 	binary := s.sshClientBinary
 	if strings.TrimSpace(binary) == "" {
@@ -668,7 +751,7 @@ func (s *Server) runGuestCommand(channel ssh.Channel, requests <-chan *ssh.Reque
 	return nil
 }
 
-func (s *Server) waitForGuestAccess(ctx context.Context, machine controlplane.Machine, targetIP, guestUser string) error {
+func (s *Server) waitForGuestAccess(ctx context.Context, machine controlplane.Machine, targetAddress, guestUser string) error {
 	waitFor := s.guestReadyWait
 	if waitFor <= 0 {
 		waitFor = 20 * time.Second
@@ -680,7 +763,7 @@ func (s *Server) waitForGuestAccess(ctx context.Context, machine controlplane.Ma
 
 	deadline := time.Now().Add(waitFor)
 	for {
-		err := s.probeGuestAccess(ctx, targetIP, guestUser)
+		err := s.probeGuestAccess(ctx, targetAddress, guestUser)
 		if err == nil {
 			return nil
 		}
@@ -698,16 +781,16 @@ func (s *Server) waitForGuestAccess(ctx context.Context, machine controlplane.Ma
 	}
 }
 
-func (s *Server) probeGuestAccess(ctx context.Context, targetIP, guestUser string) error {
+func (s *Server) probeGuestAccess(ctx context.Context, targetAddress, guestUser string) error {
 	if s.guestReadyProbe != nil {
-		return s.guestReadyProbe(ctx, targetIP, guestUser)
+		return s.guestReadyProbe(ctx, targetAddress, guestUser)
 	}
 
 	binary := s.sshClientBinary
 	if strings.TrimSpace(binary) == "" {
 		binary = "ssh"
 	}
-	args := append(s.guestSSHArgs(guestUser, targetIP), "true")
+	args := append(s.guestSSHArgs(guestUser, targetAddress), "true")
 
 	cmd := exec.CommandContext(ctx, binary, args...)
 	output, err := cmd.CombinedOutput()
@@ -721,14 +804,15 @@ func (s *Server) probeGuestAccess(ctx context.Context, targetIP, guestUser strin
 	return nil
 }
 
-func (s *Server) guestSSHArgs(guestUser, targetIP string) []string {
+func (s *Server) guestSSHArgs(guestUser, targetAddress string) []string {
 	return []string{
 		"-i", s.guestSSHKeyPath,
 		"-o", "BatchMode=yes",
 		"-o", "StrictHostKeyChecking=no",
 		"-o", "UserKnownHostsFile=/dev/null",
 		"-o", "LogLevel=ERROR",
-		fmt.Sprintf("%s@%s", guestUser, targetIP),
+		"-o", "ConnectTimeout=5",
+		fmt.Sprintf("%s@%s", guestUser, targetAddress),
 	}
 }
 

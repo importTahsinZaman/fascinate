@@ -32,6 +32,9 @@ type machineManager interface {
 	CreateMachine(context.Context, controlplane.CreateMachineInput) (controlplane.Machine, error)
 	DeleteMachine(context.Context, string, string) error
 	CloneMachine(context.Context, controlplane.CloneMachineInput) (controlplane.Machine, error)
+	ListSnapshots(context.Context, string) ([]controlplane.Snapshot, error)
+	CreateSnapshot(context.Context, controlplane.CreateSnapshotInput) (controlplane.Snapshot, error)
+	DeleteSnapshot(context.Context, string, string) error
 }
 
 func New(cfg config.Config, store *database.Store, runtime runtimeChecker, machines machineManager) http.Handler {
@@ -114,8 +117,9 @@ func New(cfg config.Config, store *database.Store, runtime runtimeChecker, machi
 			writeJSON(w, http.StatusOK, map[string]any{"machines": machineList})
 		case http.MethodPost:
 			var body struct {
-				Name       string `json:"name"`
-				OwnerEmail string `json:"owner_email"`
+				Name         string `json:"name"`
+				OwnerEmail   string `json:"owner_email"`
+				SnapshotName string `json:"snapshot_name"`
 			}
 			if err := decodeJSON(r, &body); err != nil {
 				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
@@ -131,8 +135,9 @@ func New(cfg config.Config, store *database.Store, runtime runtimeChecker, machi
 			defer cancel()
 
 			machine, err := machines.CreateMachine(ctx, controlplane.CreateMachineInput{
-				Name:       body.Name,
-				OwnerEmail: ownerEmail,
+				Name:         body.Name,
+				OwnerEmail:   ownerEmail,
+				SnapshotName: body.SnapshotName,
 			})
 			if err != nil {
 				writeServiceError(w, err)
@@ -214,7 +219,7 @@ func New(cfg config.Config, store *database.Store, runtime runtimeChecker, machi
 				return
 			}
 
-			ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
+			ctx, cancel := context.WithTimeout(r.Context(), 15*time.Minute)
 			defer cancel()
 
 			machine, err := machines.CloneMachine(ctx, controlplane.CloneMachineInput{
@@ -232,6 +237,80 @@ func New(cfg config.Config, store *database.Store, runtime runtimeChecker, machi
 		}
 
 		http.NotFound(w, r)
+	})
+
+	mux.HandleFunc("/v1/snapshots", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+			defer cancel()
+
+			ownerEmail, err := requiredOwnerEmail(strings.TrimSpace(r.URL.Query().Get("owner_email")))
+			if err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
+			snapshotList, err := machines.ListSnapshots(ctx, ownerEmail)
+			if err != nil {
+				writeServiceError(w, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"snapshots": snapshotList})
+		case http.MethodPost:
+			var body struct {
+				MachineName  string `json:"machine_name"`
+				SnapshotName string `json:"snapshot_name"`
+				OwnerEmail   string `json:"owner_email"`
+			}
+			if err := decodeJSON(r, &body); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
+			ownerEmail, err := requiredOwnerEmail(body.OwnerEmail)
+			if err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
+			ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+			defer cancel()
+			snapshot, err := machines.CreateSnapshot(ctx, controlplane.CreateSnapshotInput{
+				MachineName:  body.MachineName,
+				SnapshotName: body.SnapshotName,
+				OwnerEmail:   ownerEmail,
+			})
+			if err != nil {
+				writeServiceError(w, err)
+				return
+			}
+			writeJSON(w, http.StatusAccepted, snapshot)
+		default:
+			writeMethodNotAllowed(w, http.MethodGet, http.MethodPost)
+		}
+	})
+
+	mux.HandleFunc("/v1/snapshots/", func(w http.ResponseWriter, r *http.Request) {
+		name := strings.Trim(strings.TrimPrefix(r.URL.Path, "/v1/snapshots/"), "/")
+		if name == "" {
+			http.NotFound(w, r)
+			return
+		}
+		if r.Method != http.MethodDelete {
+			writeMethodNotAllowed(w, http.MethodDelete)
+			return
+		}
+
+		ownerEmail, err := requiredOwnerEmail(strings.TrimSpace(r.URL.Query().Get("owner_email")))
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+		defer cancel()
+		if err := machines.DeleteSnapshot(ctx, name, ownerEmail); err != nil {
+			writeServiceError(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
 	})
 
 	return withMachineProxy(cfg, machines, mux)
@@ -339,32 +418,18 @@ func withMachineProxy(cfg config.Config, machines machineManager, next http.Hand
 }
 
 func machineUpstream(machine controlplane.Machine) (*url.URL, bool) {
-	if machine.Runtime == nil || machine.PrimaryPort <= 0 {
+	if machine.Runtime == nil {
 		return nil, false
 	}
-
-	targetHost := ""
-	for _, candidate := range machine.Runtime.IPv4 {
-		if strings.TrimSpace(candidate) != "" {
-			targetHost = strings.TrimSpace(candidate)
-			break
-		}
-	}
-	if targetHost == "" {
-		for _, candidate := range machine.Runtime.IPv6 {
-			if strings.TrimSpace(candidate) != "" {
-				targetHost = strings.TrimSpace(candidate)
-				break
-			}
-		}
-	}
-	if targetHost == "" {
+	targetHost := strings.TrimSpace(machine.Runtime.AppHost)
+	targetPort := machine.Runtime.AppPort
+	if targetHost == "" || targetPort <= 0 {
 		return nil, false
 	}
 
 	return &url.URL{
 		Scheme: "http",
-		Host:   net.JoinHostPort(targetHost, strconv.Itoa(machine.PrimaryPort)),
+		Host:   net.JoinHostPort(targetHost, strconv.Itoa(targetPort)),
 	}, true
 }
 

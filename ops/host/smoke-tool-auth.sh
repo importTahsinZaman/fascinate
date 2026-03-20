@@ -56,17 +56,24 @@ wait_for_machine_state() {
   exit 1
 }
 
-guest_ip() {
+guest_ssh_host() {
   local name="$1"
-  curl -fsS "$(api_url "/v1/machines/${name}?owner_email=${SMOKE_EMAIL}")" | jq -r '.runtime.ipv4[0] // empty'
+  curl -fsS "$(api_url "/v1/machines/${name}?owner_email=${SMOKE_EMAIL}")" | jq -r '.runtime.ssh_host // empty'
+}
+
+guest_ssh_port() {
+  local name="$1"
+  curl -fsS "$(api_url "/v1/machines/${name}?owner_email=${SMOKE_EMAIL}")" | jq -r '.runtime.ssh_port // 0'
 }
 
 run_guest_shell() {
   local name="$1"
-  local ip
-  ip="$(guest_ip "${name}")"
-  if [[ -z "${ip}" ]]; then
-    echo "missing guest IP for ${name}" >&2
+  local host
+  local port
+  host="$(guest_ssh_host "${name}")"
+  port="$(guest_ssh_port "${name}")"
+  if [[ -z "${host}" || "${port}" == "0" ]]; then
+    echo "missing guest SSH target for ${name}" >&2
     exit 1
   fi
 
@@ -76,7 +83,8 @@ run_guest_shell() {
     -o BatchMode=yes \
     -o StrictHostKeyChecking=no \
     -o UserKnownHostsFile=/dev/null \
-    "${FASCINATE_GUEST_SSH_USER}@${ip}"
+    -p "${port}" \
+    "${FASCINATE_GUEST_SSH_USER}@${host}"
 }
 
 create_machine() {

@@ -14,6 +14,7 @@ type MachineRecord struct {
 	OwnerUserID string  `json:"owner_user_id"`
 	OwnerEmail  string  `json:"owner_email"`
 	RuntimeName string  `json:"runtime_name"`
+	SourceSnapshotID   *string `json:"source_snapshot_id,omitempty"`
 	State       string  `json:"state"`
 	PrimaryPort int     `json:"primary_port"`
 	CreatedAt   string  `json:"created_at"`
@@ -26,8 +27,42 @@ type CreateMachineParams struct {
 	Name        string
 	OwnerUserID string
 	RuntimeName string
+	SourceSnapshotID *string
 	State       string
 	PrimaryPort int
+}
+
+type SnapshotRecord struct {
+	ID                string  `json:"id"`
+	Name              string  `json:"name"`
+	OwnerUserID       string  `json:"owner_user_id"`
+	OwnerEmail        string  `json:"owner_email"`
+	SourceMachineID   *string `json:"source_machine_id,omitempty"`
+	SourceMachineName *string `json:"source_machine_name,omitempty"`
+	RuntimeName       string  `json:"runtime_name"`
+	State             string  `json:"state"`
+	ArtifactDir       string  `json:"artifact_dir"`
+	DiskSizeBytes     int64   `json:"disk_size_bytes"`
+	MemorySizeBytes   int64   `json:"memory_size_bytes"`
+	RuntimeVersion    string  `json:"runtime_version"`
+	FirmwareVersion   string  `json:"firmware_version"`
+	CreatedAt         string  `json:"created_at"`
+	UpdatedAt         string  `json:"updated_at"`
+	DeletedAt         *string `json:"deleted_at,omitempty"`
+}
+
+type CreateSnapshotParams struct {
+	ID              string
+	Name            string
+	OwnerUserID     string
+	SourceMachineID *string
+	RuntimeName     string
+	State           string
+	ArtifactDir     string
+	DiskSizeBytes   int64
+	MemorySizeBytes int64
+	RuntimeVersion  string
+	FirmwareVersion string
 }
 
 type SSHKeyRecord struct {

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -25,6 +26,10 @@ const (
 	machineStateCreating = "CREATING"
 	machineStateRunning  = "RUNNING"
 	machineStateFailed   = "FAILED"
+
+	snapshotStateCreating = "CREATING"
+	snapshotStateReady    = "READY"
+	snapshotStateFailed   = "FAILED"
 )
 
 type Service struct {
@@ -54,13 +59,36 @@ type Machine struct {
 }
 
 type CreateMachineInput struct {
-	Name       string
-	OwnerEmail string
+	Name         string
+	OwnerEmail   string
+	SnapshotName string
 }
 
 type CloneMachineInput struct {
 	SourceName string
 	TargetName string
+	OwnerEmail string
+}
+
+type Snapshot struct {
+	ID                string                  `json:"id"`
+	Name              string                  `json:"name"`
+	OwnerEmail        string                  `json:"owner_email"`
+	SourceMachineName string                  `json:"source_machine_name,omitempty"`
+	State             string                  `json:"state"`
+	ArtifactDir       string                  `json:"artifact_dir,omitempty"`
+	DiskSizeBytes     int64                   `json:"disk_size_bytes,omitempty"`
+	MemorySizeBytes   int64                   `json:"memory_size_bytes,omitempty"`
+	RuntimeVersion    string                  `json:"runtime_version,omitempty"`
+	FirmwareVersion   string                  `json:"firmware_version,omitempty"`
+	CreatedAt         string                  `json:"created_at"`
+	UpdatedAt         string                  `json:"updated_at"`
+	Runtime           *machineruntime.Snapshot `json:"runtime,omitempty"`
+}
+
+type CreateSnapshotInput struct {
+	MachineName string
+	SnapshotName string
 	OwnerEmail string
 }
 
@@ -175,7 +203,20 @@ func (s *Service) CreateMachine(ctx context.Context, input CreateMachineInput) (
 	if err != nil {
 		return Machine{}, err
 	}
-	s.syncToolAuthFromOwnerRunningMachines(ctx, user.ID, name)
+
+	var sourceSnapshotID *string
+	if snapshotName := strings.TrimSpace(input.SnapshotName); snapshotName != "" {
+		snapshotRecord, err := s.store.GetSnapshotByName(ctx, user.ID, snapshotName)
+		if err != nil {
+			return Machine{}, err
+		}
+		if !strings.EqualFold(snapshotRecord.State, snapshotStateReady) {
+			return Machine{}, fmt.Errorf("snapshot %q is %s", snapshotName, strings.ToLower(strings.TrimSpace(snapshotRecord.State)))
+		}
+		sourceSnapshotID = &snapshotRecord.ID
+	} else {
+		s.syncToolAuthFromOwnerRunningMachines(ctx, user.ID, name)
+	}
 
 	persistCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -185,6 +226,7 @@ func (s *Service) CreateMachine(ctx context.Context, input CreateMachineInput) (
 		Name:        name,
 		OwnerUserID: user.ID,
 		RuntimeName: name,
+		SourceSnapshotID: sourceSnapshotID,
 		State:       machineStateCreating,
 		PrimaryPort: s.cfg.DefaultPrimaryPort,
 	})
@@ -290,12 +332,6 @@ func (s *Service) CloneMachine(ctx context.Context, input CloneMachineInput) (Ma
 	if err != nil {
 		return Machine{}, err
 	}
-	if s.toolAuth != nil {
-		if err := s.toolAuth.RestoreAll(ctx, user.ID, liveMachine.Name, liveMachine.GuestUser); err != nil {
-			s.cleanupRuntimeMachine(targetName)
-			return Machine{}, err
-		}
-	}
 
 	persistCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -335,6 +371,98 @@ func (s *Service) SyncToolAuth(ctx context.Context, name, ownerEmail string) err
 		return err
 	}
 	return s.syncToolAuthForRecord(ctx, record, true)
+}
+
+func (s *Service) ListSnapshots(ctx context.Context, ownerEmail string) ([]Snapshot, error) {
+	ownerEmail = normalizeEmail(ownerEmail)
+	if ownerEmail == "" {
+		return nil, fmt.Errorf("owner email is required")
+	}
+
+	records, err := s.store.ListSnapshots(ctx, ownerEmail)
+	if err != nil {
+		return nil, err
+	}
+
+	runtimeSnapshots := map[string]machineruntime.Snapshot{}
+	if live, err := s.runtime.ListSnapshots(ctx); err == nil {
+		for _, snapshot := range live {
+			runtimeSnapshots[strings.TrimSpace(snapshot.Name)] = snapshot
+		}
+	}
+
+	out := make([]Snapshot, 0, len(records))
+	for _, record := range records {
+		out = append(out, s.snapshotFromRecord(ctx, record, runtimeSnapshots[strings.TrimSpace(record.RuntimeName)]))
+	}
+	return out, nil
+}
+
+func (s *Service) CreateSnapshot(ctx context.Context, input CreateSnapshotInput) (Snapshot, error) {
+	ownerEmail := normalizeEmail(input.OwnerEmail)
+	if ownerEmail == "" {
+		return Snapshot{}, fmt.Errorf("owner email is required")
+	}
+	snapshotName := strings.TrimSpace(input.SnapshotName)
+	if snapshotName == "" {
+		return Snapshot{}, fmt.Errorf("snapshot name is required")
+	}
+	unlock := s.lockUserMutations(ownerEmail)
+	defer unlock()
+
+	user, err := s.ensureUser(ctx, ownerEmail)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	machineRecord, err := s.ownedMachineRecord(ctx, input.MachineName, ownerEmail)
+	if err != nil {
+		return Snapshot{}, err
+	}
+
+	persistCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	runtimeName := uuid.NewString()
+	record, err := s.store.CreateSnapshot(persistCtx, database.CreateSnapshotParams{
+		ID:              uuid.NewString(),
+		Name:            snapshotName,
+		OwnerUserID:     user.ID,
+		SourceMachineID: &machineRecord.ID,
+		RuntimeName:     runtimeName,
+		State:           snapshotStateCreating,
+		ArtifactDir:     filepath.Join(s.cfg.RuntimeSnapshotDir, runtimeName),
+	})
+	if err != nil {
+		return Snapshot{}, err
+	}
+
+	go s.runSnapshotCreate(record)
+	return s.snapshotFromRecord(ctx, record, machineruntime.Snapshot{}), nil
+}
+
+func (s *Service) DeleteSnapshot(ctx context.Context, name, ownerEmail string) error {
+	ownerEmail = normalizeEmail(ownerEmail)
+	if ownerEmail == "" {
+		return fmt.Errorf("owner email is required")
+	}
+	unlock := s.lockUserMutations(ownerEmail)
+	defer unlock()
+
+	user, err := s.store.GetUserByEmail(ctx, ownerEmail)
+	if err != nil {
+		return err
+	}
+	record, err := s.store.GetSnapshotByName(ctx, user.ID, strings.TrimSpace(name))
+	if err != nil {
+		return err
+	}
+
+	deleteCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := s.runtime.DeleteSnapshot(deleteCtx, record.RuntimeName); err != nil && !errors.Is(err, machineruntime.ErrSnapshotNotFound) {
+		return err
+	}
+	return s.store.MarkSnapshotDeleted(deleteCtx, record.ID)
 }
 
 func (s *Service) ownedMachineRecord(ctx context.Context, name, ownerEmail string) (database.MachineRecord, error) {
@@ -448,6 +576,40 @@ func (s *Service) machineFromRecord(ctx context.Context, record database.Machine
 		CreatedAt:   record.CreatedAt,
 		UpdatedAt:   record.UpdatedAt,
 		Runtime:     runtimeMachine,
+	}
+}
+
+func (s *Service) snapshotFromRecord(ctx context.Context, record database.SnapshotRecord, live machineruntime.Snapshot) Snapshot {
+	if live.Name != "" && live.State != "" && !strings.EqualFold(record.State, live.State) {
+		_ = s.store.UpdateSnapshotState(ctx, record.ID, live.State)
+		record.State = live.State
+	}
+
+	var runtimeSnapshot *machineruntime.Snapshot
+	if live.Name != "" {
+		copy := live
+		runtimeSnapshot = &copy
+	}
+
+	sourceMachineName := ""
+	if record.SourceMachineName != nil {
+		sourceMachineName = strings.TrimSpace(*record.SourceMachineName)
+	}
+
+	return Snapshot{
+		ID:                record.ID,
+		Name:              record.Name,
+		OwnerEmail:        record.OwnerEmail,
+		SourceMachineName: sourceMachineName,
+		State:             record.State,
+		ArtifactDir:       record.ArtifactDir,
+		DiskSizeBytes:     record.DiskSizeBytes,
+		MemorySizeBytes:   record.MemorySizeBytes,
+		RuntimeVersion:    record.RuntimeVersion,
+		FirmwareVersion:   record.FirmwareVersion,
+		CreatedAt:         record.CreatedAt,
+		UpdatedAt:         record.UpdatedAt,
+		Runtime:           runtimeSnapshot,
 	}
 }
 
@@ -595,14 +757,26 @@ func (s *Service) queueMachineCreate(record database.MachineRecord) {
 		return
 	}
 
-	go s.runMachineCreate(createCtx, record, machineruntime.CreateMachineRequest{
+	req := machineruntime.CreateMachineRequest{
 		Name:         runtimeName,
 		Image:        s.cfg.DefaultImage,
 		CPU:          s.cfg.DefaultMachineCPU,
 		Memory:       s.cfg.DefaultMachineRAM,
 		RootDiskSize: s.cfg.DefaultMachineDisk,
 		PrimaryPort:  record.PrimaryPort,
-	})
+	}
+	if record.SourceSnapshotID != nil && strings.TrimSpace(*record.SourceSnapshotID) != "" {
+		snapshotRecord, err := s.store.GetSnapshotByID(context.Background(), strings.TrimSpace(*record.SourceSnapshotID))
+		if err != nil {
+			s.finishCreateFailure(record, runtimeName, err)
+			s.clearCreateCancel(runtimeName)
+			return
+		}
+		req.Snapshot = snapshotRecord.RuntimeName
+		req.Image = ""
+	}
+
+	go s.runMachineCreate(createCtx, record, req)
 }
 
 func (s *Service) runMachineCreate(ctx context.Context, record database.MachineRecord, req machineruntime.CreateMachineRequest) {
@@ -616,12 +790,30 @@ func (s *Service) runMachineCreate(ctx context.Context, record database.MachineR
 		return
 	}
 
-	if err := s.restoreToolAuth(ctx, record, liveMachine); err != nil {
-		s.finishCreateFailure(record, req.Name, err)
-		return
+	if record.SourceSnapshotID == nil {
+		if err := s.restoreToolAuth(ctx, record, liveMachine); err != nil {
+			s.finishCreateFailure(record, req.Name, err)
+			return
+		}
 	}
 
 	s.finishCreateSuccess(record, liveMachine)
+}
+
+func (s *Service) runSnapshotCreate(record database.SnapshotRecord) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	defer cancel()
+
+	runtimeSnapshot, err := s.runtime.CreateSnapshot(ctx, machineruntime.CreateSnapshotRequest{
+		MachineName:  sourceMachineNameForSnapshot(record),
+		SnapshotName: record.RuntimeName,
+		ArtifactDir:  record.ArtifactDir,
+	})
+	if err != nil {
+		s.finishSnapshotFailure(record, err)
+		return
+	}
+	s.finishSnapshotSuccess(record, runtimeSnapshot)
 }
 
 func (s *Service) lockUserMutations(ownerEmail string) func() {
@@ -718,6 +910,46 @@ func (s *Service) finishCreateFailure(record database.MachineRecord, runtimeName
 
 	if err := s.store.UpdateMachineState(persistCtx, currentRecord.ID, machineStateFailed); err != nil && !errors.Is(err, database.ErrNotFound) {
 		log.Printf("fascinate: mark machine %s failed: %v", record.Name, err)
+	}
+}
+
+func (s *Service) finishSnapshotSuccess(record database.SnapshotRecord, runtimeSnapshot machineruntime.Snapshot) {
+	persistCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	currentRecord, err := s.store.GetSnapshotByID(persistCtx, record.ID)
+	if err != nil {
+		if errors.Is(err, database.ErrNotFound) {
+			_ = s.runtime.DeleteSnapshot(persistCtx, record.RuntimeName)
+			return
+		}
+		log.Printf("fascinate: finalize snapshot %s: %v", record.Name, err)
+		return
+	}
+
+	if err := s.store.UpdateSnapshotArtifacts(persistCtx, currentRecord.ID, runtimeSnapshot.DiskSizeBytes, runtimeSnapshot.MemorySizeBytes, runtimeSnapshot.RuntimeVersion, runtimeSnapshot.FirmwareVersion); err != nil && !errors.Is(err, database.ErrNotFound) {
+		log.Printf("fascinate: update snapshot %s artifacts: %v", record.Name, err)
+	}
+	if err := s.store.UpdateSnapshotState(persistCtx, currentRecord.ID, snapshotStateReady); err != nil && !errors.Is(err, database.ErrNotFound) {
+		log.Printf("fascinate: update snapshot %s state: %v", record.Name, err)
+	}
+}
+
+func (s *Service) finishSnapshotFailure(record database.SnapshotRecord, snapshotErr error) {
+	log.Printf("fascinate: snapshot create failed for %s: %v", record.Name, snapshotErr)
+
+	persistCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	currentRecord, err := s.store.GetSnapshotByID(persistCtx, record.ID)
+	if err != nil {
+		if !errors.Is(err, database.ErrNotFound) {
+			log.Printf("fascinate: load failed snapshot %s: %v", record.Name, err)
+		}
+		return
+	}
+	if err := s.store.UpdateSnapshotState(persistCtx, currentRecord.ID, snapshotStateFailed); err != nil && !errors.Is(err, database.ErrNotFound) {
+		log.Printf("fascinate: mark snapshot %s failed: %v", record.Name, err)
 	}
 }
 
@@ -827,6 +1059,13 @@ func runtimeNameForRecord(record database.MachineRecord) string {
 		return runtimeName
 	}
 	return strings.TrimSpace(record.Name)
+}
+
+func sourceMachineNameForSnapshot(record database.SnapshotRecord) string {
+	if record.SourceMachineName != nil && strings.TrimSpace(*record.SourceMachineName) != "" {
+		return strings.TrimSpace(*record.SourceMachineName)
+	}
+	return ""
 }
 
 func validateMachineName(value string) (string, error) {

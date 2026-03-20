@@ -45,6 +45,14 @@ type fakeMachines struct {
 	cloneInput    controlplane.CloneMachineInput
 	cloneResult   controlplane.Machine
 	cloneErr      error
+	listSnapshotsResult []controlplane.Snapshot
+	listSnapshotsErr    error
+	createSnapshotInput controlplane.CreateSnapshotInput
+	createSnapshotResult controlplane.Snapshot
+	createSnapshotErr   error
+	deleteSnapshotName  string
+	deleteSnapshotOwner string
+	deleteSnapshotErr   error
 	syncName      string
 	syncOwner     string
 	syncErr       error
@@ -103,6 +111,27 @@ func (f *fakeMachines) CloneMachine(_ context.Context, input controlplane.CloneM
 		return controlplane.Machine{}, f.cloneErr
 	}
 	return f.cloneResult, nil
+}
+
+func (f *fakeMachines) ListSnapshots(context.Context, string) ([]controlplane.Snapshot, error) {
+	if f.listSnapshotsErr != nil {
+		return nil, f.listSnapshotsErr
+	}
+	return f.listSnapshotsResult, nil
+}
+
+func (f *fakeMachines) CreateSnapshot(_ context.Context, input controlplane.CreateSnapshotInput) (controlplane.Snapshot, error) {
+	f.createSnapshotInput = input
+	if f.createSnapshotErr != nil {
+		return controlplane.Snapshot{}, f.createSnapshotErr
+	}
+	return f.createSnapshotResult, nil
+}
+
+func (f *fakeMachines) DeleteSnapshot(_ context.Context, name, ownerEmail string) error {
+	f.deleteSnapshotName = name
+	f.deleteSnapshotOwner = ownerEmail
+	return f.deleteSnapshotErr
 }
 
 func (f *fakeMachines) SyncToolAuth(_ context.Context, name, ownerEmail string) error {

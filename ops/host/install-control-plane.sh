@@ -27,7 +27,7 @@ quote_env_value() {
 }
 
 write_env_file() {
-  mkdir -p "${CONFIG_DIR}" "${DATA_DIR}" "${DATA_DIR}/images" "${DATA_DIR}/machines"
+  mkdir -p "${CONFIG_DIR}" "${DATA_DIR}" "${DATA_DIR}/images" "${DATA_DIR}/machines" "${DATA_DIR}/snapshots"
 
   cat >"${ENV_FILE}" <<EOF
 FASCINATE_HTTP_ADDR=$(quote_env_value "${FASCINATE_HTTP_ADDR:-127.0.0.1:8080}")
@@ -38,9 +38,11 @@ FASCINATE_BASE_DOMAIN=$(quote_env_value "${FASCINATE_BASE_DOMAIN:-}")
 FASCINATE_ADMIN_EMAILS=$(quote_env_value "${FASCINATE_ADMIN_EMAILS:-}")
 FASCINATE_RUNTIME_BINARY=$(quote_env_value "${FASCINATE_RUNTIME_BINARY:-cloud-hypervisor}")
 FASCINATE_RUNTIME_STATE_DIR=$(quote_env_value "${FASCINATE_RUNTIME_STATE_DIR:-${DATA_DIR}/machines}")
+FASCINATE_RUNTIME_SNAPSHOT_DIR=$(quote_env_value "${FASCINATE_RUNTIME_SNAPSHOT_DIR:-${DATA_DIR}/snapshots}")
 FASCINATE_VM_BRIDGE_NAME=$(quote_env_value "${FASCINATE_VM_BRIDGE_NAME:-fascbr0}")
 FASCINATE_VM_BRIDGE_CIDR=$(quote_env_value "${FASCINATE_VM_BRIDGE_CIDR:-10.42.0.1/24}")
 FASCINATE_VM_GUEST_CIDR=$(quote_env_value "${FASCINATE_VM_GUEST_CIDR:-10.42.0.0/24}")
+FASCINATE_VM_NAMESPACE_CIDR=$(quote_env_value "${FASCINATE_VM_NAMESPACE_CIDR:-100.96.0.0/16}")
 FASCINATE_VM_FIRMWARE_PATH=$(quote_env_value "${FASCINATE_VM_FIRMWARE_PATH:-/usr/local/share/cloud-hypervisor/CLOUDHV.fd}")
 FASCINATE_QEMU_IMG_BINARY=$(quote_env_value "${FASCINATE_QEMU_IMG_BINARY:-qemu-img}")
 FASCINATE_CLOUD_LOCALDS_BINARY=$(quote_env_value "${FASCINATE_CLOUD_LOCALDS_BINARY:-cloud-localds}")
@@ -92,38 +94,6 @@ maybe_open_firewall_port() {
   ufw allow "${port}/tcp" >/dev/null
 }
 
-maybe_allow_vm_bridge() {
-  local bridge_name="${1}"
-
-  if ! command -v ufw >/dev/null 2>&1; then
-    return 0
-  fi
-
-  if ip link show "${bridge_name}" >/dev/null 2>&1; then
-    ufw allow in on "${bridge_name}" >/dev/null
-  fi
-}
-
-maybe_allow_vm_bridge_routing() {
-  local bridge_name="${1}"
-  local uplink=""
-
-  if ! command -v ufw >/dev/null 2>&1; then
-    return 0
-  fi
-
-  if ! ip link show "${bridge_name}" >/dev/null 2>&1; then
-    return 0
-  fi
-
-  uplink="$(ip route get 1.1.1.1 2>/dev/null | awk '{for (i = 1; i <= NF; i++) if ($i == "dev") {print $(i + 1); exit}}')"
-  if [[ -z "${uplink}" ]]; then
-    return 0
-  fi
-
-  ufw route allow in on "${bridge_name}" out on "${uplink}" >/dev/null
-}
-
 main() {
   require_root
   install_binary
@@ -139,8 +109,6 @@ main() {
   set +a
 
   maybe_open_firewall_port "${FASCINATE_SSH_ADDR}"
-  maybe_allow_vm_bridge "${FASCINATE_VM_BRIDGE_NAME}"
-  maybe_allow_vm_bridge_routing "${FASCINATE_VM_BRIDGE_NAME}"
   bash "${REPO_ROOT}/ops/host/write-caddyfile.sh"
 
   systemctl daemon-reload

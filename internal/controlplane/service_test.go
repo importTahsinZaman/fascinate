@@ -16,6 +16,7 @@ import (
 
 type fakeRuntime struct {
 	machines      map[string]machineruntime.Machine
+	snapshots     map[string]machineruntime.Snapshot
 	createErr     error
 	deleteErr     error
 	cloneErr      error
@@ -132,6 +133,41 @@ func (f *fakeRuntime) CloneMachine(_ context.Context, req machineruntime.CloneMa
 	clone.Name = req.TargetName
 	f.machines[req.TargetName] = clone
 	return clone, nil
+}
+
+func (f *fakeRuntime) ListSnapshots(context.Context) ([]machineruntime.Snapshot, error) {
+	out := make([]machineruntime.Snapshot, 0, len(f.snapshots))
+	for _, snapshot := range f.snapshots {
+		out = append(out, snapshot)
+	}
+	return out, nil
+}
+
+func (f *fakeRuntime) GetSnapshot(_ context.Context, name string) (machineruntime.Snapshot, error) {
+	snapshot, ok := f.snapshots[name]
+	if !ok {
+		return machineruntime.Snapshot{}, machineruntime.ErrSnapshotNotFound
+	}
+	return snapshot, nil
+}
+
+func (f *fakeRuntime) CreateSnapshot(_ context.Context, req machineruntime.CreateSnapshotRequest) (machineruntime.Snapshot, error) {
+	if f.snapshots == nil {
+		f.snapshots = map[string]machineruntime.Snapshot{}
+	}
+	snapshot := machineruntime.Snapshot{
+		Name:              req.SnapshotName,
+		SourceMachineName: req.MachineName,
+		State:             "READY",
+		ArtifactDir:       req.ArtifactDir,
+	}
+	f.snapshots[req.SnapshotName] = snapshot
+	return snapshot, nil
+}
+
+func (f *fakeRuntime) DeleteSnapshot(_ context.Context, name string) error {
+	delete(f.snapshots, name)
+	return nil
 }
 
 func (f *fakeToolAuth) RestoreAll(_ context.Context, userID, runtimeName, guestUser string) error {
@@ -412,6 +448,67 @@ func TestServiceCreateMachineFailsWhenToolAuthRestoreFails(t *testing.T) {
 	}
 }
 
+func TestServiceCreateMachineFromSnapshotSkipsToolAuthSyncAndRestore(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, runtime := newTestServiceDeps(t, ctx)
+	auth := &fakeToolAuth{}
+
+	user, err := store.UpsertUser(ctx, "dev@example.com", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateSnapshot(ctx, database.CreateSnapshotParams{
+		ID:          "snapshot-1",
+		Name:        "baseline",
+		OwnerUserID: user.ID,
+		RuntimeName: "snapshot-runtime-1",
+		State:       snapshotStateReady,
+		ArtifactDir: filepath.Join(t.TempDir(), "snapshot-runtime-1"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	service := New(config.Config{
+		BaseDomain:         "fascinate.dev",
+		DefaultImage:       "/var/lib/fascinate/images/fascinate-base.raw",
+		DefaultMachineCPU:  "1",
+		DefaultMachineRAM:  "2GiB",
+		DefaultMachineDisk: "20GiB",
+		DefaultPrimaryPort: 3000,
+		GuestSSHUser:       "ubuntu",
+	}, store, runtime, auth)
+
+	created, err := service.CreateMachine(ctx, CreateMachineInput{
+		Name:         "space-shooter",
+		OwnerEmail:   "dev@example.com",
+		SnapshotName: "baseline",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	waitForTestCondition(t, func() bool { return len(runtime.createdReq) == 1 })
+	if runtime.createdReq[0].Snapshot != "snapshot-runtime-1" {
+		t.Fatalf("expected snapshot restore create request, got %+v", runtime.createdReq[0])
+	}
+	if len(auth.captureCalls) != 0 {
+		t.Fatalf("expected no pre-create auth sync, got %+v", auth.captureCalls)
+	}
+	if len(auth.restoreCalls) != 0 {
+		t.Fatalf("expected no auth restore after snapshot create, got %+v", auth.restoreCalls)
+	}
+
+	record, err := store.GetMachineByName(ctx, created.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.SourceSnapshotID == nil || strings.TrimSpace(*record.SourceSnapshotID) == "" {
+		t.Fatalf("expected machine source snapshot to be recorded, got %+v", record)
+	}
+}
+
 func TestServiceDeleteMachineCapturesToolAuthBestEffort(t *testing.T) {
 	t.Parallel()
 
@@ -462,6 +559,61 @@ func TestServiceDeleteMachineCapturesToolAuthBestEffort(t *testing.T) {
 	}
 	if len(runtime.deleted) != 1 || runtime.deleted[0] != "habits" {
 		t.Fatalf("expected runtime delete, got %+v", runtime.deleted)
+	}
+}
+
+func TestServiceCloneMachineDoesNotRestoreToolAuth(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, runtime := newTestServiceDeps(t, ctx)
+	auth := &fakeToolAuth{}
+
+	user, err := store.UpsertUser(ctx, "dev@example.com", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateMachine(ctx, database.CreateMachineParams{
+		ID:          "machine-1",
+		Name:        "tic-tac-toe",
+		OwnerUserID: user.ID,
+		RuntimeName: "tic-tac-toe",
+		State:       machineStateRunning,
+		PrimaryPort: 3000,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	runtime.machines["tic-tac-toe"] = machineruntime.Machine{
+		Name:      "tic-tac-toe",
+		Type:      "vm",
+		State:     machineStateRunning,
+		GuestUser: "ubuntu",
+		Disk:      "20GiB",
+	}
+
+	service := New(config.Config{
+		BaseDomain:         "fascinate.dev",
+		DefaultImage:       "/var/lib/fascinate/images/fascinate-base.raw",
+		DefaultMachineCPU:  "1",
+		DefaultMachineRAM:  "2GiB",
+		DefaultMachineDisk: "20GiB",
+		DefaultPrimaryPort: 3000,
+		GuestSSHUser:       "ubuntu",
+	}, store, runtime, auth)
+
+	cloned, err := service.CloneMachine(ctx, CloneMachineInput{
+		SourceName: "tic-tac-toe",
+		TargetName: "space-shooter",
+		OwnerEmail: "dev@example.com",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cloned.Name != "space-shooter" {
+		t.Fatalf("unexpected clone name %q", cloned.Name)
+	}
+	if len(auth.restoreCalls) != 0 {
+		t.Fatalf("expected clone to skip tool-auth restore, got %+v", auth.restoreCalls)
 	}
 }
 

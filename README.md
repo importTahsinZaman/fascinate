@@ -11,6 +11,7 @@ This repo now contains:
 - SQLite migrations for the first platform tables
 - a Cloud Hypervisor runtime wrapper and health endpoints
 - a minimal SSH frontdoor backed by SQLite-stored public keys
+- first-class full-VM snapshots and snapshot-backed cloning
 
 ## Current Scope
 
@@ -48,6 +49,7 @@ It also includes a first SSH slice:
 - [`ops/host/verify.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/verify.sh): checks the host after bootstrap
 - [`ops/host/write-caddyfile.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/write-caddyfile.sh): writes the host Caddy config for Fascinate
 - [`ops/host/install-control-plane.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/install-control-plane.sh): builds and installs the Fascinate service on a host
+- [`ops/host/smoke-snapshots.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/smoke-snapshots.sh): validates saved snapshots, create-from-snapshot, and true clone flows
 - [`ops/cloudhypervisor/build-base-image.sh`](/Users/tahsin/Desktop/vmcloud/ops/cloudhypervisor/build-base-image.sh): builds an agent-ready qcow2 guest image
 - [`ops/systemd/fascinate.service`](/Users/tahsin/Desktop/vmcloud/ops/systemd/fascinate.service): example systemd unit
 - [`cmd/fascinate/main.go`](/Users/tahsin/Desktop/vmcloud/cmd/fascinate/main.go): entrypoint
@@ -85,11 +87,17 @@ Run the manual tool-auth smoke path when validating Claude subscription persiste
 sudo ./ops/host/smoke-tool-auth.sh
 ```
 
+Run the snapshot smoke path when validating saved snapshots and true clone semantics:
+
+```bash
+sudo ./ops/host/smoke-snapshots.sh
+```
+
 Notes:
 - the bootstrap script assumes a fresh host or a host you are willing to standardize
 - it installs Cloud Hypervisor plus qcow2/cloud-init image tooling
-- it creates a bridge named `fascbr0` by default
-- it configures NAT and forwarding so guest VMs can reach the internet through the host
+- it enables the kernel and package prerequisites for the namespace-based VM runtime
+- guest NAT/forwarding rules are created lazily when the first VM boots
 - it does not manage DNS or Cloudflare for you
 
 Build the default agent-ready guest image:
@@ -154,9 +162,11 @@ export FASCINATE_BASE_DOMAIN=fascinate.dev
 export FASCINATE_ADMIN_EMAILS=you@example.com,ops@example.com
 export FASCINATE_RUNTIME_BINARY=cloud-hypervisor
 export FASCINATE_RUNTIME_STATE_DIR=./data/machines
+export FASCINATE_RUNTIME_SNAPSHOT_DIR=./data/snapshots
 export FASCINATE_VM_BRIDGE_NAME=fascbr0
 export FASCINATE_VM_BRIDGE_CIDR=10.42.0.1/24
 export FASCINATE_VM_GUEST_CIDR=10.42.0.0/24
+export FASCINATE_VM_NAMESPACE_CIDR=100.96.0.0/16
 export FASCINATE_VM_FIRMWARE_PATH=/usr/local/share/cloud-hypervisor/CLOUDHV.fd
 export FASCINATE_QEMU_IMG_BINARY=qemu-img
 export FASCINATE_CLOUD_LOCALDS_BINARY=cloud-localds
@@ -252,8 +262,12 @@ Available exec-style SSH commands:
 
 ```bash
 machines
+snapshots
 create habits
+create habits-v2 --from-snapshot habits-snap
 clone habits habits-v2
+snapshot save habits habits-snap
+snapshot delete habits-snap
 delete habits --confirm habits
 shell habits
 whoami
@@ -261,19 +275,20 @@ help
 exit
 ```
 
-Interactive dashboard keys:
+## Snapshots
 
-```bash
-j / k or arrows   move selection
-enter             open selected machine detail
-s                 open a shell in the selected machine
-n                 create machine
-c                 clone selected machine
-d                 delete selected machine (typed confirmation)
-r                 refresh
-q                 quit
-esc               back/cancel
-```
+Fascinate snapshots are immutable per-user full-VM artifacts.
+
+Current behavior:
+- `snapshot save <machine> <name>` captures disk, memory, and device state
+- `create <name> --from-snapshot <snapshot>` restores a new VM directly from a saved snapshot
+- `clone <source> <target>` performs a true clone by taking an implicit snapshot and restoring it into the target VM
+- snapshot-created and cloned VMs keep restored state authoritative; Fascinate does not layer fresh tool-auth restore on top afterward
+
+Runtime notes:
+- each VM runs in its own Linux network namespace
+- guests keep the same internal IP and MAC identity across restores
+- shell access and public app routing go through host-side per-machine forwarders instead of globally unique guest IPs
 
 ## Next Milestones
 

@@ -14,6 +14,7 @@ import (
 
 type fakeMachines struct {
 	listResult    []controlplane.Machine
+	snapshotResult []controlplane.Snapshot
 	listErr       error
 	createInput   controlplane.CreateMachineInput
 	createErr     error
@@ -22,6 +23,11 @@ type fakeMachines struct {
 	deleteName    string
 	deleteOwner   string
 	deleteErr     error
+	createSnapshotInput controlplane.CreateSnapshotInput
+	createSnapshotErr error
+	deleteSnapshotName string
+	deleteSnapshotOwner string
+	deleteSnapshotErr error
 	tutorialOwner string
 	tutorialErr   error
 }
@@ -31,6 +37,10 @@ func (f *fakeMachines) ListMachines(context.Context, string) ([]controlplane.Mac
 		return nil, f.listErr
 	}
 	return f.listResult, nil
+}
+
+func (f *fakeMachines) ListSnapshots(context.Context, string) ([]controlplane.Snapshot, error) {
+	return f.snapshotResult, nil
 }
 
 func (f *fakeMachines) CreateMachine(_ context.Context, input controlplane.CreateMachineInput) (controlplane.Machine, error) {
@@ -58,6 +68,24 @@ func (f *fakeMachines) CloneMachine(_ context.Context, input controlplane.CloneM
 		return controlplane.Machine{}, f.cloneErr
 	}
 	return controlplane.Machine{Name: input.TargetName}, nil
+}
+
+func (f *fakeMachines) CreateSnapshot(_ context.Context, input controlplane.CreateSnapshotInput) (controlplane.Snapshot, error) {
+	f.createSnapshotInput = input
+	if f.createSnapshotErr != nil {
+		return controlplane.Snapshot{}, f.createSnapshotErr
+	}
+	return controlplane.Snapshot{
+		Name:              input.SnapshotName,
+		SourceMachineName: input.MachineName,
+		State:             "CREATING",
+	}, nil
+}
+
+func (f *fakeMachines) DeleteSnapshot(_ context.Context, name, ownerEmail string) error {
+	f.deleteSnapshotName = name
+	f.deleteSnapshotOwner = ownerEmail
+	return f.deleteSnapshotErr
 }
 
 func (f *fakeMachines) CompleteTutorial(_ context.Context, ownerEmail string) error {
@@ -112,6 +140,34 @@ func TestModelCreateMachineFlow(t *testing.T) {
 
 	if manager.createInput.Name != "habits" || manager.createInput.OwnerEmail != "dev@example.com" {
 		t.Fatalf("unexpected create input: %+v", manager.createInput)
+	}
+}
+
+func TestModelCreateMachineFromSelectedSnapshot(t *testing.T) {
+	t.Parallel()
+
+	manager := &fakeMachines{
+		snapshotResult: []controlplane.Snapshot{{Name: "baseline", State: "READY", SourceMachineName: "tic-tac-toe"}},
+	}
+	model := NewDashboard("dev@example.com", manager, 80, 24)
+
+	updated, _ := model.Update(loadMachinesMsg{snapshots: manager.snapshotResult})
+	withSnapshots := updated.(Model)
+	updated, _ = withSnapshots.Update(tea.KeyMsg{Type: tea.KeyTab})
+	focusedSnapshots := updated.(Model)
+	updated, _ = focusedSnapshots.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	createMode := updated.(Model)
+	createMode.input.SetValue("habits")
+
+	updated, cmd := createMode.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	resultMsg := cmd()
+	updated, _ = updated.(Model).Update(resultMsg)
+	got := updated.(Model)
+	if len(got.items) != 1 || got.items[0].Name != "habits" {
+		t.Fatalf("expected created machine card, got %+v", got.items)
+	}
+	if manager.createInput.SnapshotName != "baseline" {
+		t.Fatalf("expected snapshot-backed create, got %+v", manager.createInput)
 	}
 }
 
@@ -242,6 +298,56 @@ func TestViewOmitsDeleteActionWhileMachineCreating(t *testing.T) {
 	}
 }
 
+func TestModelCreateSnapshotFlow(t *testing.T) {
+	t.Parallel()
+
+	manager := &fakeMachines{
+		listResult: []controlplane.Machine{{Name: "habits", State: "RUNNING"}},
+	}
+	model := NewDashboard("dev@example.com", manager, 80, 24)
+
+	updated, _ := model.Update(loadMachinesMsg{machines: manager.listResult})
+	withItems := updated.(Model)
+	updated, _ = withItems.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
+	snapshotMode := updated.(Model)
+	snapshotMode.input.SetValue("habits-snap")
+
+	updated, cmd := snapshotMode.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	resultMsg := cmd()
+	updated, _ = updated.(Model).Update(resultMsg)
+	got := updated.(Model)
+	if len(got.snapshots) != 1 || got.snapshots[0].Name != "habits-snap" {
+		t.Fatalf("expected snapshot card, got %+v", got.snapshots)
+	}
+	if manager.createSnapshotInput.MachineName != "habits" || manager.createSnapshotInput.SnapshotName != "habits-snap" {
+		t.Fatalf("unexpected snapshot input: %+v", manager.createSnapshotInput)
+	}
+}
+
+func TestModelDeleteSnapshotFromSnapshotFocus(t *testing.T) {
+	t.Parallel()
+
+	manager := &fakeMachines{
+		snapshotResult: []controlplane.Snapshot{{Name: "baseline", State: "READY", SourceMachineName: "habits"}},
+	}
+	model := NewDashboard("dev@example.com", manager, 80, 24)
+
+	updated, _ := model.Update(loadMachinesMsg{snapshots: manager.snapshotResult})
+	withSnapshots := updated.(Model)
+	updated, _ = withSnapshots.Update(tea.KeyMsg{Type: tea.KeyTab})
+	focused := updated.(Model)
+	updated, _ = focused.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	deleteMode := updated.(Model)
+	deleteMode.input.SetValue("baseline")
+
+	updated, cmd := deleteMode.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	resultMsg := cmd()
+	updated, _ = updated.(Model).Update(resultMsg)
+	if manager.deleteSnapshotName != "baseline" || manager.deleteSnapshotOwner != "dev@example.com" {
+		t.Fatalf("unexpected snapshot delete call: %q %q", manager.deleteSnapshotName, manager.deleteSnapshotOwner)
+	}
+}
+
 func TestModelTutorialActionFromBrowseMode(t *testing.T) {
 	t.Parallel()
 
@@ -304,13 +410,23 @@ func TestViewRendersMachineCardsWithSelectedState(t *testing.T) {
 				PrimaryPort: 3000,
 			},
 		},
+		snapshotResult: []controlplane.Snapshot{
+			{
+				Name:              "tic-live",
+				State:             "READY",
+				SourceMachineName: "tic-tac-toe",
+				DiskSizeBytes:     5 * 1024 * 1024 * 1024,
+				MemorySizeBytes:   512 * 1024 * 1024,
+				CreatedAt:         "2026-03-20T01:00:00Z",
+			},
+		},
 	}
 	model := NewDashboard("dev@example.com", manager, 100, 30)
 
-	updated, _ := model.Update(loadMachinesMsg{machines: manager.listResult})
+	updated, _ := model.Update(loadMachinesMsg{machines: manager.listResult, snapshots: manager.snapshotResult})
 	view := updated.(Model).View()
 
-	if !containsAll(view, "Fascinate", "tic-tac-toe", "Port 3000:", "https://tic-tac-toe.fascinate.dev", "IPv4", "notes", "(enter) shell", "(t) tutorial", "(q) quit") {
+	if !containsAll(view, "Fascinate", "tic-tac-toe", "Port 3000:", "https://tic-tac-toe.fascinate.dev", "IPv4", "notes", "SNAPSHOTS", "tic-live", "(enter) shell", "(t) tutorial", "(q) quit") {
 		t.Fatalf("unexpected browse view: %q", view)
 	}
 	if strings.Contains(view, "Selected machine") || strings.Contains(view, "Your machines") || strings.Contains(view, "SELECTED") || strings.Contains(view, "enter detail") {

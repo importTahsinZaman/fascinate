@@ -12,6 +12,7 @@ import (
 	"syscall"
 
 	"fascinate/internal/app"
+	"fascinate/internal/netnsforward"
 	"fascinate/internal/config"
 	"fascinate/internal/runtime/cloudhypervisor"
 )
@@ -53,6 +54,10 @@ func main() {
 		fmt.Println("fascinate dev")
 	case "seed-ssh-key":
 		if err := runSeedSSHKey(ctx, cfg, os.Args[2:]); err != nil {
+			log.Fatal(err)
+		}
+	case "netns-forward":
+		if err := runNetNSForward(os.Args[2:]); err != nil {
 			log.Fatal(err)
 		}
 	default:
@@ -119,4 +124,29 @@ func runSeedSSHKey(ctx context.Context, cfg config.Config, args []string) error 
 
 	fmt.Printf("seeded ssh key %s for %s (%s)\n", record.Name, record.UserEmail, record.Fingerprint)
 	return nil
+}
+
+func runNetNSForward(args []string) error {
+	flags := flag.NewFlagSet("netns-forward", flag.ContinueOnError)
+	namespace := flags.String("namespace", "", "linux network namespace name")
+	listen := flags.String("listen", "127.0.0.1:0", "listen address")
+	target := flags.String("target", "", "target address inside namespace")
+	portFile := flags.String("port-file", "", "path to write the chosen listen port")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+
+	if strings.TrimSpace(*namespace) == "" || strings.TrimSpace(*target) == "" || strings.TrimSpace(*portFile) == "" {
+		return fmt.Errorf("usage: fascinate netns-forward --namespace <name> --target <host:port> --port-file <path> [--listen 127.0.0.1:0]")
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), netnsforward.Signals()...)
+	defer stop()
+
+	return netnsforward.Run(ctx, netnsforward.Config{
+		Namespace: *namespace,
+		Listen:    *listen,
+		Target:    *target,
+		PortFile:  *portFile,
+	})
 }

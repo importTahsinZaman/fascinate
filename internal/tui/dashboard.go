@@ -16,9 +16,12 @@ import (
 
 type MachineManager interface {
 	ListMachines(context.Context, string) ([]controlplane.Machine, error)
+	ListSnapshots(context.Context, string) ([]controlplane.Snapshot, error)
 	CreateMachine(context.Context, controlplane.CreateMachineInput) (controlplane.Machine, error)
 	DeleteMachine(context.Context, string, string) error
 	CloneMachine(context.Context, controlplane.CloneMachineInput) (controlplane.Machine, error)
+	CreateSnapshot(context.Context, controlplane.CreateSnapshotInput) (controlplane.Snapshot, error)
+	DeleteSnapshot(context.Context, string, string) error
 	CompleteTutorial(context.Context, string) error
 }
 
@@ -29,28 +32,42 @@ const (
 	modeCreate
 	modeClone
 	modeDeleteConfirm
+	modeSnapshotCreate
+	modeSnapshotDeleteConfirm
 )
 
 type loadMachinesMsg struct {
-	machines []controlplane.Machine
-	err      error
+	machines  []controlplane.Machine
+	snapshots []controlplane.Snapshot
+	err       error
 }
 
 type operationDoneMsg struct {
-	info    string
-	machine *controlplane.Machine
-	reload  bool
-	err     error
+	info     string
+	machine   *controlplane.Machine
+	snapshot  *controlplane.Snapshot
+	reload   bool
+	err      error
 }
 
 type refreshTickMsg struct{}
+
+type browseFocus int
+
+const (
+	focusMachines browseFocus = iota
+	focusSnapshots
+)
 
 type Model struct {
 	userEmail string
 	machines  MachineManager
 
 	items          []controlplane.Machine
+	snapshots      []controlplane.Snapshot
 	selected       int
+	selectedSnapshot int
+	focus         browseFocus
 	width          int
 	height         int
 	mode           mode
@@ -60,8 +77,10 @@ type Model struct {
 	errMsg         string
 	sourceName     string
 	pendingName    string
+	pendingSnapshotName string
 	shellTarget    string
 	tutorialTarget string
+	createSourceIndex int
 }
 
 func NewDashboard(userEmail string, machines MachineManager, width, height int) Model {
@@ -104,18 +123,32 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		m.errMsg = ""
 		m.items = msg.machines
+		m.snapshots = msg.snapshots
 		if len(m.items) == 0 {
 			m.selected = 0
 			if m.mode == modeClone || m.mode == modeDeleteConfirm {
 				m.mode = modeBrowse
 			}
-			return m, nil
+		} else {
+			if m.selected >= len(m.items) {
+				m.selected = len(m.items) - 1
+			}
+			if m.selected < 0 {
+				m.selected = 0
+			}
 		}
-		if m.selected >= len(m.items) {
-			m.selected = len(m.items) - 1
-		}
-		if m.selected < 0 {
-			m.selected = 0
+		if len(m.snapshots) == 0 {
+			m.selectedSnapshot = 0
+			if m.focus == focusSnapshots {
+				m.focus = focusMachines
+			}
+		} else {
+			if m.selectedSnapshot >= len(m.snapshots) {
+				m.selectedSnapshot = len(m.snapshots) - 1
+			}
+			if m.selectedSnapshot < 0 {
+				m.selectedSnapshot = 0
+			}
 		}
 		return m, m.autoRefreshCmd()
 	case operationDoneMsg:
@@ -131,9 +164,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.mode = modeBrowse
 		m.sourceName = ""
 		m.pendingName = ""
+		m.pendingSnapshotName = ""
 		m.input.SetValue("")
 		if msg.machine != nil {
 			m.upsertMachine(*msg.machine)
+		}
+		if msg.snapshot != nil {
+			m.upsertSnapshot(*msg.snapshot)
 		}
 		if msg.reload {
 			m.busy = true
@@ -142,7 +179,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.autoRefreshCmd()
 	case tea.KeyMsg:
 		switch m.mode {
-		case modeCreate, modeClone, modeDeleteConfirm:
+		case modeCreate, modeClone, modeDeleteConfirm, modeSnapshotCreate, modeSnapshotDeleteConfirm:
 			return m.updateInputMode(msg)
 		default:
 			return m.updateBrowseMode(msg)
@@ -165,12 +202,16 @@ func (m Model) View() string {
 
 	switch m.mode {
 	case modeCreate:
+		footer := "enter create | esc cancel"
+		if len(m.createSources()) > 1 {
+			footer = "←/→ source | enter create | esc cancel"
+		}
 		sections = append(sections, m.renderInputPanel(
 			"Create Machine",
-			"Provision a fresh Ubuntu development box with Claude Code ready to go.",
+			"Provision a fresh Ubuntu development box or restore a saved snapshot.",
 			"name",
-			m.input.View(),
-			"enter create | esc cancel",
+			m.input.View()+"\n\n"+m.renderCreateSourceLine(),
+			footer,
 		))
 	case modeClone:
 		sections = append(sections, m.renderInputPanel(
@@ -188,6 +229,22 @@ func (m Model) View() string {
 			m.input.View(),
 			"enter delete | esc cancel",
 		))
+	case modeSnapshotCreate:
+		sections = append(sections, m.renderInputPanel(
+			"Save Snapshot",
+			fmt.Sprintf("Capture disk, memory, and device state for %s.", m.sourceName),
+			"snapshot name",
+			m.input.View(),
+			"enter save | esc cancel",
+		))
+	case modeSnapshotDeleteConfirm:
+		sections = append(sections, m.renderInputPanel(
+			"Delete Snapshot",
+			fmt.Sprintf("Type %s exactly to delete this saved snapshot.", m.pendingSnapshotName),
+			"confirm",
+			m.input.View(),
+			"enter delete | esc cancel",
+		))
 	default:
 		sections = append(sections, m.renderBrowse(width))
 	}
@@ -200,12 +257,34 @@ func (m Model) updateBrowseMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "ctrl+c", "q":
 		return m, tea.Quit
+	case "tab":
+		if len(m.snapshots) == 0 {
+			return m, nil
+		}
+		if m.focus == focusMachines {
+			m.focus = focusSnapshots
+		} else {
+			m.focus = focusMachines
+		}
+		return m, nil
 	case "up", "k":
+		if m.focus == focusSnapshots {
+			if m.selectedSnapshot > 0 {
+				m.selectedSnapshot--
+			}
+			return m, nil
+		}
 		if m.selected > 0 {
 			m.selected--
 		}
 		return m, nil
 	case "down", "j":
+		if m.focus == focusSnapshots {
+			if m.selectedSnapshot < len(m.snapshots)-1 {
+				m.selectedSnapshot++
+			}
+			return m, nil
+		}
 		if m.selected < len(m.items)-1 {
 			m.selected++
 		}
@@ -216,6 +295,9 @@ func (m Model) updateBrowseMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.errMsg = ""
 		return m, m.loadMachinesCmd()
 	case "enter":
+		if m.focus == focusSnapshots {
+			return m, nil
+		}
 		selected, ok := m.selectedMachine()
 		if !ok || !machineAllowsShell(selected) {
 			return m, nil
@@ -235,9 +317,13 @@ func (m Model) updateBrowseMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.errMsg = ""
 		m.input.Placeholder = "machine-name"
 		m.input.SetValue("")
+		m.createSourceIndex = m.defaultCreateSourceIndex()
 		m.input.Focus()
 		return m, nil
 	case "c":
+		if m.focus == focusSnapshots {
+			return m, nil
+		}
 		selected, ok := m.selectedMachine()
 		if !ok || !machineAllowsClone(selected) {
 			return m, nil
@@ -249,6 +335,18 @@ func (m Model) updateBrowseMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.input.Focus()
 		return m, nil
 	case "d":
+		if m.focus == focusSnapshots {
+			snapshot, ok := m.selectedSnapshotItem()
+			if !ok || !snapshotAllowsDelete(snapshot) {
+				return m, nil
+			}
+			m.mode = modeSnapshotDeleteConfirm
+			m.pendingSnapshotName = snapshot.Name
+			m.input.Placeholder = snapshot.Name
+			m.input.SetValue("")
+			m.input.Focus()
+			return m, nil
+		}
 		selected, ok := m.selectedMachine()
 		if !ok || !machineAllowsDelete(selected) {
 			return m, nil
@@ -256,6 +354,20 @@ func (m Model) updateBrowseMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.mode = modeDeleteConfirm
 		m.pendingName = selected.Name
 		m.input.Placeholder = selected.Name
+		m.input.SetValue("")
+		m.input.Focus()
+		return m, nil
+	case "p":
+		if m.focus == focusSnapshots {
+			return m, nil
+		}
+		selected, ok := m.selectedMachine()
+		if !ok || !machineAllowsSnapshot(selected) {
+			return m, nil
+		}
+		m.mode = modeSnapshotCreate
+		m.sourceName = selected.Name
+		m.input.Placeholder = selected.Name + "-snapshot"
 		m.input.SetValue("")
 		m.input.Focus()
 		return m, nil
@@ -272,9 +384,20 @@ func (m Model) updateInputMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.input.SetValue("")
 		m.sourceName = ""
 		m.pendingName = ""
+		m.pendingSnapshotName = ""
 		return m, nil
 	case "ctrl+c":
 		return m, tea.Quit
+	case "left", "h":
+		if m.mode == modeCreate && len(m.createSources()) > 1 && m.createSourceIndex > 0 {
+			m.createSourceIndex--
+		}
+		return m, nil
+	case "right", "l":
+		if m.mode == modeCreate && len(m.createSources()) > 1 && m.createSourceIndex < len(m.createSources())-1 {
+			m.createSourceIndex++
+		}
+		return m, nil
 	case "enter":
 		value := strings.TrimSpace(m.input.Value())
 		switch m.mode {
@@ -287,7 +410,7 @@ func (m Model) updateInputMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.status = fmt.Sprintf("creating %s", value)
 			m.errMsg = ""
 			m.input.Blur()
-			return m, m.createMachineCmd(value)
+			return m, m.createMachineCmd(value, m.selectedCreateSnapshot())
 		case modeClone:
 			if value == "" {
 				m.errMsg = "clone target name is required"
@@ -304,6 +427,24 @@ func (m Model) updateInputMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.busy = true
 			m.input.Blur()
 			return m, m.deleteMachineCmd(m.pendingName)
+		case modeSnapshotCreate:
+			if value == "" {
+				m.errMsg = "snapshot name is required"
+				return m, nil
+			}
+			m.mode = modeBrowse
+			m.status = fmt.Sprintf("snapshotting %s", m.sourceName)
+			m.errMsg = ""
+			m.input.Blur()
+			return m, m.createSnapshotCmd(m.sourceName, value)
+		case modeSnapshotDeleteConfirm:
+			if value != m.pendingSnapshotName {
+				m.errMsg = "confirmation did not match snapshot name"
+				return m, nil
+			}
+			m.busy = true
+			m.input.Blur()
+			return m, m.deleteSnapshotCmd(m.pendingSnapshotName)
 		}
 	}
 
@@ -335,30 +476,46 @@ func (m Model) selectedMachine() (controlplane.Machine, bool) {
 	return m.items[m.selected], true
 }
 
+func (m Model) selectedSnapshotItem() (controlplane.Snapshot, bool) {
+	if len(m.snapshots) == 0 || m.selectedSnapshot < 0 || m.selectedSnapshot >= len(m.snapshots) {
+		return controlplane.Snapshot{}, false
+	}
+	return m.snapshots[m.selectedSnapshot], true
+}
+
 func (m Model) loadMachinesCmd() tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
 		machines, err := m.machines.ListMachines(ctx, m.userEmail)
-		return loadMachinesMsg{machines: machines, err: err}
+		if err != nil {
+			return loadMachinesMsg{err: err}
+		}
+		snapshots, err := m.machines.ListSnapshots(ctx, m.userEmail)
+		return loadMachinesMsg{machines: machines, snapshots: snapshots, err: err}
 	}
 }
 
-func (m Model) createMachineCmd(name string) tea.Cmd {
+func (m Model) createMachineCmd(name, snapshotName string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 
 		machine, err := m.machines.CreateMachine(ctx, controlplane.CreateMachineInput{
-			Name:       name,
-			OwnerEmail: m.userEmail,
+			Name:         name,
+			OwnerEmail:   m.userEmail,
+			SnapshotName: snapshotName,
 		})
 		if err != nil {
 			return operationDoneMsg{err: err}
 		}
+		info := fmt.Sprintf("creating %s", machine.Name)
+		if snapshotName != "" {
+			info = fmt.Sprintf("restoring %s from %s", machine.Name, snapshotName)
+		}
 		return operationDoneMsg{
-			info:    fmt.Sprintf("creating %s", machine.Name),
+			info:    info,
 			machine: &machine,
 		}
 	}
@@ -366,7 +523,7 @@ func (m Model) createMachineCmd(name string) tea.Cmd {
 
 func (m Model) cloneMachineCmd(sourceName, targetName string) tea.Cmd {
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 		defer cancel()
 
 		machine, err := m.machines.CloneMachine(ctx, controlplane.CloneMachineInput{
@@ -394,6 +551,38 @@ func (m Model) deleteMachineCmd(name string) tea.Cmd {
 			return operationDoneMsg{err: err}
 		}
 		return operationDoneMsg{info: fmt.Sprintf("deleted %s", name), reload: true}
+	}
+}
+
+func (m Model) createSnapshotCmd(machineName, snapshotName string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+
+		snapshot, err := m.machines.CreateSnapshot(ctx, controlplane.CreateSnapshotInput{
+			MachineName:  machineName,
+			SnapshotName: snapshotName,
+			OwnerEmail:   m.userEmail,
+		})
+		if err != nil {
+			return operationDoneMsg{err: err}
+		}
+		return operationDoneMsg{
+			info:     fmt.Sprintf("snapshotting %s to %s", machineName, snapshot.Name),
+			snapshot: &snapshot,
+		}
+	}
+}
+
+func (m Model) deleteSnapshotCmd(name string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		if err := m.machines.DeleteSnapshot(ctx, name, m.userEmail); err != nil {
+			return operationDoneMsg{err: err}
+		}
+		return operationDoneMsg{info: fmt.Sprintf("deleted snapshot %s", name), reload: true}
 	}
 }
 
@@ -468,18 +657,53 @@ func (m Model) renderInputPanel(title, description, label, value, footer string)
 }
 
 func (m Model) renderBrowse(width int) string {
+	var sections []string
 	if len(m.items) == 0 {
-		empty := lipgloss.NewStyle().
+		sections = append(sections, m.renderPanel(width, "Machines", lipgloss.NewStyle().
 			Foreground(lipgloss.Color("244")).
-			Render("No machines yet.\n\nPress n to create your first machine.")
-		return m.renderPanel(width, "Machines", empty, false)
+			Render("No machines yet.\n\nPress n to create your first machine."), m.focus == focusMachines))
+	} else {
+		var cards []string
+		for i, machine := range m.items {
+			cards = append(cards, m.renderMachineCard(machine, i == m.selected, width))
+		}
+		sections = append(sections, strings.Join(cards, "\n\n"))
 	}
 
-	var cards []string
-	for i, machine := range m.items {
-		cards = append(cards, m.renderMachineCard(machine, i == m.selected, width))
+	snapshotContent := ""
+	if len(m.snapshots) == 0 {
+		snapshotContent = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("244")).
+			Render("No saved snapshots yet.\n\nPress p on a running machine to save one.")
+	} else {
+		var rows []string
+		for i, snapshot := range m.snapshots {
+			rows = append(rows, m.renderSnapshotRow(snapshot, i == m.selectedSnapshot, width))
+		}
+		if snapshot, ok := m.selectedSnapshotItem(); ok {
+			rows = append(rows, "")
+			detail := []string{
+				m.renderKeyValue("Source", snapshot.SourceMachineName),
+			}
+			if snapshot.DiskSizeBytes > 0 || snapshot.MemorySizeBytes > 0 {
+				detail = append(detail, m.renderKeyValue("Size", fmt.Sprintf("disk %s  •  memory %s", byteSummary(snapshot.DiskSizeBytes), byteSummary(snapshot.MemorySizeBytes))))
+			}
+			if snapshotAllowsDelete(snapshot) {
+				detail = append(detail, "")
+				detail = append(detail, lipgloss.NewStyle().Foreground(lipgloss.Color("244")).Render("(d) delete snapshot"))
+			}
+			if strings.EqualFold(snapshot.State, "CREATING") {
+				detail = append(detail, lipgloss.NewStyle().
+					Foreground(lipgloss.Color("117")).
+					Render("Recording snapshot state and storing artifacts."))
+			}
+			rows = append(rows, detail...)
+		}
+		snapshotContent = strings.Join(rows, "\n")
 	}
-	return strings.Join(cards, "\n\n")
+
+	sections = append(sections, m.renderPanel(width, "Snapshots", snapshotContent, m.focus == focusSnapshots))
+	return strings.Join(sections, "\n\n")
 }
 
 func (m Model) renderMachineCard(machine controlplane.Machine, selected bool, totalWidth int) string {
@@ -522,6 +746,9 @@ func (m Model) renderMachineCard(machine controlplane.Machine, selected bool, to
 		if machineAllowsClone(machine) {
 			actions = append(actions, "(c) clone")
 		}
+		if machineAllowsSnapshot(machine) {
+			actions = append(actions, "(p) snapshot")
+		}
 		if machineAllowsDelete(machine) {
 			actions = append(actions, "(d) delete")
 		}
@@ -550,8 +777,48 @@ func (m Model) renderMachineCard(machine controlplane.Machine, selected bool, to
 	return style.Render(strings.Join(lines, "\n"))
 }
 
+func (m Model) renderSnapshotRow(snapshot controlplane.Snapshot, selected bool, totalWidth int) string {
+	innerWidth := m.panelInnerWidth(totalWidth)
+	name := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color("255")).
+		Render(m.truncate(snapshot.Name, maxInt(18, innerWidth-18)))
+	header := m.padLine(name, m.statusBadge(snapshot.State), innerWidth)
+
+	lines := []string{header}
+	if strings.TrimSpace(snapshot.SourceMachineName) != "" {
+		lines = append(lines, m.renderKeyValue("From", snapshot.SourceMachineName))
+	}
+	if snapshot.CreatedAt != "" {
+		lines = append(lines, m.renderKeyValue("Created", snapshot.CreatedAt))
+	}
+
+	style := lipgloss.NewStyle().
+		Padding(0, 1).
+		Width(innerWidth).
+		BorderStyle(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("240"))
+	if selected {
+		style = style.
+			BorderStyle(lipgloss.DoubleBorder()).
+			BorderForeground(lipgloss.Color("81")).
+			Background(lipgloss.Color("235"))
+	}
+	return style.Render(strings.Join(lines, "\n"))
+}
+
 func (m Model) renderFooter(width int) string {
 	help := "(n) new  •  (r) refresh  •  (q) quit"
+	switch m.focus {
+	case focusMachines:
+		if len(m.snapshots) > 0 {
+			help = "(n) new  •  (p) snapshot  •  (tab) snapshots  •  (r) refresh  •  (q) quit"
+		} else {
+			help = "(n) new  •  (p) snapshot  •  (r) refresh  •  (q) quit"
+		}
+	case focusSnapshots:
+		help = "(n) new  •  (d) delete snapshot  •  (tab) machines  •  (r) refresh  •  (q) quit"
+	}
 	style := lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
 	if width <= 0 {
 		return style.Render(help)
@@ -703,9 +970,39 @@ func (m *Model) upsertMachine(machine controlplane.Machine) {
 	}
 }
 
+func (m *Model) upsertSnapshot(snapshot controlplane.Snapshot) {
+	for idx, item := range m.snapshots {
+		if item.Name != snapshot.Name {
+			continue
+		}
+		m.snapshots[idx] = snapshot
+		m.selectedSnapshot = idx
+		return
+	}
+
+	m.snapshots = append(m.snapshots, snapshot)
+	sort.Slice(m.snapshots, func(i, j int) bool {
+		if m.snapshots[i].CreatedAt == m.snapshots[j].CreatedAt {
+			return m.snapshots[i].Name < m.snapshots[j].Name
+		}
+		return m.snapshots[i].CreatedAt > m.snapshots[j].CreatedAt
+	})
+	for idx, item := range m.snapshots {
+		if item.Name == snapshot.Name {
+			m.selectedSnapshot = idx
+			return
+		}
+	}
+}
+
 func (m Model) hasPendingProvisioning() bool {
 	for _, machine := range m.items {
 		if strings.EqualFold(machine.State, "CREATING") {
+			return true
+		}
+	}
+	for _, snapshot := range m.snapshots {
+		if strings.EqualFold(snapshot.State, "CREATING") {
 			return true
 		}
 	}
@@ -726,4 +1023,69 @@ func machineAllowsTutorial(machine controlplane.Machine) bool {
 
 func machineAllowsDelete(machine controlplane.Machine) bool {
 	return !strings.EqualFold(machine.State, "CREATING")
+}
+
+func machineAllowsSnapshot(machine controlplane.Machine) bool {
+	return strings.EqualFold(machine.State, "RUNNING")
+}
+
+func snapshotAllowsDelete(snapshot controlplane.Snapshot) bool {
+	return !strings.EqualFold(snapshot.State, "CREATING")
+}
+
+func (m Model) createSources() []string {
+	sources := []string{""}
+	for _, snapshot := range m.snapshots {
+		if strings.EqualFold(snapshot.State, "READY") {
+			sources = append(sources, snapshot.Name)
+		}
+	}
+	return sources
+}
+
+func (m Model) defaultCreateSourceIndex() int {
+	if m.focus != focusSnapshots {
+		return 0
+	}
+	selected, ok := m.selectedSnapshotItem()
+	if !ok || !strings.EqualFold(selected.State, "READY") {
+		return 0
+	}
+	for idx, source := range m.createSources() {
+		if source == selected.Name {
+			return idx
+		}
+	}
+	return 0
+}
+
+func (m Model) selectedCreateSnapshot() string {
+	sources := m.createSources()
+	if m.createSourceIndex < 0 || m.createSourceIndex >= len(sources) {
+		return ""
+	}
+	return sources[m.createSourceIndex]
+}
+
+func (m Model) renderCreateSourceLine() string {
+	source := m.selectedCreateSnapshot()
+	if source == "" {
+		return m.renderKeyValue("Source", "base image")
+	}
+	return m.renderKeyValue("Source", "snapshot "+source)
+}
+
+func byteSummary(size int64) string {
+	switch {
+	case size <= 0:
+		return "0 B"
+	case size >= 1024*1024*1024:
+		return fmt.Sprintf("%.1f GiB", float64(size)/(1024*1024*1024))
+	case size >= 1024*1024:
+		return fmt.Sprintf("%.1f MiB", float64(size)/(1024*1024))
+	case size >= 1024:
+		return fmt.Sprintf("%.1f KiB", float64(size)/1024)
+	default:
+		return fmt.Sprintf("%d B", size)
+	}
 }

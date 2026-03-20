@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VM_BRIDGE_NAME="${FASCINATE_VM_BRIDGE_NAME:-fascbr0}"
 VM_GUEST_CIDR="${FASCINATE_VM_GUEST_CIDR:-10.42.0.0/24}"
+VM_NAMESPACE_CIDR="${FASCINATE_VM_NAMESPACE_CIDR:-100.96.0.0/16}"
 
 require_root() {
   if [[ "${EUID}" -ne 0 ]]; then
@@ -21,7 +21,7 @@ require_command() {
 
 require_root
 
-for command_name in curl git jq sqlite3 cloud-hypervisor qemu-img cloud-localds caddy ufw; do
+for command_name in curl git ip jq sqlite3 cloud-hypervisor qemu-img cloud-localds caddy ufw; do
   require_command "${command_name}"
 done
 
@@ -37,8 +37,9 @@ echo "cloud-hypervisor:"
 cloud-hypervisor --version
 echo
 
-echo "bridge:"
-ip addr show "${VM_BRIDGE_NAME}"
+echo "namespace network:"
+echo "  guest subnet: ${VM_GUEST_CIDR}"
+echo "  uplink subnet: ${VM_NAMESPACE_CIDR}"
 echo
 
 echo "firewall:"
@@ -60,11 +61,10 @@ if [[ -z "${uplink}" ]]; then
   exit 1
 fi
 
-if iptables -t nat -C POSTROUTING -s "${VM_GUEST_CIDR}" -o "${uplink}" -j MASQUERADE >/dev/null 2>&1; then
-  echo "masquerade present for ${VM_GUEST_CIDR} -> ${uplink}"
+if iptables -t nat -C POSTROUTING -s "${VM_NAMESPACE_CIDR}" -o "${uplink}" -j MASQUERADE >/dev/null 2>&1; then
+  echo "masquerade present for ${VM_NAMESPACE_CIDR} -> ${uplink}"
 else
-  echo "missing masquerade rule for ${VM_GUEST_CIDR} -> ${uplink}" >&2
-  exit 1
+  echo "masquerade rule for ${VM_NAMESPACE_CIDR} -> ${uplink} not present yet (expected before the first VM boots)"
 fi
 echo
 

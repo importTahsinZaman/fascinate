@@ -31,28 +31,66 @@ import (
 
 const (
 	metadataFileName = "machine.json"
+	snapshotFileName = "snapshot.json"
 	diskFileName     = "disk.qcow2"
 	seedFileName     = "seed.img"
 	logFileName      = "cloud-hypervisor.log"
 	socketFileName   = "cloud-hypervisor.sock"
+	restoreDirName   = "restore"
+	portFileName     = "app-forward.port"
 )
 
 type metadata struct {
-	Name         string `json:"name"`
-	CPU          string `json:"cpu"`
-	Memory       string `json:"memory"`
-	Disk         string `json:"disk"`
-	PrimaryPort  int    `json:"primary_port"`
-	IPv4         string `json:"ipv4"`
-	GuestUser    string `json:"guest_user"`
-	TapDevice    string `json:"tap_device"`
-	MACAddress   string `json:"mac_address"`
-	DiskPath     string `json:"disk_path"`
-	SeedPath     string `json:"seed_path"`
-	LogPath      string `json:"log_path"`
-	SocketPath   string `json:"socket_path"`
-	ProcessID    int    `json:"process_id"`
-	CreatedAtUTC string `json:"created_at_utc"`
+	Name              string `json:"name"`
+	CPU               string `json:"cpu"`
+	Memory            string `json:"memory"`
+	Disk              string `json:"disk"`
+	PrimaryPort       int    `json:"primary_port"`
+	IPv4              string `json:"ipv4"`
+	GuestGatewayIPv4  string `json:"guest_gateway_ipv4"`
+	GuestUser         string `json:"guest_user"`
+	TapDevice         string `json:"tap_device"`
+	MACAddress        string `json:"mac_address"`
+	NamespaceName     string `json:"namespace_name"`
+	BridgeName        string `json:"bridge_name"`
+	HostVethName      string `json:"host_veth_name"`
+	NamespaceVethName string `json:"namespace_veth_name"`
+	HostVethIPv4      string `json:"host_veth_ipv4"`
+	NamespaceVethIPv4 string `json:"namespace_veth_ipv4"`
+	DiskPath          string `json:"disk_path"`
+	SeedPath          string `json:"seed_path"`
+	LogPath           string `json:"log_path"`
+	SocketPath        string `json:"socket_path"`
+	RestoreDir        string `json:"restore_dir"`
+	AppForwardPort    int    `json:"app_forward_port"`
+	AppForwardPID     int    `json:"app_forward_pid"`
+	SSHForwardPort    int    `json:"ssh_forward_port"`
+	SSHForwardPID     int    `json:"ssh_forward_pid"`
+	ProcessID         int    `json:"process_id"`
+	CreatedAtUTC      string `json:"created_at_utc"`
+}
+
+type snapshotMetadata struct {
+	Name              string `json:"name"`
+	SourceMachineName string `json:"source_machine_name"`
+	State             string `json:"state"`
+	CPU               string `json:"cpu"`
+	Memory            string `json:"memory"`
+	Disk              string `json:"disk"`
+	PrimaryPort       int    `json:"primary_port"`
+	IPv4              string `json:"ipv4"`
+	GuestGatewayIPv4  string `json:"guest_gateway_ipv4"`
+	GuestUser         string `json:"guest_user"`
+	TapDevice         string `json:"tap_device"`
+	MACAddress        string `json:"mac_address"`
+	DiskPath          string `json:"disk_path"`
+	SeedPath          string `json:"seed_path"`
+	RestoreDir        string `json:"restore_dir"`
+	DiskSizeBytes     int64  `json:"disk_size_bytes"`
+	MemorySizeBytes   int64  `json:"memory_size_bytes"`
+	RuntimeVersion    string `json:"runtime_version"`
+	FirmwareVersion   string `json:"firmware_version"`
+	CreatedAtUTC      string `json:"created_at_utc"`
 }
 
 type Manager struct {
@@ -60,20 +98,26 @@ type Manager struct {
 	qemuImgBinary     string
 	cloudLocalDS      string
 	stateDir          string
+	snapshotDir       string
 	baseDomain        string
-	bridgeName        string
 	bridgePrefix      netip.Prefix
 	guestPrefix       netip.Prefix
+	namespacePrefix   netip.Prefix
 	firmwarePath      string
 	defaultGuestUser  string
 	guestSSHKeyPath   string
 	guestSSHPublicKey string
-	waitForGuest      func(context.Context, string) error
+	sshClientBinary   string
+	selfBinary        string
+	waitForGuest      func(context.Context, metadata) error
 	now               func() time.Time
 }
 
 func New(cfg config.Config) (*Manager, error) {
 	if err := os.MkdirAll(cfg.RuntimeStateDir, 0o755); err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(cfg.RuntimeSnapshotDir, 0o755); err != nil {
 		return nil, err
 	}
 
@@ -90,20 +134,31 @@ func New(cfg config.Config) (*Manager, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse VM guest CIDR: %w", err)
 	}
+	namespacePrefix, err := netip.ParsePrefix(strings.TrimSpace(cfg.VMNamespaceCIDR))
+	if err != nil {
+		return nil, fmt.Errorf("parse VM namespace CIDR: %w", err)
+	}
+	selfBinary, err := os.Executable()
+	if err != nil {
+		return nil, err
+	}
 
 	manager := &Manager{
 		binary:            strings.TrimSpace(cfg.RuntimeBinary),
 		qemuImgBinary:     strings.TrimSpace(cfg.QemuImgBinary),
 		cloudLocalDS:      strings.TrimSpace(cfg.CloudLocalDSBinary),
 		stateDir:          strings.TrimSpace(cfg.RuntimeStateDir),
+		snapshotDir:       strings.TrimSpace(cfg.RuntimeSnapshotDir),
 		baseDomain:        strings.TrimSpace(cfg.BaseDomain),
-		bridgeName:        strings.TrimSpace(cfg.VMBridgeName),
 		bridgePrefix:      bridgePrefix,
 		guestPrefix:       guestPrefix,
+		namespacePrefix:   namespacePrefix,
 		firmwarePath:      strings.TrimSpace(cfg.VMFirmwarePath),
 		defaultGuestUser:  strings.TrimSpace(cfg.GuestSSHUser),
 		guestSSHKeyPath:   strings.TrimSpace(cfg.GuestSSHKeyPath),
 		guestSSHPublicKey: publicKey,
+		sshClientBinary:   strings.TrimSpace(cfg.SSHClientBinary),
+		selfBinary:        selfBinary,
 		now:               time.Now,
 	}
 	manager.waitForGuest = manager.waitForGuestSSH
@@ -116,6 +171,9 @@ func New(cfg config.Config) (*Manager, error) {
 	}
 	if manager.cloudLocalDS == "" {
 		manager.cloudLocalDS = "cloud-localds"
+	}
+	if manager.sshClientBinary == "" {
+		manager.sshClientBinary = "ssh"
 	}
 	if manager.defaultGuestUser == "" {
 		manager.defaultGuestUser = "ubuntu"
@@ -151,6 +209,14 @@ func (m *Manager) ListMachines(ctx context.Context) ([]machineruntime.Machine, e
 			}
 			return nil, err
 		}
+		if meta.ProcessID > 0 && processAlive(meta.ProcessID) && ((meta.AppForwardPID <= 0 || !processAlive(meta.AppForwardPID)) || (meta.SSHForwardPID <= 0 || !processAlive(meta.SSHForwardPID))) {
+			if err := m.startAppForwarder(ctx, &meta); err != nil {
+				return nil, err
+			}
+			if err := m.startSSHForwarder(ctx, &meta); err != nil {
+				return nil, err
+			}
+		}
 
 		machines = append(machines, m.machineFromMetadata(meta))
 	}
@@ -162,7 +228,7 @@ func (m *Manager) ListMachines(ctx context.Context) ([]machineruntime.Machine, e
 	return machines, nil
 }
 
-func (m *Manager) GetMachine(_ context.Context, name string) (machineruntime.Machine, error) {
+func (m *Manager) GetMachine(ctx context.Context, name string) (machineruntime.Machine, error) {
 	meta, err := m.loadMetadata(strings.TrimSpace(name))
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -170,15 +236,29 @@ func (m *Manager) GetMachine(_ context.Context, name string) (machineruntime.Mac
 		}
 		return machineruntime.Machine{}, err
 	}
+	if meta.ProcessID > 0 && processAlive(meta.ProcessID) && ((meta.AppForwardPID <= 0 || !processAlive(meta.AppForwardPID)) || (meta.SSHForwardPID <= 0 || !processAlive(meta.SSHForwardPID))) {
+		if err := m.startAppForwarder(ctx, &meta); err != nil {
+			return machineruntime.Machine{}, err
+		}
+		if err := m.startSSHForwarder(ctx, &meta); err != nil {
+			return machineruntime.Machine{}, err
+		}
+	}
 
 	return m.machineFromMetadata(meta), nil
 }
 
 func (m *Manager) CreateMachine(ctx context.Context, req machineruntime.CreateMachineRequest) (machineruntime.Machine, error) {
 	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		return machineruntime.Machine{}, fmt.Errorf("machine name is required")
+	}
+	if snapshotName := strings.TrimSpace(req.Snapshot); snapshotName != "" {
+		return m.restoreMachineFromSnapshot(ctx, snapshotName, req)
+	}
 	baseImage := strings.TrimSpace(req.Image)
-	if name == "" || baseImage == "" {
-		return machineruntime.Machine{}, fmt.Errorf("machine name and image are required")
+	if baseImage == "" {
+		return machineruntime.Machine{}, fmt.Errorf("machine image is required")
 	}
 
 	machineDir := m.machineDir(name)
@@ -205,7 +285,7 @@ func (m *Manager) CreateMachine(ctx context.Context, req machineruntime.CreateMa
 		_ = os.RemoveAll(machineDir)
 		return machineruntime.Machine{}, err
 	}
-	if err := m.createTapDevice(ctx, meta.TapDevice); err != nil {
+	if err := m.createNamespaceNetwork(ctx, meta); err != nil {
 		_ = os.RemoveAll(machineDir)
 		return machineruntime.Machine{}, err
 	}
@@ -213,7 +293,15 @@ func (m *Manager) CreateMachine(ctx context.Context, req machineruntime.CreateMa
 		_ = m.cleanupMachine(context.Background(), meta)
 		return machineruntime.Machine{}, err
 	}
-	if err := m.waitForGuest(ctx, meta.IPv4); err != nil {
+	if err := m.startAppForwarder(ctx, &meta); err != nil {
+		_ = m.cleanupMachine(context.Background(), meta)
+		return machineruntime.Machine{}, err
+	}
+	if err := m.startSSHForwarder(ctx, &meta); err != nil {
+		_ = m.cleanupMachine(context.Background(), meta)
+		return machineruntime.Machine{}, err
+	}
+	if err := m.waitForGuest(ctx, meta); err != nil {
 		_ = m.cleanupMachine(context.Background(), meta)
 		return machineruntime.Machine{}, err
 	}
@@ -234,79 +322,11 @@ func (m *Manager) DeleteMachine(ctx context.Context, name string) error {
 }
 
 func (m *Manager) CloneMachine(ctx context.Context, req machineruntime.CloneMachineRequest) (machineruntime.Machine, error) {
-	sourceName := strings.TrimSpace(req.SourceName)
-	targetName := strings.TrimSpace(req.TargetName)
-	if sourceName == "" || targetName == "" {
-		return machineruntime.Machine{}, fmt.Errorf("source and target names are required")
-	}
-
-	source, err := m.loadMetadata(sourceName)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return machineruntime.Machine{}, machineruntime.ErrMachineNotFound
-		}
-		return machineruntime.Machine{}, err
-	}
-
-	targetDir := m.machineDir(targetName)
-	if _, err := os.Stat(targetDir); err == nil {
-		return machineruntime.Machine{}, fmt.Errorf("machine %q already exists", targetName)
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return machineruntime.Machine{}, err
-	}
-	if err := os.MkdirAll(targetDir, 0o755); err != nil {
-		return machineruntime.Machine{}, err
-	}
-
-	target := source
-	target.Name = targetName
-	target.ProcessID = 0
-	target.TapDevice = tapDeviceName(targetName)
-	target.DiskPath = filepath.Join(targetDir, diskFileName)
-	target.SeedPath = filepath.Join(targetDir, seedFileName)
-	target.LogPath = filepath.Join(targetDir, logFileName)
-	target.SocketPath = filepath.Join(targetDir, socketFileName)
-	target.CreatedAtUTC = m.now().UTC().Format(time.RFC3339)
-	target.IPv4, err = m.allocateIPv4(targetName)
-	if err != nil {
-		_ = os.RemoveAll(targetDir)
-		return machineruntime.Machine{}, err
-	}
-	target.MACAddress = macFromIPv4(target.IPv4)
-	if strings.TrimSpace(req.RootDiskSize) != "" {
-		target.Disk = strings.TrimSpace(req.RootDiskSize)
-	}
-
-	if err := m.copyDisk(ctx, source.DiskPath, target.DiskPath); err != nil {
-		_ = os.RemoveAll(targetDir)
-		return machineruntime.Machine{}, err
-	}
-	if err := m.resizeDisk(ctx, target.DiskPath, target.Disk); err != nil {
-		_ = os.RemoveAll(targetDir)
-		return machineruntime.Machine{}, err
-	}
-	if err := m.writeSeedImage(ctx, target); err != nil {
-		_ = os.RemoveAll(targetDir)
-		return machineruntime.Machine{}, err
-	}
-	if err := m.createTapDevice(ctx, target.TapDevice); err != nil {
-		_ = os.RemoveAll(targetDir)
-		return machineruntime.Machine{}, err
-	}
-	if err := m.startVM(ctx, &target); err != nil {
-		_ = m.cleanupMachine(context.Background(), target)
-		return machineruntime.Machine{}, err
-	}
-	if err := m.waitForGuest(ctx, target.IPv4); err != nil {
-		_ = m.cleanupMachine(context.Background(), target)
-		return machineruntime.Machine{}, err
-	}
-
-	return m.machineFromMetadata(target), nil
+	return m.cloneMachineViaSnapshot(ctx, req)
 }
 
 func (m *Manager) prepareMetadata(name string, req machineruntime.CreateMachineRequest) (metadata, error) {
-	ipv4, err := m.allocateIPv4(name)
+	namespaceName, hostVethName, hostVethIPv4, namespaceVethIPv4, macAddress, err := m.prepareNetworkMetadata(name)
 	if err != nil {
 		return metadata{}, err
 	}
@@ -316,27 +336,41 @@ func (m *Manager) prepareMetadata(name string, req machineruntime.CreateMachineR
 	if disk == "" {
 		disk = "20GiB"
 	}
+	guestGateway := m.bridgePrefix.Addr().String()
+	guestIPv4 := advanceAddr(m.bridgePrefix.Addr(), 1).String()
 
 	return metadata{
-		Name:         name,
-		CPU:          strings.TrimSpace(req.CPU),
-		Memory:       strings.TrimSpace(req.Memory),
-		Disk:         disk,
-		PrimaryPort:  req.PrimaryPort,
-		IPv4:         ipv4,
-		GuestUser:    m.defaultGuestUser,
-		TapDevice:    tapDeviceName(name),
-		MACAddress:   macFromIPv4(ipv4),
-		DiskPath:     filepath.Join(machineDir, diskFileName),
-		SeedPath:     filepath.Join(machineDir, seedFileName),
-		LogPath:      filepath.Join(machineDir, logFileName),
-		SocketPath:   filepath.Join(machineDir, socketFileName),
-		CreatedAtUTC: m.now().UTC().Format(time.RFC3339),
+		Name:              name,
+		CPU:               strings.TrimSpace(req.CPU),
+		Memory:            strings.TrimSpace(req.Memory),
+		Disk:              disk,
+		PrimaryPort:       req.PrimaryPort,
+		IPv4:              guestIPv4,
+		GuestGatewayIPv4:  guestGateway,
+		GuestUser:         m.defaultGuestUser,
+		TapDevice:         namespaceTapName,
+		MACAddress:        macAddress,
+		NamespaceName:     namespaceName,
+		BridgeName:        namespaceBridgeName,
+		HostVethName:      hostVethName,
+		NamespaceVethName: namespaceUplinkName,
+		HostVethIPv4:      hostVethIPv4,
+		NamespaceVethIPv4: namespaceVethIPv4,
+		DiskPath:          filepath.Join(machineDir, diskFileName),
+		SeedPath:          filepath.Join(machineDir, seedFileName),
+		LogPath:           filepath.Join(machineDir, logFileName),
+		SocketPath:        filepath.Join(machineDir, socketFileName),
+		RestoreDir:        filepath.Join(machineDir, restoreDirName),
+		CreatedAtUTC:      m.now().UTC().Format(time.RFC3339),
 	}, nil
 }
 
 func (m *Manager) machineDir(name string) string {
 	return filepath.Join(m.stateDir, strings.TrimSpace(name))
+}
+
+func (m *Manager) snapshotDirPath(name string) string {
+	return filepath.Join(m.snapshotDir, strings.TrimSpace(name))
 }
 
 func (m *Manager) machineFromMetadata(meta metadata) machineruntime.Machine {
@@ -354,6 +388,10 @@ func (m *Manager) machineFromMetadata(meta metadata) machineruntime.Machine {
 		Disk:      meta.Disk,
 		IPv4:      []string{meta.IPv4},
 		GuestUser: meta.GuestUser,
+		AppHost:   "127.0.0.1",
+		AppPort:   meta.AppForwardPort,
+		SSHHost:   "127.0.0.1",
+		SSHPort:   meta.SSHForwardPort,
 	}
 }
 
@@ -369,6 +407,18 @@ func (m *Manager) loadMetadata(name string) (metadata, error) {
 	return meta, nil
 }
 
+func (m *Manager) loadSnapshotMetadata(name string) (snapshotMetadata, error) {
+	var meta snapshotMetadata
+	body, err := os.ReadFile(filepath.Join(m.snapshotDirPath(name), snapshotFileName))
+	if err != nil {
+		return snapshotMetadata{}, err
+	}
+	if err := json.Unmarshal(body, &meta); err != nil {
+		return snapshotMetadata{}, err
+	}
+	return meta, nil
+}
+
 func (m *Manager) storeMetadata(meta metadata) error {
 	body, err := json.MarshalIndent(meta, "", "  ")
 	if err != nil {
@@ -377,44 +427,36 @@ func (m *Manager) storeMetadata(meta metadata) error {
 	return os.WriteFile(filepath.Join(m.machineDir(meta.Name), metadataFileName), body, 0o600)
 }
 
-func (m *Manager) allocateIPv4(targetName string) (string, error) {
-	used := map[netip.Addr]struct{}{}
-	entries, err := os.ReadDir(m.stateDir)
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return "", err
-	}
+func (m *Manager) storeSnapshotMetadata(meta snapshotMetadata) error {
+	return storeSnapshotMetadataAt(m.snapshotDirPath(meta.Name), meta)
+}
 
+func storeSnapshotMetadataAt(dir string, meta snapshotMetadata) error {
+	body, err := json.MarshalIndent(meta, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, snapshotFileName), body, 0o600)
+}
+
+func (m *Manager) metadataByIPv4(ipv4 string) (metadata, error) {
+	entries, err := os.ReadDir(m.stateDir)
+	if err != nil {
+		return metadata{}, err
+	}
 	for _, entry := range entries {
 		if !entry.IsDir() {
-			continue
-		}
-		if entry.Name() == targetName {
 			continue
 		}
 		meta, err := m.loadMetadata(entry.Name())
 		if err != nil {
 			continue
 		}
-		addr, err := netip.ParseAddr(meta.IPv4)
-		if err != nil {
-			continue
+		if strings.TrimSpace(meta.IPv4) == strings.TrimSpace(ipv4) {
+			return meta, nil
 		}
-		used[addr] = struct{}{}
 	}
-
-	start := m.guestPrefix.Addr()
-	for i := 10; i < 255; i++ {
-		addr := advanceAddr(start, i)
-		if !m.guestPrefix.Contains(addr) {
-			break
-		}
-		if _, ok := used[addr]; ok {
-			continue
-		}
-		return addr.String(), nil
-	}
-
-	return "", fmt.Errorf("no free guest IP addresses remain in %s", m.guestPrefix.String())
+	return metadata{}, machineruntime.ErrMachineNotFound
 }
 
 func (m *Manager) createOverlayDisk(ctx context.Context, baseImage, diskPath, size string) error {
@@ -461,8 +503,14 @@ func (m *Manager) imageFormat(ctx context.Context, imagePath string) (string, er
 }
 
 func (m *Manager) copyDisk(ctx context.Context, sourcePath, targetPath string) error {
-	_, err := m.run(ctx, m.qemuImgBinary, "convert", "-O", "qcow2", sourcePath, targetPath)
-	return err
+	// Snapshot copies read from disks that are still held open by a paused VMM.
+	// A direct filesystem copy avoids qcow2 lock negotiation entirely; on Linux
+	// we prefer a sparse/reflink-aware cp and fall back to a plain file copy if
+	// those flags are unavailable.
+	if _, err := m.run(ctx, "cp", "--reflink=auto", "--sparse=always", sourcePath, targetPath); err == nil {
+		return nil
+	}
+	return copyFile(sourcePath, targetPath)
 }
 
 func (m *Manager) resizeDisk(ctx context.Context, diskPath, size string) error {
@@ -505,9 +553,6 @@ func (m *Manager) createTapDevice(ctx context.Context, tapName string) error {
 	if _, err := m.run(ctx, "ip", "tuntap", "add", "dev", tapName, "mode", "tap"); err != nil {
 		return err
 	}
-	if _, err := m.run(ctx, "ip", "link", "set", tapName, "master", m.bridgeName); err != nil {
-		return err
-	}
 	if _, err := m.run(ctx, "ip", "link", "set", tapName, "up"); err != nil {
 		return err
 	}
@@ -537,7 +582,8 @@ func (m *Manager) startVM(ctx context.Context, meta *metadata) error {
 		"--net", "tap=" + meta.TapDevice + ",mac=" + meta.MACAddress,
 	}
 
-	cmd := exec.CommandContext(ctx, m.binary, args...)
+	fullArgs := append([]string{"netns", "exec", meta.NamespaceName, m.binary}, args...)
+	cmd := exec.CommandContext(ctx, "ip", fullArgs...)
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -554,6 +600,8 @@ func (m *Manager) startVM(ctx context.Context, meta *metadata) error {
 }
 
 func (m *Manager) cleanupMachine(ctx context.Context, meta metadata) error {
+	_ = m.stopAppForwarder(ctx, &meta)
+	_ = m.stopSSHForwarder(ctx, &meta)
 	if meta.ProcessID > 0 {
 		if pgid, err := syscall.Getpgid(meta.ProcessID); err == nil {
 			_ = syscall.Kill(-pgid, syscall.SIGTERM)
@@ -566,7 +614,7 @@ func (m *Manager) cleanupMachine(ctx context.Context, meta metadata) error {
 		}
 	}
 
-	m.deleteTapDevice(ctx, meta.TapDevice)
+	m.deleteNamespaceNetwork(ctx, meta)
 
 	if err := os.RemoveAll(m.machineDir(meta.Name)); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
@@ -575,32 +623,26 @@ func (m *Manager) cleanupMachine(ctx context.Context, meta metadata) error {
 	return nil
 }
 
-func (m *Manager) waitForGuestSSH(ctx context.Context, ipv4 string) error {
-	address := net.JoinHostPort(strings.TrimSpace(ipv4), "22")
+func (m *Manager) waitForGuestSSH(ctx context.Context, meta metadata) error {
 	deadline := time.Now().Add(15 * time.Minute)
 	for {
-		dialer := net.Dialer{Timeout: 3 * time.Second}
-		conn, err := dialer.DialContext(ctx, "tcp", address)
+		err := m.runGuestCommand(ctx, meta, "test -f /var/lib/cloud/instance/boot-finished && command -v claude >/dev/null 2>&1 && command -v codex >/dev/null 2>&1 && command -v node >/dev/null 2>&1 && command -v go >/dev/null 2>&1 && command -v docker >/dev/null 2>&1 && systemctl is-active --quiet docker")
 		if err == nil {
-			_ = conn.Close()
-			err = m.runGuestCommand(ctx, ipv4, "test -f /var/lib/cloud/instance/boot-finished && command -v claude >/dev/null 2>&1 && command -v codex >/dev/null 2>&1 && command -v node >/dev/null 2>&1 && command -v go >/dev/null 2>&1 && command -v docker >/dev/null 2>&1 && systemctl is-active --quiet docker")
-			if err == nil {
-				return nil
-			}
+			return nil
 		}
 
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
 		if time.Now().After(deadline) {
-			return fmt.Errorf("timed out waiting for guest SSH on %s", address)
+			return fmt.Errorf("timed out waiting for guest SSH on %s", net.JoinHostPort(strings.TrimSpace(meta.IPv4), "22"))
 		}
 		time.Sleep(2 * time.Second)
 	}
 }
 
-func (m *Manager) runGuestCommand(ctx context.Context, ipv4, command string) error {
-	_, err := m.runGuestCommandOutput(ctx, ipv4, command, nil)
+func (m *Manager) runGuestCommand(ctx context.Context, meta metadata, command string) error {
+	_, err := m.runGuestCommandOutput(ctx, meta, command, nil)
 	return err
 }
 
@@ -613,7 +655,7 @@ func (m *Manager) CaptureSessionState(ctx context.Context, runtimeName string, s
 		return nil, err
 	}
 
-	output, err := m.runGuestCommandOutput(ctx, meta.IPv4, captureSessionStateCommand(spec), nil)
+	output, err := m.runGuestCommandOutput(ctx, meta, captureSessionStateCommand(spec), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -633,33 +675,33 @@ func (m *Manager) RestoreSessionState(ctx context.Context, runtimeName string, s
 		return err
 	}
 
-	_, err = m.runGuestCommandOutput(ctx, meta.IPv4, restoreSessionStateCommand(spec), bytes.NewReader(archive))
+	_, err = m.runGuestCommandOutput(ctx, meta, restoreSessionStateCommand(spec), bytes.NewReader(archive))
 	return err
 }
 
-func (m *Manager) runGuestCommandOutput(ctx context.Context, ipv4, command string, stdin io.Reader) ([]byte, error) {
-	client, err := m.guestClient(ipv4)
-	if err != nil {
-		return nil, err
+func (m *Manager) runGuestCommandOutput(ctx context.Context, meta metadata, command string, stdin io.Reader) ([]byte, error) {
+	args := []string{
+		"netns", "exec", meta.NamespaceName,
+		m.sshClientBinary,
+		"-i", m.guestSSHKeyPath,
+		"-o", "BatchMode=yes",
+		"-o", "StrictHostKeyChecking=no",
+		"-o", "UserKnownHostsFile=/dev/null",
+		"-o", "LogLevel=ERROR",
+		"-o", "ConnectTimeout=5",
+		fmt.Sprintf("%s@%s", meta.GuestUser, meta.IPv4),
+		"bash -lc " + shellQuote(command),
 	}
-	defer client.Close()
 
-	session, err := client.NewSession()
-	if err != nil {
-		return nil, err
-	}
-	defer session.Close()
-
+	cmd := exec.CommandContext(ctx, "ip", args...)
 	if stdin != nil {
-		session.Stdin = stdin
+		cmd.Stdin = stdin
 	}
-
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	session.Stdout = &stdout
-	session.Stderr = &stderr
-
-	if err := session.Run(command); err != nil {
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
 		message := strings.TrimSpace(stderr.String())
 		if message == "" {
 			message = strings.TrimSpace(stdout.String())
@@ -669,33 +711,7 @@ func (m *Manager) runGuestCommandOutput(ctx context.Context, ipv4, command strin
 		}
 		return nil, fmt.Errorf("%w: %s", err, message)
 	}
-
 	return stdout.Bytes(), nil
-}
-
-func (m *Manager) guestClient(ipv4 string) (*ssh.Client, error) {
-	keyBytes, err := os.ReadFile(m.guestSSHKeyPath)
-	if err != nil {
-		return nil, err
-	}
-
-	signer, err := ssh.ParsePrivateKey(keyBytes)
-	if err != nil {
-		return nil, err
-	}
-
-	sshConfig := &ssh.ClientConfig{
-		User:            m.defaultGuestUser,
-		Auth:            []ssh.AuthMethod{ssh.PublicKeys(signer)},
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
-		Timeout:         5 * time.Second,
-	}
-
-	client, err := ssh.Dial("tcp", net.JoinHostPort(strings.TrimSpace(ipv4), "22"), sshConfig)
-	if err != nil {
-		return nil, err
-	}
-	return client, nil
 }
 
 func (m *Manager) run(ctx context.Context, binary string, args ...string) ([]byte, error) {

@@ -17,9 +17,11 @@ type Config struct {
 	AdminEmails          []string
 	RuntimeBinary        string
 	RuntimeStateDir      string
+	RuntimeSnapshotDir   string
 	VMBridgeName         string
 	VMBridgeCIDR         string
 	VMGuestCIDR          string
+	VMNamespaceCIDR      string
 	VMFirmwarePath       string
 	QemuImgBinary        string
 	CloudLocalDSBinary   string
@@ -63,6 +65,10 @@ func Load() Config {
 	if runtimeStateDir == "" {
 		runtimeStateDir = filepath.Join(dataDir, "machines")
 	}
+	runtimeSnapshotDir := getenv("FASCINATE_RUNTIME_SNAPSHOT_DIR", "")
+	if runtimeSnapshotDir == "" {
+		runtimeSnapshotDir = filepath.Join(dataDir, "snapshots")
+	}
 	guestSSHKeyPath := getenv("FASCINATE_GUEST_SSH_KEY_PATH", "")
 	if guestSSHKeyPath == "" {
 		guestSSHKeyPath = filepath.Join(dataDir, "guest_ssh_ed25519")
@@ -85,9 +91,11 @@ func Load() Config {
 		AdminEmails:          splitCSV(getenv("FASCINATE_ADMIN_EMAILS", "")),
 		RuntimeBinary:        runtimeBinary,
 		RuntimeStateDir:      runtimeStateDir,
+		RuntimeSnapshotDir:   runtimeSnapshotDir,
 		VMBridgeName:         getenv("FASCINATE_VM_BRIDGE_NAME", "fascbr0"),
 		VMBridgeCIDR:         getenv("FASCINATE_VM_BRIDGE_CIDR", "10.42.0.1/24"),
 		VMGuestCIDR:          getenv("FASCINATE_VM_GUEST_CIDR", "10.42.0.0/24"),
+		VMNamespaceCIDR:      getenv("FASCINATE_VM_NAMESPACE_CIDR", "100.96.0.0/16"),
 		VMFirmwarePath:       getenv("FASCINATE_VM_FIRMWARE_PATH", "/usr/local/share/cloud-hypervisor/CLOUDHV.fd"),
 		QemuImgBinary:        getenv("FASCINATE_QEMU_IMG_BINARY", "qemu-img"),
 		CloudLocalDSBinary:   getenv("FASCINATE_CLOUD_LOCALDS_BINARY", "cloud-localds"),

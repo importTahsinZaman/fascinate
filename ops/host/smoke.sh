@@ -32,8 +32,12 @@ delete_machine() {
   curl -fsS -X DELETE "$(api_url "/v1/machines/${SMOKE_NAME}?owner_email=${SMOKE_EMAIL}")" >/dev/null 2>&1 || true
 }
 
-guest_ip() {
-  curl -fsS "$(api_url "/v1/machines/${SMOKE_NAME}?owner_email=${SMOKE_EMAIL}")" | jq -r '.runtime.ipv4[0] // empty'
+guest_ssh_host() {
+  curl -fsS "$(api_url "/v1/machines/${SMOKE_NAME}?owner_email=${SMOKE_EMAIL}")" | jq -r '.runtime.ssh_host // empty'
+}
+
+guest_ssh_port() {
+  curl -fsS "$(api_url "/v1/machines/${SMOKE_NAME}?owner_email=${SMOKE_EMAIL}")" | jq -r '.runtime.ssh_port // 0'
 }
 
 machine_state() {
@@ -41,23 +45,27 @@ machine_state() {
 }
 
 run_guest_command() {
-  local guest_ip="$1"
+  local guest_host="$1"
+  local guest_port="$2"
+  shift
   shift
   "${FASCINATE_SSH_CLIENT_BINARY}" \
     -i "${FASCINATE_GUEST_SSH_KEY_PATH}" \
     -o BatchMode=yes \
     -o StrictHostKeyChecking=no \
     -o UserKnownHostsFile=/dev/null \
-    "${FASCINATE_GUEST_SSH_USER}@${guest_ip}" \
+    -p "${guest_port}" \
+    "${FASCINATE_GUEST_SSH_USER}@${guest_host}" \
     "$@"
 }
 
 wait_for_guest() {
-  local guest_ip="$1"
+  local guest_host="$1"
+  local guest_port="$2"
   local attempts=60
 
   while (( attempts > 0 )); do
-    if run_guest_command "${guest_ip}" "claude --version >/dev/null 2>&1 && node --version >/dev/null 2>&1 && go version >/dev/null 2>&1 && docker --version >/dev/null 2>&1"; then
+    if run_guest_command "${guest_host}" "${guest_port}" "claude --version >/dev/null 2>&1 && codex --version >/dev/null 2>&1 && node --version >/dev/null 2>&1 && go version >/dev/null 2>&1 && docker --version >/dev/null 2>&1"; then
       return 0
     fi
     attempts=$((attempts - 1))
@@ -75,10 +83,12 @@ wait_for_machine_ready() {
     local state
     state="$(machine_state)"
     if [[ "${state}" == "RUNNING" ]]; then
-      local ip
-      ip="$(guest_ip)"
-      if [[ -n "${ip}" ]]; then
-        printf '%s\n' "${ip}"
+      local host
+      local port
+      host="$(guest_ssh_host)"
+      port="$(guest_ssh_port)"
+      if [[ -n "${host}" && "${port}" != "0" ]]; then
+        printf '%s %s\n' "${host}" "${port}"
         return 0
       fi
     fi
@@ -96,7 +106,7 @@ wait_for_route() {
   local attempts=30
 
   while (( attempts > 0 )); do
-    if curl -fsS -H "Host: ${host_header}" http://127.0.0.1/ >/dev/null 2>&1; then
+    if curl -kfsS --resolve "${host_header}:443:127.0.0.1" "https://${host_header}/" >/dev/null 2>&1; then
       return 0
     fi
     attempts=$((attempts - 1))
@@ -156,14 +166,15 @@ main() {
     -d "{\"name\":\"${SMOKE_NAME}\",\"owner_email\":\"${SMOKE_EMAIL}\"}" \
     "$(api_url '/v1/machines')" >/dev/null
 
-  local ip
-  ip="$(wait_for_machine_ready)"
+  local ssh_host
+  local ssh_port
+  read -r ssh_host ssh_port <<<"$(wait_for_machine_ready)"
 
-  echo "waiting for guest toolchain on ${ip}"
-  wait_for_guest "${ip}"
+  echo "waiting for guest toolchain on ${ssh_host}:${ssh_port}"
+  wait_for_guest "${ssh_host}" "${ssh_port}"
 
   echo "starting smoke app on port 3000"
-  run_guest_command "${ip}" "nohup python3 -m http.server 3000 --bind 0.0.0.0 >/tmp/fascinate-smoke.log 2>&1 </dev/null &"
+  run_guest_command "${ssh_host}" "${ssh_port}" "python3 -c \"import subprocess; log=open('/tmp/fascinate-smoke.log','ab', buffering=0); subprocess.Popen(['python3','-m','http.server','3000','--bind','0.0.0.0'], stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, start_new_session=True); print('started')\""
 
   echo "waiting for routed app response"
   wait_for_route

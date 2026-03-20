@@ -53,6 +53,15 @@ type fakeMachineManager struct {
 	cloneInput     controlplane.CloneMachineInput
 	cloneResult    controlplane.Machine
 	cloneErr       error
+	listSnapshotsOwner string
+	listSnapshotsResult []controlplane.Snapshot
+	listSnapshotsErr error
+	createSnapshotInput controlplane.CreateSnapshotInput
+	createSnapshotResult controlplane.Snapshot
+	createSnapshotErr error
+	deleteSnapshotName string
+	deleteSnapshotOwner string
+	deleteSnapshotErr error
 }
 
 func (f *fakeMachineManager) ListMachines(_ context.Context, ownerEmail string) ([]controlplane.Machine, error) {
@@ -98,6 +107,28 @@ func (f *fakeMachineManager) CloneMachine(_ context.Context, input controlplane.
 		return controlplane.Machine{}, f.cloneErr
 	}
 	return f.cloneResult, nil
+}
+
+func (f *fakeMachineManager) ListSnapshots(_ context.Context, ownerEmail string) ([]controlplane.Snapshot, error) {
+	f.listSnapshotsOwner = ownerEmail
+	if f.listSnapshotsErr != nil {
+		return nil, f.listSnapshotsErr
+	}
+	return f.listSnapshotsResult, nil
+}
+
+func (f *fakeMachineManager) CreateSnapshot(_ context.Context, input controlplane.CreateSnapshotInput) (controlplane.Snapshot, error) {
+	f.createSnapshotInput = input
+	if f.createSnapshotErr != nil {
+		return controlplane.Snapshot{}, f.createSnapshotErr
+	}
+	return f.createSnapshotResult, nil
+}
+
+func (f *fakeMachineManager) DeleteSnapshot(_ context.Context, name, ownerEmail string) error {
+	f.deleteSnapshotName = name
+	f.deleteSnapshotOwner = ownerEmail
+	return f.deleteSnapshotErr
 }
 
 func TestListMachinesEndpointPassesOwnerEmail(t *testing.T) {
@@ -295,8 +326,9 @@ func TestMachineSubdomainProxiesToRuntime(t *testing.T) {
 			OwnerEmail:  "dev@example.com",
 			PrimaryPort: primaryPort,
 			Runtime: &machineruntime.Machine{
-				Name: "habits",
-				IPv4: []string{host},
+				Name:    "habits",
+				AppHost: host,
+				AppPort: primaryPort,
 			},
 		},
 	})
@@ -374,8 +406,9 @@ func TestMachineSubdomainProxiesToRuntimeIPv6Fallback(t *testing.T) {
 			OwnerEmail:  "dev@example.com",
 			PrimaryPort: primaryPort,
 			Runtime: &machineruntime.Machine{
-				Name: "habits",
-				IPv6: []string{host},
+				Name:    "habits",
+				AppHost: host,
+				AppPort: primaryPort,
 			},
 		},
 	})
