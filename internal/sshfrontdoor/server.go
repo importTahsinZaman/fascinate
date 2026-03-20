@@ -703,14 +703,13 @@ func (s *Server) runGuestCommand(channel ssh.Channel, requests <-chan *ssh.Reque
 	if guestUser == "" {
 		guestUser = "ubuntu"
 	}
-	targetAddress := net.JoinHostPort(targetHost, strconv.Itoa(targetPort))
-	if err := s.waitForGuestAccess(context.Background(), machine, targetAddress, guestUser); err != nil {
+	if err := s.waitForGuestAccess(context.Background(), machine, targetHost, targetPort, guestUser); err != nil {
 		return err
 	}
 
 	term := "xterm-256color"
 	remoteCommand := guestSSHRemoteCommand(term, shellCommand)
-	args := append(s.guestSSHArgs(guestUser, targetAddress), "-tt", remoteCommand)
+	args := append(s.guestSSHArgs(guestUser, targetHost, targetPort), "-tt", remoteCommand)
 
 	binary := s.sshClientBinary
 	if strings.TrimSpace(binary) == "" {
@@ -751,7 +750,7 @@ func (s *Server) runGuestCommand(channel ssh.Channel, requests <-chan *ssh.Reque
 	return nil
 }
 
-func (s *Server) waitForGuestAccess(ctx context.Context, machine controlplane.Machine, targetAddress, guestUser string) error {
+func (s *Server) waitForGuestAccess(ctx context.Context, machine controlplane.Machine, targetHost string, targetPort int, guestUser string) error {
 	waitFor := s.guestReadyWait
 	if waitFor <= 0 {
 		waitFor = 20 * time.Second
@@ -763,7 +762,7 @@ func (s *Server) waitForGuestAccess(ctx context.Context, machine controlplane.Ma
 
 	deadline := time.Now().Add(waitFor)
 	for {
-		err := s.probeGuestAccess(ctx, targetAddress, guestUser)
+		err := s.probeGuestAccess(ctx, targetHost, targetPort, guestUser)
 		if err == nil {
 			return nil
 		}
@@ -781,16 +780,16 @@ func (s *Server) waitForGuestAccess(ctx context.Context, machine controlplane.Ma
 	}
 }
 
-func (s *Server) probeGuestAccess(ctx context.Context, targetAddress, guestUser string) error {
+func (s *Server) probeGuestAccess(ctx context.Context, targetHost string, targetPort int, guestUser string) error {
 	if s.guestReadyProbe != nil {
-		return s.guestReadyProbe(ctx, targetAddress, guestUser)
+		return s.guestReadyProbe(ctx, net.JoinHostPort(targetHost, strconv.Itoa(targetPort)), guestUser)
 	}
 
 	binary := s.sshClientBinary
 	if strings.TrimSpace(binary) == "" {
 		binary = "ssh"
 	}
-	args := append(s.guestSSHArgs(guestUser, targetAddress), "true")
+	args := append(s.guestSSHArgs(guestUser, targetHost, targetPort), "true")
 
 	cmd := exec.CommandContext(ctx, binary, args...)
 	output, err := cmd.CombinedOutput()
@@ -804,7 +803,7 @@ func (s *Server) probeGuestAccess(ctx context.Context, targetAddress, guestUser 
 	return nil
 }
 
-func (s *Server) guestSSHArgs(guestUser, targetAddress string) []string {
+func (s *Server) guestSSHArgs(guestUser, targetHost string, targetPort int) []string {
 	return []string{
 		"-i", s.guestSSHKeyPath,
 		"-o", "BatchMode=yes",
@@ -812,7 +811,8 @@ func (s *Server) guestSSHArgs(guestUser, targetAddress string) []string {
 		"-o", "UserKnownHostsFile=/dev/null",
 		"-o", "LogLevel=ERROR",
 		"-o", "ConnectTimeout=5",
-		fmt.Sprintf("%s@%s", guestUser, targetAddress),
+		"-p", strconv.Itoa(targetPort),
+		fmt.Sprintf("%s@%s", guestUser, targetHost),
 	}
 }
 

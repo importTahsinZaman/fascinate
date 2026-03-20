@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -31,33 +32,33 @@ func (f *fakeKeyLookup) GetSSHKeyByFingerprint(context.Context, string) (databas
 }
 
 type fakeMachines struct {
-	listResult    []controlplane.Machine
-	listErr       error
-	getResult     controlplane.Machine
-	getErr        error
-	getOwner      string
-	createInput   controlplane.CreateMachineInput
-	createResult  controlplane.Machine
-	createErr     error
-	deleteName    string
-	deleteOwner   string
-	deleteErr     error
-	cloneInput    controlplane.CloneMachineInput
-	cloneResult   controlplane.Machine
-	cloneErr      error
-	listSnapshotsResult []controlplane.Snapshot
-	listSnapshotsErr    error
-	createSnapshotInput controlplane.CreateSnapshotInput
+	listResult           []controlplane.Machine
+	listErr              error
+	getResult            controlplane.Machine
+	getErr               error
+	getOwner             string
+	createInput          controlplane.CreateMachineInput
+	createResult         controlplane.Machine
+	createErr            error
+	deleteName           string
+	deleteOwner          string
+	deleteErr            error
+	cloneInput           controlplane.CloneMachineInput
+	cloneResult          controlplane.Machine
+	cloneErr             error
+	listSnapshotsResult  []controlplane.Snapshot
+	listSnapshotsErr     error
+	createSnapshotInput  controlplane.CreateSnapshotInput
 	createSnapshotResult controlplane.Snapshot
-	createSnapshotErr   error
-	deleteSnapshotName  string
-	deleteSnapshotOwner string
-	deleteSnapshotErr   error
-	syncName      string
-	syncOwner     string
-	syncErr       error
-	tutorialOwner string
-	tutorialErr   error
+	createSnapshotErr    error
+	deleteSnapshotName   string
+	deleteSnapshotOwner  string
+	deleteSnapshotErr    error
+	syncName             string
+	syncOwner            string
+	syncErr              error
+	tutorialOwner        string
+	tutorialErr          error
 }
 
 type fakeSignup struct {
@@ -446,6 +447,25 @@ func TestGuestSSHRemoteCommandQuotesShellCommand(t *testing.T) {
 	}
 }
 
+func TestGuestSSHArgsSplitHostAndPort(t *testing.T) {
+	t.Parallel()
+
+	server := newTestServer(t, &fakeKeyLookup{}, &fakeMachines{})
+	server.guestSSHKeyPath = "/tmp/fascinate-key"
+
+	args := server.guestSSHArgs("ubuntu", "127.0.0.1", 35841)
+	got := strings.Join(args, " ")
+	if !bytes.Contains([]byte(got), []byte("-p 35841")) {
+		t.Fatalf("expected -p flag in ssh args, got %q", got)
+	}
+	if !bytes.Contains([]byte(got), []byte("ubuntu@127.0.0.1")) {
+		t.Fatalf("expected host without embedded port in ssh args, got %q", got)
+	}
+	if bytes.Contains([]byte(got), []byte("ubuntu@127.0.0.1:35841")) {
+		t.Fatalf("expected host and port to be split, got %q", got)
+	}
+}
+
 func TestWaitForGuestAccessRetriesTransientFailures(t *testing.T) {
 	t.Parallel()
 
@@ -462,7 +482,7 @@ func TestWaitForGuestAccessRetriesTransientFailures(t *testing.T) {
 		return nil
 	}
 
-	err := server.waitForGuestAccess(context.Background(), controlplane.Machine{Name: "space-shooter"}, "10.42.0.12", "ubuntu")
+	err := server.waitForGuestAccess(context.Background(), controlplane.Machine{Name: "space-shooter"}, "10.42.0.12", 22, "ubuntu")
 	if err != nil {
 		t.Fatalf("expected guest access probe to recover, got %v", err)
 	}
@@ -481,7 +501,7 @@ func TestWaitForGuestAccessReturnsFriendlyBootingMessage(t *testing.T) {
 		return errors.New("ssh: connect to host 10.42.0.12 port 22: Connection refused")
 	}
 
-	err := server.waitForGuestAccess(context.Background(), controlplane.Machine{Name: "space-shooter"}, "10.42.0.12", "ubuntu")
+	err := server.waitForGuestAccess(context.Background(), controlplane.Machine{Name: "space-shooter"}, "10.42.0.12", 22, "ubuntu")
 	if err == nil {
 		t.Fatalf("expected readiness error")
 	}
@@ -500,7 +520,7 @@ func TestWaitForGuestAccessReturnsNonRetryableErrorImmediately(t *testing.T) {
 		return errors.New("Permission denied (publickey)")
 	}
 
-	err := server.waitForGuestAccess(context.Background(), controlplane.Machine{Name: "space-shooter"}, "10.42.0.12", "ubuntu")
+	err := server.waitForGuestAccess(context.Background(), controlplane.Machine{Name: "space-shooter"}, "10.42.0.12", 22, "ubuntu")
 	if err == nil {
 		t.Fatalf("expected error")
 	}
