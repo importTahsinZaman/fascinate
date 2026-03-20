@@ -250,7 +250,7 @@ func (m Model) updateBrowseMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "d":
 		selected, ok := m.selectedMachine()
-		if !ok {
+		if !ok || !machineAllowsDelete(selected) {
 			return m, nil
 		}
 		m.mode = modeDeleteConfirm
@@ -522,7 +522,9 @@ func (m Model) renderMachineCard(machine controlplane.Machine, selected bool, to
 		if machineAllowsClone(machine) {
 			actions = append(actions, "(c) clone")
 		}
-		actions = append(actions, "(d) delete")
+		if machineAllowsDelete(machine) {
+			actions = append(actions, "(d) delete")
+		}
 		if strings.EqualFold(machine.State, "CREATING") {
 			lines = append(lines, lipgloss.NewStyle().
 				Foreground(lipgloss.Color("117")).
@@ -720,4 +722,8 @@ func machineAllowsClone(machine controlplane.Machine) bool {
 
 func machineAllowsTutorial(machine controlplane.Machine) bool {
 	return machine.ShowTutorial && machineAllowsShell(machine)
+}
+
+func machineAllowsDelete(machine controlplane.Machine) bool {
+	return !strings.EqualFold(machine.State, "CREATING")
 }

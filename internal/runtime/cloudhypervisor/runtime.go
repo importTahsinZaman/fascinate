@@ -768,6 +768,7 @@ mkdir -p /etc/fascinate /etc/claude-code
 mkdir -p /root/.claude /root/.codex
 mkdir -p /home/%s/.claude /home/%s/.codex
 mkdir -p /etc/skel/.claude /etc/skel/.codex
+chown %s:%s /home/%s/.claude /home/%s/.codex || true
 
 cat >/etc/fascinate/AGENTS.md <<'EOF_AGENTS'
 You are running inside a Fascinate VM.
@@ -802,7 +803,7 @@ ln -sfn /etc/fascinate/AGENTS.md /etc/skel/.codex/AGENTS.md
 chown -h %s:%s /home/%s/AGENTS.md /home/%s/.claude/CLAUDE.md /home/%s/.codex/AGENTS.md || true
 apt-get clean
 rm -rf /var/lib/apt/lists/*
-`, meta.GuestUser, meta.GuestUser, meta.GuestUser, publicHost, meta.PrimaryPort, publicHost, publicHost, meta.GuestUser, meta.GuestUser, meta.GuestUser, meta.GuestUser, meta.GuestUser, meta.GuestUser, meta.GuestUser, meta.GuestUser)
+`, meta.GuestUser, meta.GuestUser, meta.GuestUser, meta.GuestUser, meta.GuestUser, meta.GuestUser, meta.GuestUser, publicHost, meta.PrimaryPort, publicHost, publicHost, meta.GuestUser, meta.GuestUser, meta.GuestUser, meta.GuestUser, meta.GuestUser, meta.GuestUser, meta.GuestUser, meta.GuestUser)
 
 	return fmt.Sprintf(`#cloud-config
 preserve_hostname: false

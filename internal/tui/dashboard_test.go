@@ -207,6 +207,41 @@ func TestModelShellActionIgnoredWhileMachineCreating(t *testing.T) {
 	}
 }
 
+func TestModelDeleteActionIgnoredWhileMachineCreating(t *testing.T) {
+	t.Parallel()
+
+	manager := &fakeMachines{
+		listResult: []controlplane.Machine{{Name: "habits", State: "CREATING"}},
+	}
+	model := NewDashboard("dev@example.com", manager, 80, 24)
+
+	updated, _ := model.Update(loadMachinesMsg{machines: manager.listResult})
+	withItems := updated.(Model)
+	updated, _ = withItems.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	got := updated.(Model)
+	if got.mode != modeBrowse {
+		t.Fatalf("expected to stay in browse mode, got %v", got.mode)
+	}
+	if got.pendingName != "" {
+		t.Fatalf("expected no pending delete target, got %q", got.pendingName)
+	}
+}
+
+func TestViewOmitsDeleteActionWhileMachineCreating(t *testing.T) {
+	t.Parallel()
+
+	manager := &fakeMachines{
+		listResult: []controlplane.Machine{{Name: "habits", State: "CREATING"}},
+	}
+	model := NewDashboard("dev@example.com", manager, 80, 24)
+
+	updated, _ := model.Update(loadMachinesMsg{machines: manager.listResult})
+	got := updated.(Model).View()
+	if strings.Contains(got, "(d) delete") {
+		t.Fatalf("expected creating machine view to omit delete action, got %q", got)
+	}
+}
+
 func TestModelTutorialActionFromBrowseMode(t *testing.T) {
 	t.Parallel()
 
