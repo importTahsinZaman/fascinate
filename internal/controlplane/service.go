@@ -32,8 +32,11 @@ type Service struct {
 	store    *database.Store
 	runtime  machineruntime.Manager
 	toolAuth toolAuthManager
-	mu       sync.Mutex
 
+	userLocksMu sync.Mutex
+	userLocks   map[string]*sync.Mutex
+
+	createMu      sync.Mutex
 	createCancels map[string]context.CancelFunc
 }
 
@@ -64,6 +67,7 @@ type CloneMachineInput struct {
 type toolAuthManager interface {
 	RestoreAll(context.Context, string, string, string) error
 	CaptureAll(context.Context, string, string, string) error
+	CaptureAllNonDestructive(context.Context, string, string, string) error
 }
 
 func New(cfg config.Config, store *database.Store, runtime machineruntime.Manager, extras ...toolAuthManager) *Service {
@@ -77,6 +81,7 @@ func New(cfg config.Config, store *database.Store, runtime machineruntime.Manage
 		store:         store,
 		runtime:       runtime,
 		toolAuth:      toolAuth,
+		userLocks:     map[string]*sync.Mutex{},
 		createCancels: map[string]context.CancelFunc{},
 	}
 }
@@ -147,9 +152,6 @@ func (s *Service) machineFromRecordWithRuntime(ctx context.Context, record datab
 }
 
 func (s *Service) CreateMachine(ctx context.Context, input CreateMachineInput) (Machine, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	name, err := validateMachineName(input.Name)
 	if err != nil {
 		return Machine{}, err
@@ -158,6 +160,9 @@ func (s *Service) CreateMachine(ctx context.Context, input CreateMachineInput) (
 	if ownerEmail == "" {
 		return Machine{}, fmt.Errorf("owner email is required")
 	}
+	unlock := s.lockUserMutations(ownerEmail)
+	defer unlock()
+
 	existingRecords, err := s.store.ListMachines(ctx, ownerEmail)
 	if err != nil {
 		return Machine{}, err
@@ -193,14 +198,18 @@ func (s *Service) CreateMachine(ctx context.Context, input CreateMachineInput) (
 		}
 	}
 
-	s.queueMachineCreateLocked(record)
+	s.queueMachineCreate(record)
 
 	return s.machineFromRecord(ctx, record, machineruntime.Machine{}), nil
 }
 
 func (s *Service) DeleteMachine(ctx context.Context, name, ownerEmail string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	ownerEmail = normalizeEmail(ownerEmail)
+	if ownerEmail == "" {
+		return fmt.Errorf("owner email is required")
+	}
+	unlock := s.lockUserMutations(ownerEmail)
+	defer unlock()
 
 	record, err := s.ownedMachineRecord(ctx, name, ownerEmail)
 	if err != nil {
@@ -211,9 +220,8 @@ func (s *Service) DeleteMachine(ctx context.Context, name, ownerEmail string) er
 	defer cancel()
 
 	runtimeName := runtimeNameForRecord(record)
-	if cancelCreate, ok := s.createCancels[runtimeName]; ok {
+	if cancelCreate, ok := s.takeCreateCancel(runtimeName); ok {
 		cancelCreate()
-		delete(s.createCancels, runtimeName)
 	}
 
 	s.captureToolAuthBestEffort(deleteCtx, record)
@@ -226,9 +234,6 @@ func (s *Service) DeleteMachine(ctx context.Context, name, ownerEmail string) er
 }
 
 func (s *Service) CloneMachine(ctx context.Context, input CloneMachineInput) (Machine, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	sourceName, err := validateMachineName(input.SourceName)
 	if err != nil {
 		return Machine{}, err
@@ -246,6 +251,9 @@ func (s *Service) CloneMachine(ctx context.Context, input CloneMachineInput) (Ma
 	if ownerEmail == "" {
 		return Machine{}, fmt.Errorf("owner email is required")
 	}
+	unlock := s.lockUserMutations(ownerEmail)
+	defer unlock()
+
 	if err := s.enforceMachineCountLimit(ctx, ownerEmail); err != nil {
 		return Machine{}, err
 	}
@@ -326,7 +334,7 @@ func (s *Service) SyncToolAuth(ctx context.Context, name, ownerEmail string) err
 	if err != nil {
 		return err
 	}
-	return s.syncToolAuthForRecord(ctx, record)
+	return s.syncToolAuthForRecord(ctx, record, true)
 }
 
 func (s *Service) ownedMachineRecord(ctx context.Context, name, ownerEmail string) (database.MachineRecord, error) {
@@ -520,9 +528,7 @@ func (s *Service) ReconcileRuntimeState(ctx context.Context) error {
 		liveMachine, ok := liveMachines[runtimeName]
 		if !ok {
 			if strings.EqualFold(record.State, machineStateCreating) {
-				s.mu.Lock()
-				s.queueMachineCreateLocked(record)
-				s.mu.Unlock()
+				s.queueMachineCreate(record)
 			}
 			continue
 		}
@@ -552,7 +558,7 @@ func (s *Service) SyncRunningToolAuth(ctx context.Context) error {
 		if !strings.EqualFold(record.State, machineStateRunning) {
 			continue
 		}
-		if err := s.syncToolAuthForRecord(ctx, record); err != nil && !errors.Is(err, database.ErrNotFound) && !errors.Is(err, machineruntime.ErrMachineNotFound) {
+		if err := s.syncToolAuthForRecord(ctx, record, false); err != nil && !errors.Is(err, database.ErrNotFound) && !errors.Is(err, machineruntime.ErrMachineNotFound) {
 			syncErrs = append(syncErrs, fmt.Errorf("%s: %w", record.Name, err))
 		}
 	}
@@ -576,7 +582,7 @@ func (s *Service) cleanupRuntimeMachine(name string) {
 	_ = s.runtime.DeleteMachine(ctx, name)
 }
 
-func (s *Service) queueMachineCreateLocked(record database.MachineRecord) {
+func (s *Service) queueMachineCreate(record database.MachineRecord) {
 	runtimeName := strings.TrimSpace(record.RuntimeName)
 	if runtimeName == "" {
 		runtimeName = strings.TrimSpace(record.Name)
@@ -584,12 +590,10 @@ func (s *Service) queueMachineCreateLocked(record database.MachineRecord) {
 	if runtimeName == "" {
 		return
 	}
-	if _, ok := s.createCancels[runtimeName]; ok {
+	createCtx, ok := s.registerCreateCancel(runtimeName)
+	if !ok {
 		return
 	}
-
-	createCtx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
-	s.createCancels[runtimeName] = cancel
 
 	go s.runMachineCreate(createCtx, record, machineruntime.CreateMachineRequest{
 		Name:         runtimeName,
@@ -603,12 +607,7 @@ func (s *Service) queueMachineCreateLocked(record database.MachineRecord) {
 
 func (s *Service) runMachineCreate(ctx context.Context, record database.MachineRecord, req machineruntime.CreateMachineRequest) {
 	defer func() {
-		s.mu.Lock()
-		if cancel, ok := s.createCancels[req.Name]; ok {
-			cancel()
-			delete(s.createCancels, req.Name)
-		}
-		s.mu.Unlock()
+		s.clearCreateCancel(req.Name)
 	}()
 
 	liveMachine, err := s.runtime.CreateMachine(ctx, req)
@@ -623,6 +622,59 @@ func (s *Service) runMachineCreate(ctx context.Context, record database.MachineR
 	}
 
 	s.finishCreateSuccess(record, liveMachine)
+}
+
+func (s *Service) lockUserMutations(ownerEmail string) func() {
+	key := normalizeEmail(ownerEmail)
+	s.userLocksMu.Lock()
+	lock, ok := s.userLocks[key]
+	if !ok {
+		lock = &sync.Mutex{}
+		s.userLocks[key] = lock
+	}
+	s.userLocksMu.Unlock()
+
+	lock.Lock()
+	return lock.Unlock
+}
+
+func (s *Service) registerCreateCancel(runtimeName string) (context.Context, bool) {
+	runtimeName = strings.TrimSpace(runtimeName)
+	if runtimeName == "" {
+		return nil, false
+	}
+
+	s.createMu.Lock()
+	defer s.createMu.Unlock()
+	if _, ok := s.createCancels[runtimeName]; ok {
+		return nil, false
+	}
+
+	createCtx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
+	s.createCancels[runtimeName] = cancel
+	return createCtx, true
+}
+
+func (s *Service) takeCreateCancel(runtimeName string) (context.CancelFunc, bool) {
+	runtimeName = strings.TrimSpace(runtimeName)
+	if runtimeName == "" {
+		return nil, false
+	}
+
+	s.createMu.Lock()
+	defer s.createMu.Unlock()
+	cancel, ok := s.createCancels[runtimeName]
+	if ok {
+		delete(s.createCancels, runtimeName)
+	}
+	return cancel, ok
+}
+
+func (s *Service) clearCreateCancel(runtimeName string) {
+	cancel, ok := s.takeCreateCancel(runtimeName)
+	if ok {
+		cancel()
+	}
 }
 
 func (s *Service) finishCreateSuccess(record database.MachineRecord, liveMachine machineruntime.Machine) {
@@ -689,7 +741,7 @@ func (s *Service) restoreToolAuth(ctx context.Context, record database.MachineRe
 	return s.toolAuth.RestoreAll(ctx, record.OwnerUserID, runtimeName, guestUser)
 }
 
-func (s *Service) syncToolAuthForRecord(ctx context.Context, record database.MachineRecord) error {
+func (s *Service) syncToolAuthForRecord(ctx context.Context, record database.MachineRecord, exact bool) error {
 	if s.toolAuth == nil {
 		return nil
 	}
@@ -715,7 +767,10 @@ func (s *Service) syncToolAuthForRecord(ctx context.Context, record database.Mac
 		return nil
 	}
 
-	return s.toolAuth.CaptureAll(ctx, record.OwnerUserID, runtimeName, guestUser)
+	if exact {
+		return s.toolAuth.CaptureAll(ctx, record.OwnerUserID, runtimeName, guestUser)
+	}
+	return s.toolAuth.CaptureAllNonDestructive(ctx, record.OwnerUserID, runtimeName, guestUser)
 }
 
 func (s *Service) syncToolAuthFromOwnerRunningMachines(ctx context.Context, ownerUserID, excludeRuntimeName string) {
@@ -743,7 +798,7 @@ func (s *Service) syncToolAuthFromOwnerRunningMachines(ctx context.Context, owne
 			continue
 		}
 
-		if err := s.syncToolAuthForRecord(ctx, candidate); err != nil &&
+		if err := s.syncToolAuthForRecord(ctx, candidate, false); err != nil &&
 			!errors.Is(err, database.ErrNotFound) &&
 			!errors.Is(err, machineruntime.ErrMachineNotFound) {
 			log.Printf("fascinate: pre-create tool auth sync from %s: %v", candidate.Name, err)
@@ -752,7 +807,7 @@ func (s *Service) syncToolAuthFromOwnerRunningMachines(ctx context.Context, owne
 }
 
 func (s *Service) captureToolAuthBestEffort(ctx context.Context, record database.MachineRecord) {
-	if err := s.syncToolAuthForRecord(ctx, record); err != nil && !errors.Is(err, database.ErrNotFound) && !errors.Is(err, machineruntime.ErrMachineNotFound) {
+	if err := s.syncToolAuthForRecord(ctx, record, true); err != nil && !errors.Is(err, database.ErrNotFound) && !errors.Is(err, machineruntime.ErrMachineNotFound) {
 		log.Printf("fascinate: capture tool auth for %s: %v", record.Name, err)
 	}
 }

@@ -34,13 +34,18 @@ type fakeToolAuth struct {
 	restoreGuestUser string
 	restoreErr       error
 	restoreCalls     []string
+	restoreStarted   chan struct{}
+	restoreBlock     chan struct{}
 
 	captureUserID    string
 	captureRuntime   string
 	captureGuestUser string
 	captureErr       error
 	captureCalls     []string
+	captureMode      string
 	callOrder        []string
+	captureStarted   chan struct{}
+	captureBlock     chan struct{}
 }
 
 func (f *fakeRuntime) HealthCheck(context.Context) error {
@@ -135,6 +140,15 @@ func (f *fakeToolAuth) RestoreAll(_ context.Context, userID, runtimeName, guestU
 	f.restoreGuestUser = guestUser
 	f.restoreCalls = append(f.restoreCalls, runtimeName)
 	f.callOrder = append(f.callOrder, "restore:"+runtimeName)
+	if f.restoreStarted != nil {
+		select {
+		case f.restoreStarted <- struct{}{}:
+		default:
+		}
+	}
+	if f.restoreBlock != nil {
+		<-f.restoreBlock
+	}
 	return f.restoreErr
 }
 
@@ -142,8 +156,37 @@ func (f *fakeToolAuth) CaptureAll(_ context.Context, userID, runtimeName, guestU
 	f.captureUserID = userID
 	f.captureRuntime = runtimeName
 	f.captureGuestUser = guestUser
+	f.captureMode = "exact"
 	f.captureCalls = append(f.captureCalls, runtimeName)
-	f.callOrder = append(f.callOrder, "capture:"+runtimeName)
+	f.callOrder = append(f.callOrder, "capture:exact:"+runtimeName)
+	if f.captureStarted != nil {
+		select {
+		case f.captureStarted <- struct{}{}:
+		default:
+		}
+	}
+	if f.captureBlock != nil {
+		<-f.captureBlock
+	}
+	return f.captureErr
+}
+
+func (f *fakeToolAuth) CaptureAllNonDestructive(_ context.Context, userID, runtimeName, guestUser string) error {
+	f.captureUserID = userID
+	f.captureRuntime = runtimeName
+	f.captureGuestUser = guestUser
+	f.captureMode = "preserve"
+	f.captureCalls = append(f.captureCalls, runtimeName)
+	f.callOrder = append(f.callOrder, "capture:preserve:"+runtimeName)
+	if f.captureStarted != nil {
+		select {
+		case f.captureStarted <- struct{}{}:
+		default:
+		}
+	}
+	if f.captureBlock != nil {
+		<-f.captureBlock
+	}
 	return f.captureErr
 }
 
@@ -324,10 +367,13 @@ func TestServiceCreateMachineSyncsOwnerToolAuthBeforeRestore(t *testing.T) {
 	if len(auth.captureCalls) != 1 || auth.captureCalls[0] != "tic-tac-toe" {
 		t.Fatalf("expected capture from existing running machine, got %+v", auth.captureCalls)
 	}
+	if auth.captureMode != "preserve" {
+		t.Fatalf("expected non-destructive capture mode, got %q", auth.captureMode)
+	}
 	if len(auth.restoreCalls) != 1 || auth.restoreCalls[0] != "space-shooter" {
 		t.Fatalf("expected restore into created machine, got %+v", auth.restoreCalls)
 	}
-	if auth.callOrder[0] != "capture:tic-tac-toe" || auth.callOrder[1] != "restore:space-shooter" {
+	if auth.callOrder[0] != "capture:preserve:tic-tac-toe" || auth.callOrder[1] != "restore:space-shooter" {
 		t.Fatalf("expected capture before restore, got %+v", auth.callOrder)
 	}
 }
@@ -411,8 +457,145 @@ func TestServiceDeleteMachineCapturesToolAuthBestEffort(t *testing.T) {
 	if auth.captureRuntime != "habits" || auth.captureUserID != user.ID {
 		t.Fatalf("expected capture before delete, got runtime=%q user=%q", auth.captureRuntime, auth.captureUserID)
 	}
+	if auth.captureMode != "exact" {
+		t.Fatalf("expected exact capture before delete, got %q", auth.captureMode)
+	}
 	if len(runtime.deleted) != 1 || runtime.deleted[0] != "habits" {
 		t.Fatalf("expected runtime delete, got %+v", runtime.deleted)
+	}
+}
+
+func TestServiceSyncRunningToolAuthUsesNonDestructiveCapture(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, runtime := newTestServiceDeps(t, ctx)
+	auth := &fakeToolAuth{}
+
+	user, err := store.UpsertUser(ctx, "dev@example.com", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateMachine(ctx, database.CreateMachineParams{
+		ID:          "machine-1",
+		Name:        "tic-tac-toe",
+		OwnerUserID: user.ID,
+		RuntimeName: "tic-tac-toe",
+		State:       machineStateRunning,
+		PrimaryPort: 3000,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	runtime.machines["tic-tac-toe"] = machineruntime.Machine{
+		Name:      "tic-tac-toe",
+		Type:      "vm",
+		State:     machineStateRunning,
+		GuestUser: "ubuntu",
+	}
+
+	service := New(config.Config{
+		BaseDomain:         "fascinate.dev",
+		DefaultImage:       "/var/lib/fascinate/images/fascinate-base.raw",
+		DefaultMachineCPU:  "1",
+		DefaultMachineRAM:  "2GiB",
+		DefaultMachineDisk: "20GiB",
+		DefaultPrimaryPort: 3000,
+		GuestSSHUser:       "ubuntu",
+	}, store, runtime, auth)
+
+	if err := service.SyncRunningToolAuth(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if auth.captureRuntime != "tic-tac-toe" {
+		t.Fatalf("expected sync from tic-tac-toe, got %q", auth.captureRuntime)
+	}
+	if auth.captureMode != "preserve" {
+		t.Fatalf("expected non-destructive sync mode, got %q", auth.captureMode)
+	}
+}
+
+func TestServiceCreateMachineDoesNotBlockOtherUsersOnToolAuthSync(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, runtime := newTestServiceDeps(t, ctx)
+	auth := &fakeToolAuth{
+		captureStarted: make(chan struct{}, 1),
+		captureBlock:   make(chan struct{}),
+	}
+
+	userOne, err := store.UpsertUser(ctx, "one@example.com", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateMachine(ctx, database.CreateMachineParams{
+		ID:          "machine-1",
+		Name:        "existing-one",
+		OwnerUserID: userOne.ID,
+		RuntimeName: "existing-one",
+		State:       machineStateRunning,
+		PrimaryPort: 3000,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	runtime.machines["existing-one"] = machineruntime.Machine{
+		Name:      "existing-one",
+		Type:      "vm",
+		State:     machineStateRunning,
+		GuestUser: "ubuntu",
+	}
+
+	service := New(config.Config{
+		BaseDomain:         "fascinate.dev",
+		DefaultImage:       "/var/lib/fascinate/images/fascinate-base.raw",
+		DefaultMachineCPU:  "1",
+		DefaultMachineRAM:  "2GiB",
+		DefaultMachineDisk: "20GiB",
+		DefaultPrimaryPort: 3000,
+		GuestSSHUser:       "ubuntu",
+	}, store, runtime, auth)
+
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := service.CreateMachine(ctx, CreateMachineInput{
+			Name:       "user-one-vm",
+			OwnerEmail: "one@example.com",
+		})
+		firstDone <- err
+	}()
+
+	select {
+	case <-auth.captureStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for first user's tool auth sync to start")
+	}
+
+	secondDone := make(chan error, 1)
+	go func() {
+		_, err := service.CreateMachine(ctx, CreateMachineInput{
+			Name:       "user-two-vm",
+			OwnerEmail: "two@example.com",
+		})
+		secondDone <- err
+	}()
+
+	select {
+	case err := <-secondDone:
+		if err != nil {
+			t.Fatalf("second user create failed: %v", err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("second user create blocked behind first user's tool auth sync")
+	}
+
+	close(auth.captureBlock)
+	select {
+	case err := <-firstDone:
+		if err != nil {
+			t.Fatalf("first user create failed: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for first user create to finish")
 	}
 }
 

@@ -13,6 +13,13 @@ type Manager struct {
 	sessionAdapters []SessionStateAdapter
 }
 
+type captureMode int
+
+const (
+	captureModeExact captureMode = iota
+	captureModePreserveNonEmpty
+)
+
 func NewManager(store *Store, guest GuestTransport, adapters ...Adapter) (*Manager, error) {
 	if store == nil {
 		return nil, fmt.Errorf("tool auth store is required")
@@ -27,8 +34,12 @@ func NewManager(store *Store, guest GuestTransport, adapters ...Adapter) (*Manag
 	}
 	for _, adapter := range adapters {
 		switch value := adapter.(type) {
+		case nil:
+			continue
 		case SessionStateAdapter:
 			manager.sessionAdapters = append(manager.sessionAdapters, value)
+		default:
+			return nil, fmt.Errorf("unsupported tool auth adapter %T with storage mode %q", adapter, adapter.StorageMode())
 		}
 	}
 
@@ -47,16 +58,25 @@ func (m *Manager) RestoreAll(ctx context.Context, userID, runtimeName, guestUser
 		return nil
 	}
 
+	var restoreErrs []error
 	for _, adapter := range m.sessionAdapters {
 		if err := m.restoreSessionState(ctx, adapter, userID, runtimeName, guestUser); err != nil {
-			return err
+			restoreErrs = append(restoreErrs, fmt.Errorf("%s/%s: %w", adapter.ToolID(), adapter.AuthMethodID(), err))
 		}
 	}
 
-	return nil
+	return errors.Join(restoreErrs...)
 }
 
 func (m *Manager) CaptureAll(ctx context.Context, userID, runtimeName, guestUser string) error {
+	return m.captureAll(ctx, userID, runtimeName, guestUser, captureModeExact)
+}
+
+func (m *Manager) CaptureAllNonDestructive(ctx context.Context, userID, runtimeName, guestUser string) error {
+	return m.captureAll(ctx, userID, runtimeName, guestUser, captureModePreserveNonEmpty)
+}
+
+func (m *Manager) captureAll(ctx context.Context, userID, runtimeName, guestUser string, mode captureMode) error {
 	if m == nil {
 		return nil
 	}
@@ -68,13 +88,14 @@ func (m *Manager) CaptureAll(ctx context.Context, userID, runtimeName, guestUser
 		return nil
 	}
 
+	var captureErrs []error
 	for _, adapter := range m.sessionAdapters {
-		if err := m.captureSessionState(ctx, adapter, userID, runtimeName, guestUser); err != nil {
-			return err
+		if err := m.captureSessionState(ctx, adapter, userID, runtimeName, guestUser, mode); err != nil {
+			captureErrs = append(captureErrs, fmt.Errorf("%s/%s: %w", adapter.ToolID(), adapter.AuthMethodID(), err))
 		}
 	}
 
-	return nil
+	return errors.Join(captureErrs...)
 }
 
 func (m *Manager) restoreSessionState(ctx context.Context, adapter SessionStateAdapter, userID, runtimeName, guestUser string) error {
@@ -99,7 +120,7 @@ func (m *Manager) restoreSessionState(ctx context.Context, adapter SessionStateA
 	return err
 }
 
-func (m *Manager) captureSessionState(ctx context.Context, adapter SessionStateAdapter, userID, runtimeName, guestUser string) error {
+func (m *Manager) captureSessionState(ctx context.Context, adapter SessionStateAdapter, userID, runtimeName, guestUser string, mode captureMode) error {
 	key := profileKey(userID, adapter)
 	spec := adapter.SessionStateSpec(guestUser)
 
@@ -113,6 +134,20 @@ func (m *Manager) captureSessionState(ctx context.Context, adapter SessionStateA
 	if err != nil {
 		_ = m.store.MarkCaptureResult(ctx, key, err)
 		return err
+	}
+
+	if !hasEntries && mode == captureModePreserveNonEmpty {
+		existing, _, err := m.store.LoadSessionState(ctx, key)
+		switch {
+		case err == nil && !existing.Empty:
+			_ = m.store.MarkCaptureResult(ctx, key, nil)
+			return nil
+		case err == nil:
+		case errors.Is(err, ErrProfileNotFound):
+		default:
+			_ = m.store.MarkCaptureResult(ctx, key, err)
+			return err
+		}
 	}
 
 	profile := Profile{

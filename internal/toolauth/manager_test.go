@@ -5,8 +5,10 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"fascinate/internal/config"
@@ -17,16 +19,21 @@ type fakeGuestTransport struct {
 	captureSpec    SessionStateSpec
 	captureArchive []byte
 	captureErr     error
+	captureFunc    func(string, SessionStateSpec) ([]byte, error)
 
 	restoreRuntime string
 	restoreSpec    SessionStateSpec
 	restoreArchive []byte
 	restoreErr     error
+	restoreFunc    func(string, SessionStateSpec, []byte) error
 }
 
 func (f *fakeGuestTransport) CaptureSessionState(_ context.Context, runtimeName string, spec SessionStateSpec) ([]byte, error) {
 	f.captureRuntime = runtimeName
 	f.captureSpec = spec
+	if f.captureFunc != nil {
+		return f.captureFunc(runtimeName, spec)
+	}
 	if f.captureErr != nil {
 		return nil, f.captureErr
 	}
@@ -37,7 +44,46 @@ func (f *fakeGuestTransport) RestoreSessionState(_ context.Context, runtimeName 
 	f.restoreRuntime = runtimeName
 	f.restoreSpec = spec
 	f.restoreArchive = append([]byte(nil), archive...)
+	if f.restoreFunc != nil {
+		return f.restoreFunc(runtimeName, spec, archive)
+	}
 	return f.restoreErr
+}
+
+type fakeSessionAdapter struct {
+	toolID       string
+	authMethodID string
+	spec         SessionStateSpec
+}
+
+func (f fakeSessionAdapter) ToolID() string {
+	return f.toolID
+}
+
+func (f fakeSessionAdapter) AuthMethodID() string {
+	return f.authMethodID
+}
+
+func (f fakeSessionAdapter) StorageMode() StorageMode {
+	return StorageModeSessionState
+}
+
+func (f fakeSessionAdapter) SessionStateSpec(string) SessionStateSpec {
+	return f.spec
+}
+
+type fakeUnsupportedAdapter struct{}
+
+func (fakeUnsupportedAdapter) ToolID() string {
+	return "unsupported"
+}
+
+func (fakeUnsupportedAdapter) AuthMethodID() string {
+	return "api-key"
+}
+
+func (fakeUnsupportedAdapter) StorageMode() StorageMode {
+	return StorageModeSecretMaterial
 }
 
 func TestStoreSaveLoadSessionStateCreatesRollbackBackup(t *testing.T) {
@@ -233,6 +279,181 @@ func TestManagerCapturePersistsExactEmptyState(t *testing.T) {
 	}
 	if !bytes.Equal(loaded, emptyArchive) {
 		t.Fatalf("expected empty archive to be stored exactly")
+	}
+}
+
+func TestManagerCaptureAllNonDestructivePreservesExistingNonEmptyState(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	guest := &fakeGuestTransport{
+		captureArchive: archiveWithFile(t, "/home/ubuntu/.claude/auth.json", `{"token":"abc"}`),
+	}
+	manager, err := NewManager(store, guest, ClaudeSubscriptionAdapter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := context.Background()
+	if err := manager.CaptureAll(ctx, "user-1", "tic-tac-toe", "ubuntu"); err != nil {
+		t.Fatal(err)
+	}
+
+	emptyArchive, err := EmptySessionStateArchive()
+	if err != nil {
+		t.Fatal(err)
+	}
+	guest.captureArchive = emptyArchive
+	if err := manager.CaptureAllNonDestructive(ctx, "user-1", "space-shooter", "ubuntu"); err != nil {
+		t.Fatal(err)
+	}
+
+	profile, loaded, err := store.LoadSessionState(ctx, ProfileKey{
+		UserID:       "user-1",
+		ToolID:       ToolIDClaude,
+		AuthMethodID: AuthMethodClaudeSubscription,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.Empty {
+		t.Fatalf("expected stored non-empty profile to be preserved")
+	}
+	if bytes.Equal(loaded, emptyArchive) {
+		t.Fatalf("expected existing non-empty bundle to survive non-destructive empty capture")
+	}
+}
+
+func TestManagerCaptureAllContinuesPastAdapterErrors(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	guest := &fakeGuestTransport{
+		captureFunc: func(_ string, spec SessionStateSpec) ([]byte, error) {
+			if len(spec.Roots) > 0 && spec.Roots[0].Path == "/home/ubuntu/.broken" {
+				return nil, errors.New("broken capture")
+			}
+			return archiveWithFile(t, "/home/ubuntu/.codex/auth.json", `{"access_token":"abc"}`), nil
+		},
+	}
+	manager, err := NewManager(
+		store,
+		guest,
+		fakeSessionAdapter{
+			toolID:       "broken",
+			authMethodID: "broken-session",
+			spec: SessionStateSpec{
+				Version: 1,
+				Roots: []SessionStateRoot{{
+					Path:          "/home/ubuntu/.broken",
+					Kind:          SessionStateRootKindDirectory,
+					DirectoryMode: 0o700,
+				}},
+			},
+		},
+		CodexChatGPTAdapter{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = manager.CaptureAll(context.Background(), "user-1", "space-shooter", "ubuntu")
+	if err == nil || !strings.Contains(err.Error(), "broken capture") {
+		t.Fatalf("expected joined capture error, got %v", err)
+	}
+
+	profile, _, err := store.LoadSessionState(context.Background(), ProfileKey{
+		UserID:       "user-1",
+		ToolID:       ToolIDCodex,
+		AuthMethodID: AuthMethodCodexChatGPT,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.Empty {
+		t.Fatalf("expected codex capture to succeed despite another adapter failing")
+	}
+}
+
+func TestManagerRestoreAllContinuesPastAdapterErrors(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	ctx := context.Background()
+	if err := store.SaveSessionState(ctx, Profile{
+		Key: ProfileKey{
+			UserID:       "user-1",
+			ToolID:       "broken",
+			AuthMethodID: "broken-session",
+		},
+		StorageMode: StorageModeSessionState,
+		Version:     1,
+		Empty:       false,
+	}, archiveWithFile(t, "/home/ubuntu/.broken/session.json", `{"ok":true}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveSessionState(ctx, Profile{
+		Key: ProfileKey{
+			UserID:       "user-1",
+			ToolID:       ToolIDCodex,
+			AuthMethodID: AuthMethodCodexChatGPT,
+		},
+		StorageMode: StorageModeSessionState,
+		Version:     1,
+		Empty:       false,
+	}, archiveWithFile(t, "/home/ubuntu/.codex/auth.json", `{"access_token":"abc"}`)); err != nil {
+		t.Fatal(err)
+	}
+
+	var restoredRoots []string
+	guest := &fakeGuestTransport{
+		restoreFunc: func(_ string, spec SessionStateSpec, _ []byte) error {
+			if len(spec.Roots) > 0 {
+				restoredRoots = append(restoredRoots, spec.Roots[0].Path)
+			}
+			if len(spec.Roots) > 0 && spec.Roots[0].Path == "/home/ubuntu/.broken" {
+				return errors.New("broken restore")
+			}
+			return nil
+		},
+	}
+	manager, err := NewManager(
+		store,
+		guest,
+		fakeSessionAdapter{
+			toolID:       "broken",
+			authMethodID: "broken-session",
+			spec: SessionStateSpec{
+				Version: 1,
+				Roots: []SessionStateRoot{{
+					Path:          "/home/ubuntu/.broken",
+					Kind:          SessionStateRootKindDirectory,
+					DirectoryMode: 0o700,
+				}},
+			},
+		},
+		CodexChatGPTAdapter{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = manager.RestoreAll(ctx, "user-1", "space-shooter", "ubuntu")
+	if err == nil || !strings.Contains(err.Error(), "broken restore") {
+		t.Fatalf("expected joined restore error, got %v", err)
+	}
+	if len(restoredRoots) != 2 {
+		t.Fatalf("expected both restore attempts, got %+v", restoredRoots)
+	}
+}
+
+func TestNewManagerRejectsUnsupportedAdapter(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	guest := &fakeGuestTransport{}
+	if _, err := NewManager(store, guest, fakeUnsupportedAdapter{}); err == nil || !strings.Contains(err.Error(), "unsupported tool auth adapter") {
+		t.Fatalf("expected unsupported adapter error, got %v", err)
 	}
 }
 
