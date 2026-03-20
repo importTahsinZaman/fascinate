@@ -37,7 +37,14 @@ func (ClaudeSubscriptionAdapter) SessionStateSpec(guestUser string) SessionState
 		Version: ClaudeSessionStateSpecVersion,
 		Roots: []SessionStateRoot{
 			{
+				Path:  filepath.Join(guestHome, ".claude.json"),
+				Kind:  SessionStateRootKindFile,
+				Owner: guestUser,
+				Group: guestUser,
+			},
+			{
 				Path:             filepath.Join(guestHome, ".claude"),
+				Kind:             SessionStateRootKindDirectory,
 				Owner:            guestUser,
 				Group:            guestUser,
 				DirectoryMode:    0o700,

@@ -938,6 +938,16 @@ func restoreSessionStateCommand(spec toolauth.SessionStateSpec) string {
 		if path == "" {
 			continue
 		}
+		if root.Kind == toolauth.SessionStateRootKindFile {
+			script.WriteString("mkdir -p ")
+			script.WriteString(shellQuote(filepath.Dir(path)))
+			script.WriteString("\n")
+			script.WriteString("rm -f ")
+			script.WriteString(shellQuote(path))
+			script.WriteString("\n")
+			continue
+		}
+
 		script.WriteString("mkdir -p ")
 		script.WriteString(shellQuote(path))
 		script.WriteString("\n")
@@ -967,6 +977,29 @@ func restoreSessionStateCommand(spec toolauth.SessionStateSpec) string {
 		script.WriteString(" -exec rm -rf {} +\n")
 	}
 	script.WriteString("if [ -s \"$archive\" ]; then tar -xzf \"$archive\" -P; fi\n")
+	for _, root := range spec.Roots {
+		path := strings.TrimSpace(root.Path)
+		if path == "" {
+			continue
+		}
+		if strings.TrimSpace(root.Owner) != "" || strings.TrimSpace(root.Group) != "" {
+			script.WriteString("if [ -e ")
+			script.WriteString(shellQuote(path))
+			script.WriteString(" ]; then chown ")
+			script.WriteString(shellQuote(strings.TrimSpace(root.Owner) + ":" + strings.TrimSpace(root.Group)))
+			script.WriteString(" ")
+			script.WriteString(shellQuote(path))
+			script.WriteString("; fi\n")
+		}
+		if root.Kind == toolauth.SessionStateRootKindDirectory && root.DirectoryMode > 0 {
+			script.WriteString("if [ -d ")
+			script.WriteString(shellQuote(path))
+			script.WriteString(" ]; then chmod ")
+			script.WriteString(fmt.Sprintf("%04o ", root.DirectoryMode))
+			script.WriteString(shellQuote(path))
+			script.WriteString("; fi\n")
+		}
+	}
 	return "bash -lc " + shellQuote(script.String())
 }
 

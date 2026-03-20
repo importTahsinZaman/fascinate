@@ -110,7 +110,13 @@ func TestManagerCaptureAndRestoreClaudeSessionState(t *testing.T) {
 	if guest.captureRuntime != "space-shooter" {
 		t.Fatalf("unexpected capture runtime: %q", guest.captureRuntime)
 	}
-	if len(guest.captureSpec.Roots) != 1 || guest.captureSpec.Roots[0].Path != "/home/ubuntu/.claude" {
+	if len(guest.captureSpec.Roots) != 2 {
+		t.Fatalf("unexpected capture roots: %+v", guest.captureSpec.Roots)
+	}
+	if guest.captureSpec.Roots[0].Path != "/home/ubuntu/.claude.json" || guest.captureSpec.Roots[0].Kind != SessionStateRootKindFile {
+		t.Fatalf("unexpected file root: %+v", guest.captureSpec.Roots[0])
+	}
+	if guest.captureSpec.Roots[1].Path != "/home/ubuntu/.claude" || guest.captureSpec.Roots[1].Kind != SessionStateRootKindDirectory {
 		t.Fatalf("unexpected capture spec: %+v", guest.captureSpec)
 	}
 
@@ -122,6 +128,21 @@ func TestManagerCaptureAndRestoreClaudeSessionState(t *testing.T) {
 	}
 	if !bytes.Equal(guest.restoreArchive, guest.captureArchive) {
 		t.Fatalf("expected stored archive to be restored")
+	}
+}
+
+func TestClaudeSubscriptionAdapterIncludesTopLevelConfigFile(t *testing.T) {
+	t.Parallel()
+
+	spec := (ClaudeSubscriptionAdapter{}).SessionStateSpec("ubuntu")
+	if len(spec.Roots) != 2 {
+		t.Fatalf("expected 2 roots, got %+v", spec.Roots)
+	}
+	if spec.Roots[0].Path != "/home/ubuntu/.claude.json" || spec.Roots[0].Kind != SessionStateRootKindFile {
+		t.Fatalf("unexpected top-level Claude config root: %+v", spec.Roots[0])
+	}
+	if spec.Roots[1].Path != "/home/ubuntu/.claude" || spec.Roots[1].Kind != SessionStateRootKindDirectory {
+		t.Fatalf("unexpected Claude directory root: %+v", spec.Roots[1])
 	}
 }
 

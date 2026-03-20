@@ -66,12 +66,20 @@ type ProviderCredentialsSpec struct {
 	Roots   []string `json:"roots,omitempty"`
 }
 
+type SessionStateRootKind string
+
+const (
+	SessionStateRootKindDirectory SessionStateRootKind = "directory"
+	SessionStateRootKindFile      SessionStateRootKind = "file"
+)
+
 type SessionStateRoot struct {
-	Path             string   `json:"path"`
-	Owner            string   `json:"owner,omitempty"`
-	Group            string   `json:"group,omitempty"`
-	DirectoryMode    int      `json:"directory_mode"`
-	ExcludeBaseNames []string `json:"exclude_base_names,omitempty"`
+	Path             string               `json:"path"`
+	Kind             SessionStateRootKind `json:"kind,omitempty"`
+	Owner            string               `json:"owner,omitempty"`
+	Group            string               `json:"group,omitempty"`
+	DirectoryMode    int                  `json:"directory_mode"`
+	ExcludeBaseNames []string             `json:"exclude_base_names,omitempty"`
 }
 
 type SecretFile struct {
