@@ -55,7 +55,12 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 		store.Close()
 		return nil, err
 	}
-	toolAuthManager, err := toolauth.NewManager(toolAuthStore, runtimeClient, toolauth.ClaudeSubscriptionAdapter{})
+	toolAuthManager, err := toolauth.NewManager(
+		toolAuthStore,
+		runtimeClient,
+		toolauth.ClaudeSubscriptionAdapter{},
+		toolauth.CodexChatGPTAdapter{},
+	)
 	if err != nil {
 		store.Close()
 		return nil, err

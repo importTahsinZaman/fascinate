@@ -233,7 +233,7 @@ Fascinate now keeps tool auth as a per-user host asset instead of a per-VM-only 
 
 Current scope:
 - framework supports `session_state`, `secret_material`, and `provider_credentials` storage modes
-- first shipped adapter is Claude Code subscription login
+- shipped session-state adapters are Claude Code subscription login and Codex ChatGPT/device-code login
 - running VM sync happens on shell/tutorial exit and on a background interval
 - later VMs for the same user restore the stored tool auth before the machine becomes `RUNNING`
 

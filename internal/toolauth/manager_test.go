@@ -131,6 +131,46 @@ func TestManagerCaptureAndRestoreClaudeSessionState(t *testing.T) {
 	}
 }
 
+func TestManagerCaptureAndRestoreCodexSessionState(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	guest := &fakeGuestTransport{
+		captureArchive: archiveWithFile(t, "/home/ubuntu/.codex/auth.json", `{"access_token":"abc"}`),
+	}
+	manager, err := NewManager(store, guest, CodexChatGPTAdapter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := context.Background()
+	if err := manager.CaptureAll(ctx, "user-1", "tic-tac-toe", "ubuntu"); err != nil {
+		t.Fatal(err)
+	}
+	if guest.captureRuntime != "tic-tac-toe" {
+		t.Fatalf("unexpected capture runtime: %q", guest.captureRuntime)
+	}
+	if len(guest.captureSpec.Roots) != 1 {
+		t.Fatalf("unexpected capture roots: %+v", guest.captureSpec.Roots)
+	}
+	if guest.captureSpec.Roots[0].Path != "/home/ubuntu/.codex" || guest.captureSpec.Roots[0].Kind != SessionStateRootKindDirectory {
+		t.Fatalf("unexpected capture spec: %+v", guest.captureSpec.Roots)
+	}
+	if len(guest.captureSpec.Roots[0].ExcludeBaseNames) != 1 || guest.captureSpec.Roots[0].ExcludeBaseNames[0] != "AGENTS.md" {
+		t.Fatalf("unexpected codex exclude list: %+v", guest.captureSpec.Roots[0].ExcludeBaseNames)
+	}
+
+	if err := manager.RestoreAll(ctx, "user-1", "space-shooter", "ubuntu"); err != nil {
+		t.Fatal(err)
+	}
+	if guest.restoreRuntime != "space-shooter" {
+		t.Fatalf("unexpected restore runtime: %q", guest.restoreRuntime)
+	}
+	if !bytes.Equal(guest.restoreArchive, guest.captureArchive) {
+		t.Fatalf("expected stored archive to be restored")
+	}
+}
+
 func TestClaudeSubscriptionAdapterIncludesTopLevelConfigFile(t *testing.T) {
 	t.Parallel()
 
@@ -143,6 +183,21 @@ func TestClaudeSubscriptionAdapterIncludesTopLevelConfigFile(t *testing.T) {
 	}
 	if spec.Roots[1].Path != "/home/ubuntu/.claude" || spec.Roots[1].Kind != SessionStateRootKindDirectory {
 		t.Fatalf("unexpected Claude directory root: %+v", spec.Roots[1])
+	}
+}
+
+func TestCodexChatGPTAdapterIncludesCodexDirectory(t *testing.T) {
+	t.Parallel()
+
+	spec := (CodexChatGPTAdapter{}).SessionStateSpec("ubuntu")
+	if len(spec.Roots) != 1 {
+		t.Fatalf("expected 1 root, got %+v", spec.Roots)
+	}
+	if spec.Roots[0].Path != "/home/ubuntu/.codex" || spec.Roots[0].Kind != SessionStateRootKindDirectory {
+		t.Fatalf("unexpected codex root: %+v", spec.Roots[0])
+	}
+	if len(spec.Roots[0].ExcludeBaseNames) != 1 || spec.Roots[0].ExcludeBaseNames[0] != "AGENTS.md" {
+		t.Fatalf("unexpected codex exclude list: %+v", spec.Roots[0].ExcludeBaseNames)
 	}
 }
 
