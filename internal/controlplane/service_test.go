@@ -33,11 +33,14 @@ type fakeToolAuth struct {
 	restoreRuntime   string
 	restoreGuestUser string
 	restoreErr       error
+	restoreCalls     []string
 
 	captureUserID    string
 	captureRuntime   string
 	captureGuestUser string
 	captureErr       error
+	captureCalls     []string
+	callOrder        []string
 }
 
 func (f *fakeRuntime) HealthCheck(context.Context) error {
@@ -130,6 +133,8 @@ func (f *fakeToolAuth) RestoreAll(_ context.Context, userID, runtimeName, guestU
 	f.restoreUserID = userID
 	f.restoreRuntime = runtimeName
 	f.restoreGuestUser = guestUser
+	f.restoreCalls = append(f.restoreCalls, runtimeName)
+	f.callOrder = append(f.callOrder, "restore:"+runtimeName)
 	return f.restoreErr
 }
 
@@ -137,6 +142,8 @@ func (f *fakeToolAuth) CaptureAll(_ context.Context, userID, runtimeName, guestU
 	f.captureUserID = userID
 	f.captureRuntime = runtimeName
 	f.captureGuestUser = guestUser
+	f.captureCalls = append(f.captureCalls, runtimeName)
+	f.callOrder = append(f.callOrder, "capture:"+runtimeName)
 	return f.captureErr
 }
 
@@ -263,6 +270,65 @@ func TestServiceCreateMachineRestoresToolAuthBeforeRunning(t *testing.T) {
 	}
 	if auth.restoreUserID != record.OwnerUserID {
 		t.Fatalf("expected restore user %q, got %q", record.OwnerUserID, auth.restoreUserID)
+	}
+}
+
+func TestServiceCreateMachineSyncsOwnerToolAuthBeforeRestore(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, runtime := newTestServiceDeps(t, ctx)
+	auth := &fakeToolAuth{}
+
+	user, err := store.UpsertUser(ctx, "dev@example.com", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateMachine(ctx, database.CreateMachineParams{
+		ID:          "machine-1",
+		Name:        "tic-tac-toe",
+		OwnerUserID: user.ID,
+		RuntimeName: "tic-tac-toe",
+		State:       machineStateRunning,
+		PrimaryPort: 3000,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	runtime.machines["tic-tac-toe"] = machineruntime.Machine{
+		Name:      "tic-tac-toe",
+		Type:      "vm",
+		State:     machineStateRunning,
+		GuestUser: "ubuntu",
+	}
+
+	service := New(config.Config{
+		BaseDomain:         "fascinate.dev",
+		DefaultImage:       "/var/lib/fascinate/images/fascinate-base.raw",
+		DefaultMachineCPU:  "1",
+		DefaultMachineRAM:  "2GiB",
+		DefaultMachineDisk: "20GiB",
+		DefaultPrimaryPort: 3000,
+		GuestSSHUser:       "ubuntu",
+	}, store, runtime, auth)
+
+	if _, err := service.CreateMachine(ctx, CreateMachineInput{
+		Name:       "space-shooter",
+		OwnerEmail: "dev@example.com",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	waitForTestCondition(t, func() bool {
+		return len(auth.callOrder) >= 2
+	})
+	if len(auth.captureCalls) != 1 || auth.captureCalls[0] != "tic-tac-toe" {
+		t.Fatalf("expected capture from existing running machine, got %+v", auth.captureCalls)
+	}
+	if len(auth.restoreCalls) != 1 || auth.restoreCalls[0] != "space-shooter" {
+		t.Fatalf("expected restore into created machine, got %+v", auth.restoreCalls)
+	}
+	if auth.callOrder[0] != "capture:tic-tac-toe" || auth.callOrder[1] != "restore:space-shooter" {
+		t.Fatalf("expected capture before restore, got %+v", auth.callOrder)
 	}
 }
 

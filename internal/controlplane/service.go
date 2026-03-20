@@ -170,6 +170,7 @@ func (s *Service) CreateMachine(ctx context.Context, input CreateMachineInput) (
 	if err != nil {
 		return Machine{}, err
 	}
+	s.syncToolAuthFromOwnerRunningMachines(ctx, user.ID, name)
 
 	persistCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -715,6 +716,39 @@ func (s *Service) syncToolAuthForRecord(ctx context.Context, record database.Mac
 	}
 
 	return s.toolAuth.CaptureAll(ctx, record.OwnerUserID, runtimeName, guestUser)
+}
+
+func (s *Service) syncToolAuthFromOwnerRunningMachines(ctx context.Context, ownerUserID, excludeRuntimeName string) {
+	if s.toolAuth == nil {
+		return
+	}
+
+	records, err := s.store.ListMachines(ctx, "")
+	if err != nil {
+		log.Printf("fascinate: list machines for tool auth sync: %v", err)
+		return
+	}
+
+	excludeRuntimeName = strings.TrimSpace(excludeRuntimeName)
+	for _, candidate := range records {
+		if candidate.OwnerUserID != ownerUserID {
+			continue
+		}
+		if !strings.EqualFold(candidate.State, machineStateRunning) {
+			continue
+		}
+
+		runtimeName := runtimeNameForRecord(candidate)
+		if runtimeName == "" || runtimeName == excludeRuntimeName {
+			continue
+		}
+
+		if err := s.syncToolAuthForRecord(ctx, candidate); err != nil &&
+			!errors.Is(err, database.ErrNotFound) &&
+			!errors.Is(err, machineruntime.ErrMachineNotFound) {
+			log.Printf("fascinate: pre-create tool auth sync from %s: %v", candidate.Name, err)
+		}
+	}
 }
 
 func (s *Service) captureToolAuthBestEffort(ctx context.Context, record database.MachineRecord) {
