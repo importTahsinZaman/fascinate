@@ -344,6 +344,62 @@ func TestServiceReconcileRuntimeStateQueuesCreatingMachines(t *testing.T) {
 	}
 }
 
+func TestMachineFromRecordDoesNotPromoteCreatingFromRuntimeLiveness(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, runtime := newTestServiceDeps(t, ctx)
+	service := New(config.Config{
+		BaseDomain:         "fascinate.dev",
+		DefaultImage:       "/var/lib/fascinate/images/fascinate-base.raw",
+		DefaultMachineCPU:  "1",
+		DefaultMachineRAM:  "2GiB",
+		DefaultMachineDisk: "20GiB",
+		DefaultPrimaryPort: 3000,
+	}, store, runtime)
+
+	user, err := store.UpsertUser(ctx, "dev@example.com", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	record, err := store.CreateMachine(ctx, database.CreateMachineParams{
+		ID:          "machine-creating",
+		Name:        "space-shooter",
+		OwnerUserID: user.ID,
+		RuntimeName: "space-shooter",
+		State:       machineStateCreating,
+		PrimaryPort: 3000,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	runtimeMachine := machineruntime.Machine{
+		Name:      "space-shooter",
+		Type:      "vm",
+		State:     "RUNNING",
+		CPU:       "1",
+		Memory:    "2GiB",
+		Disk:      "20GiB",
+		IPv4:      []string{"10.42.0.11"},
+		GuestUser: "ubuntu",
+	}
+
+	machine := service.machineFromRecord(ctx, record, runtimeMachine)
+	if machine.State != machineStateCreating {
+		t.Fatalf("expected machine to remain %s, got %q", machineStateCreating, machine.State)
+	}
+
+	persisted, err := store.GetMachineByName(ctx, "space-shooter")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.State != machineStateCreating {
+		t.Fatalf("expected persisted state to remain %s, got %q", machineStateCreating, persisted.State)
+	}
+}
+
 func TestServiceGetMachineMarksMissingWhenRuntimeDoesNotHaveIt(t *testing.T) {
 	t.Parallel()
 

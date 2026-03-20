@@ -9,6 +9,7 @@ import (
 	"io"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"golang.org/x/crypto/ssh"
 
@@ -401,6 +402,69 @@ func TestGuestSSHRemoteCommandQuotesShellCommand(t *testing.T) {
 	command := guestSSHRemoteCommand("xterm-256color", "if command -v bash >/dev/null 2>&1; then exec bash -l; else exec sh -l; fi")
 	if !bytes.Contains([]byte(command), []byte("sh -lc 'if command -v bash >/dev/null 2>&1; then exec bash -l; else exec sh -l; fi'")) {
 		t.Fatalf("unexpected guest ssh command: %q", command)
+	}
+}
+
+func TestWaitForGuestAccessRetriesTransientFailures(t *testing.T) {
+	t.Parallel()
+
+	server := newTestServer(t, &fakeKeyLookup{}, &fakeMachines{})
+	server.guestReadyWait = 50 * time.Millisecond
+	server.guestReadyPoll = time.Millisecond
+
+	attempts := 0
+	server.guestReadyProbe = func(context.Context, string, string) error {
+		attempts++
+		if attempts < 3 {
+			return errors.New("ssh: connect to host 10.42.0.12 port 22: Connection refused")
+		}
+		return nil
+	}
+
+	err := server.waitForGuestAccess(context.Background(), controlplane.Machine{Name: "space-shooter"}, "10.42.0.12", "ubuntu")
+	if err != nil {
+		t.Fatalf("expected guest access probe to recover, got %v", err)
+	}
+	if attempts != 3 {
+		t.Fatalf("expected 3 attempts, got %d", attempts)
+	}
+}
+
+func TestWaitForGuestAccessReturnsFriendlyBootingMessage(t *testing.T) {
+	t.Parallel()
+
+	server := newTestServer(t, &fakeKeyLookup{}, &fakeMachines{})
+	server.guestReadyWait = 5 * time.Millisecond
+	server.guestReadyPoll = time.Millisecond
+	server.guestReadyProbe = func(context.Context, string, string) error {
+		return errors.New("ssh: connect to host 10.42.0.12 port 22: Connection refused")
+	}
+
+	err := server.waitForGuestAccess(context.Background(), controlplane.Machine{Name: "space-shooter"}, "10.42.0.12", "ubuntu")
+	if err == nil {
+		t.Fatalf("expected readiness error")
+	}
+	if !bytes.Contains([]byte(err.Error()), []byte("still booting")) {
+		t.Fatalf("expected friendly booting message, got %v", err)
+	}
+}
+
+func TestWaitForGuestAccessReturnsNonRetryableErrorImmediately(t *testing.T) {
+	t.Parallel()
+
+	server := newTestServer(t, &fakeKeyLookup{}, &fakeMachines{})
+	server.guestReadyWait = time.Second
+	server.guestReadyPoll = time.Millisecond
+	server.guestReadyProbe = func(context.Context, string, string) error {
+		return errors.New("Permission denied (publickey)")
+	}
+
+	err := server.waitForGuestAccess(context.Background(), controlplane.Machine{Name: "space-shooter"}, "10.42.0.12", "ubuntu")
+	if err == nil {
+		t.Fatalf("expected error")
+	}
+	if err.Error() != "Permission denied (publickey)" {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 

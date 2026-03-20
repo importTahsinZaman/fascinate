@@ -44,6 +44,9 @@ type Server struct {
 	addr            string
 	sshClientBinary string
 	guestSSHKeyPath string
+	guestReadyProbe func(context.Context, string, string) error
+	guestReadyWait  time.Duration
+	guestReadyPoll  time.Duration
 	config          *ssh.ServerConfig
 	machines        machineManager
 	signup          signupManager
@@ -104,6 +107,8 @@ func New(cfg config.Config, keys keyLookup, machines machineManager, signup sign
 		addr:            strings.TrimSpace(cfg.SSHAddr),
 		sshClientBinary: strings.TrimSpace(cfg.SSHClientBinary),
 		guestSSHKeyPath: strings.TrimSpace(cfg.GuestSSHKeyPath),
+		guestReadyWait:  20 * time.Second,
+		guestReadyPoll:  1500 * time.Millisecond,
 		config:          serverConfig,
 		machines:        machines,
 		signup:          signup,
@@ -604,19 +609,13 @@ func (s *Server) runGuestCommand(channel ssh.Channel, requests <-chan *ssh.Reque
 	if guestUser == "" {
 		guestUser = "ubuntu"
 	}
+	if err := s.waitForGuestAccess(context.Background(), machine, targetIP, guestUser); err != nil {
+		return err
+	}
 
 	term := "xterm-256color"
 	remoteCommand := guestSSHRemoteCommand(term, shellCommand)
-	args := []string{
-		"-i", s.guestSSHKeyPath,
-		"-o", "BatchMode=yes",
-		"-o", "StrictHostKeyChecking=no",
-		"-o", "UserKnownHostsFile=/dev/null",
-		"-o", "LogLevel=ERROR",
-		"-tt",
-		fmt.Sprintf("%s@%s", guestUser, targetIP),
-		remoteCommand,
-	}
+	args := append(s.guestSSHArgs(guestUser, targetIP), "-tt", remoteCommand)
 
 	binary := s.sshClientBinary
 	if strings.TrimSpace(binary) == "" {
@@ -655,6 +654,70 @@ func (s *Server) runGuestCommand(channel ssh.Channel, requests <-chan *ssh.Reque
 	}
 
 	return nil
+}
+
+func (s *Server) waitForGuestAccess(ctx context.Context, machine controlplane.Machine, targetIP, guestUser string) error {
+	waitFor := s.guestReadyWait
+	if waitFor <= 0 {
+		waitFor = 20 * time.Second
+	}
+	pollEvery := s.guestReadyPoll
+	if pollEvery <= 0 {
+		pollEvery = 1500 * time.Millisecond
+	}
+
+	deadline := time.Now().Add(waitFor)
+	for {
+		err := s.probeGuestAccess(ctx, targetIP, guestUser)
+		if err == nil {
+			return nil
+		}
+
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if !isRetryableGuestAccessError(err) {
+			return err
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("machine %q is still booting; try again in a few seconds", machine.Name)
+		}
+		time.Sleep(pollEvery)
+	}
+}
+
+func (s *Server) probeGuestAccess(ctx context.Context, targetIP, guestUser string) error {
+	if s.guestReadyProbe != nil {
+		return s.guestReadyProbe(ctx, targetIP, guestUser)
+	}
+
+	binary := s.sshClientBinary
+	if strings.TrimSpace(binary) == "" {
+		binary = "ssh"
+	}
+	args := append(s.guestSSHArgs(guestUser, targetIP), "true")
+
+	cmd := exec.CommandContext(ctx, binary, args...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		outputText := strings.TrimSpace(string(output))
+		if outputText == "" {
+			return err
+		}
+		return fmt.Errorf("%w: %s", err, outputText)
+	}
+	return nil
+}
+
+func (s *Server) guestSSHArgs(guestUser, targetIP string) []string {
+	return []string{
+		"-i", s.guestSSHKeyPath,
+		"-o", "BatchMode=yes",
+		"-o", "StrictHostKeyChecking=no",
+		"-o", "UserKnownHostsFile=/dev/null",
+		"-o", "LogLevel=ERROR",
+		fmt.Sprintf("%s@%s", guestUser, targetIP),
+	}
 }
 
 func guestSSHRemoteCommand(term, shellCommand string) string {
@@ -704,6 +767,27 @@ func isIgnorableShellCopyError(err error) bool {
 
 	value := strings.ToLower(strings.TrimSpace(err.Error()))
 	return strings.Contains(value, "input/output error") || strings.Contains(value, "closed")
+}
+
+func isRetryableGuestAccessError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(strings.TrimSpace(err.Error()))
+	retryableFragments := []string{
+		"connection refused",
+		"connection reset by peer",
+		"operation timed out",
+		"connection timed out",
+		"no route to host",
+		"network is unreachable",
+	}
+	for _, fragment := range retryableFragments {
+		if strings.Contains(message, fragment) {
+			return true
+		}
+	}
+	return false
 }
 
 func max(a, b int) int {

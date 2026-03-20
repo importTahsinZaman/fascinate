@@ -390,7 +390,7 @@ func (s *Service) validateMachineSizeLimit(cpu, memory, disk string) error {
 }
 
 func (s *Service) machineFromRecord(ctx context.Context, record database.MachineRecord, live machineruntime.Machine) Machine {
-	if live.Name != "" && live.State != "" && live.State != record.State {
+	if live.Name != "" && live.State != "" && live.State != record.State && shouldAdoptRuntimeState(record.State, live.State) {
 		_ = s.store.UpdateMachineState(ctx, record.ID, live.State)
 		record.State = live.State
 	}
@@ -412,6 +412,23 @@ func (s *Service) machineFromRecord(ctx context.Context, record database.Machine
 		UpdatedAt:   record.UpdatedAt,
 		Runtime:     runtimeMachine,
 	}
+}
+
+func shouldAdoptRuntimeState(recordState, runtimeState string) bool {
+	recordState = strings.ToUpper(strings.TrimSpace(recordState))
+	runtimeState = strings.ToUpper(strings.TrimSpace(runtimeState))
+
+	if recordState == "" || runtimeState == "" {
+		return false
+	}
+	if recordState == runtimeState {
+		return false
+	}
+	if recordState == machineStateCreating {
+		return false
+	}
+
+	return true
 }
 
 func (s *Service) ensureUser(ctx context.Context, email string) (database.User, error) {
