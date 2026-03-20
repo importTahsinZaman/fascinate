@@ -583,7 +583,7 @@ func (m *Manager) waitForGuestSSH(ctx context.Context, ipv4 string) error {
 		conn, err := dialer.DialContext(ctx, "tcp", address)
 		if err == nil {
 			_ = conn.Close()
-			err = m.runGuestCommand(ctx, ipv4, "test -f /var/lib/cloud/instance/boot-finished && command -v claude >/dev/null 2>&1 && command -v node >/dev/null 2>&1 && command -v go >/dev/null 2>&1 && command -v docker >/dev/null 2>&1 && systemctl is-active --quiet docker")
+			err = m.runGuestCommand(ctx, ipv4, "test -f /var/lib/cloud/instance/boot-finished && command -v claude >/dev/null 2>&1 && command -v codex >/dev/null 2>&1 && command -v node >/dev/null 2>&1 && command -v go >/dev/null 2>&1 && command -v docker >/dev/null 2>&1 && systemctl is-active --quiet docker")
 			if err == nil {
 				return nil
 			}
@@ -820,7 +820,7 @@ NODE_RESOLVED_VERSION="$(resolve_node_version)"
 GO_RESOLVED_VERSION="$(resolve_go_version)"
 install_node "${NODE_RESOLVED_VERSION}" "$(node_arch)"
 install_go "${GO_RESOLVED_VERSION}" "$(go_arch)"
-npm install -g --force npm@latest @anthropic-ai/claude-code
+npm install -g --force npm@latest @anthropic-ai/claude-code @openai/codex@latest
 
 mkdir -p /etc/systemd/system/docker.service.d
 cat >/etc/systemd/system/docker.service.d/10-fascinate.conf <<'EOF_DOCKER'

@@ -158,6 +158,7 @@ func TestCloudInitUserDataInstallsCanonicalAgentDocs(t *testing.T) {
 		"/home/ubuntu/.claude/CLAUDE.md",
 		"/home/ubuntu/.codex/AGENTS.md",
 		"chown ubuntu:ubuntu /home/ubuntu/.claude /home/ubuntu/.codex || true",
+		"@openai/codex@latest",
 		"https://tic-tac-toe.fascinate.dev",
 		"add this hostname to allowedDevOrigins",
 	} {

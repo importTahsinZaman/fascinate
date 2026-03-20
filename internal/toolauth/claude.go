@@ -76,5 +76,6 @@ Rules:
 - For Next.js development, add this hostname to allowedDevOrigins.
 - Docker is available.
 - Data on disk persists across restarts.
-- Claude Code is preinstalled as 'claude'.`, publicHost, primaryPort, publicHost, publicHost)
+- Claude Code is preinstalled as 'claude'.
+- Codex CLI is preinstalled as 'codex'.`, publicHost, primaryPort, publicHost, publicHost)
 }

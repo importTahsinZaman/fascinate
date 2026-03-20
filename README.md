@@ -98,17 +98,7 @@ Build the default agent-ready guest image:
 sudo ./ops/cloudhypervisor/build-base-image.sh
 ```
 
-By default, the base image builder also installs Claude Code as `claude`.
-Useful image build env vars:
-
-```bash
-export FASCINATE_INSTALL_CLAUDE_CODE=1
-export FASCINATE_CLAUDE_CODE_VERSION=latest
-sudo ./ops/cloudhypervisor/build-base-image.sh
-```
-
-Set `FASCINATE_INSTALL_CLAUDE_CODE=0` if you want a neutral image without it.
-Set `FASCINATE_APT_MIRROR_BASE_URL=...` only if you explicitly want to rewrite the guest apt sources during image build.
+The base image builder only prepares the raw Ubuntu cloud image. Fascinate installs the developer toolchain, Claude Code, and Codex CLI during VM first boot.
 
 If you want Fascinate to own port `22`, move host admin SSH first:
 
@@ -229,12 +219,13 @@ If the SSH key is unknown and email delivery is configured, the session opens a 
 If your host Caddy config forwards wildcard subdomains to `FASCINATE_HTTP_ADDR`, requests for `https://<machine>.fascinate.dev` are proxied to that machine's primary port. If nothing is listening yet, Fascinate serves a status page with the SSH shell command for that machine.
 
 New machines built from `fascinate-base` come with:
-- Ubuntu 24.04 packages upgraded to the latest versions available in the current Ubuntu repositories at image-build time
+- Ubuntu 24.04 packages upgraded to the latest versions available in the current Ubuntu repositories during VM first boot
 - Docker
-- Node.js and Go installed from upstream releases at image-build time (`FASCINATE_NODE_VERSION=latest` and `FASCINATE_GO_VERSION=latest` by default)
-- npm upgraded from the upstream registry at image-build time (`FASCINATE_NPM_VERSION=latest` by default)
+- Node.js and Go installed from upstream releases during VM first boot (`FASCINATE_NODE_VERSION=latest` and `FASCINATE_GO_VERSION=latest` by default)
+- npm upgraded from the upstream registry during VM first boot
 - Python 3, git, jq, ripgrep, sqlite3, tmux, fzf, curl, wget, unzip, zip, rsync, and common build tooling
 - Claude Code available as `claude`
+- Codex CLI available as `codex`
 
 ## Persistent Tool Auth
 
