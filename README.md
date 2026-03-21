@@ -7,15 +7,15 @@ This repo now contains:
 - a host redeploy path under [`ops/host/install-control-plane.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/install-control-plane.sh)
 - a Caddy config writer under [`ops/host/write-caddyfile.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/write-caddyfile.sh)
 - a VM base image builder under [`ops/cloudhypervisor/build-base-image.sh`](/Users/tahsin/Desktop/vmcloud/ops/cloudhypervisor/build-base-image.sh)
-- a minimal Go control plane under [`cmd/fascinate/main.go`](/Users/tahsin/Desktop/vmcloud/cmd/fascinate/main.go)
+- a Go control plane under [`cmd/fascinate/main.go`](/Users/tahsin/Desktop/vmcloud/cmd/fascinate/main.go)
 - SQLite migrations for the first platform tables
 - a Cloud Hypervisor runtime wrapper and health endpoints
-- a minimal SSH frontdoor backed by SQLite-stored public keys
+- an SSH frontdoor backed by SQLite-stored public keys
 - first-class full-VM snapshots and snapshot-backed cloning
 
-## Current Scope
+## Current Product Surface
 
-This is the first real scaffold, not the full product yet. It gives us:
+Fascinate currently gives us:
 - repeatable host setup for Ubuntu 24.04
 - a baseline Cloud Hypervisor + Caddy + firewall install
 - a Go service that can:
@@ -24,21 +24,28 @@ This is the first real scaffold, not the full product yet. It gives us:
   - run migrations
   - expose `/healthz`, `/readyz`, and `/v1/runtime/machines`
   - talk to the local `cloud-hypervisor` runtime
+  - provision persistent VMs asynchronously
+  - save full-VM snapshots and restore new VMs from them
+  - perform true snapshot-backed cloning
+  - persist supported tool auth across later VMs for the same user
 
-It does not yet include:
+Still missing:
 - recovery and account-management flows for additional SSH keys
 
-It now includes a first machine API slice:
+Current HTTP API:
 - `GET /v1/machines`
 - `POST /v1/machines`
 - `GET /v1/machines/{name}`
 - `DELETE /v1/machines/{name}`
 - `POST /v1/machines/{name}/clone`
+- `GET /v1/snapshots`
+- `POST /v1/snapshots`
+- `DELETE /v1/snapshots/{name}`
 
-It also includes a first SSH slice:
+Current SSH/frontdoor surface:
 - `fascinate seed-ssh-key --email ... --name ... --public-key-file ...`
 - a DB-backed SSH server on `FASCINATE_SSH_ADDR`
-- command handling for `help`, `whoami`, `machines`, `create`, `clone`, `delete`, and `shell`
+- command handling for `help`, `whoami`, `machines`, `snapshots`, `create`, `clone`, `snapshot`, `delete`, `shell`, and `tutorial`
 - a Bubble Tea dashboard for interactive `ssh fascinate.dev` sessions
 - unknown-key signup with emailed 6-digit verification codes
 - wildcard machine routing inside the HTTP server for `https://<machine>.<base-domain>`
@@ -49,6 +56,8 @@ It also includes a first SSH slice:
 - [`ops/host/verify.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/verify.sh): checks the host after bootstrap
 - [`ops/host/write-caddyfile.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/write-caddyfile.sh): writes the host Caddy config for Fascinate
 - [`ops/host/install-control-plane.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/install-control-plane.sh): builds and installs the Fascinate service on a host
+- [`ops/host/smoke.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/smoke.sh): validates the basic create, route, restart, and delete lifecycle
+- [`ops/host/smoke-tool-auth.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/smoke-tool-auth.sh): validates persisted tool auth across later VMs
 - [`ops/host/smoke-snapshots.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/smoke-snapshots.sh): validates saved snapshots, create-from-snapshot, and true clone flows
 - [`ops/cloudhypervisor/build-base-image.sh`](/Users/tahsin/Desktop/vmcloud/ops/cloudhypervisor/build-base-image.sh): builds an agent-ready qcow2 guest image
 - [`ops/systemd/fascinate.service`](/Users/tahsin/Desktop/vmcloud/ops/systemd/fascinate.service): example systemd unit
@@ -81,7 +90,7 @@ Run the host smoke path after deploys or major runtime changes:
 sudo ./ops/host/smoke.sh
 ```
 
-Run the manual tool-auth smoke path when validating Claude subscription persistence across VMs:
+Run the manual tool-auth smoke path when validating Claude, Codex, and GitHub auth persistence across VMs:
 
 ```bash
 sudo ./ops/host/smoke-tool-auth.sh
@@ -106,7 +115,7 @@ Build the default agent-ready guest image:
 sudo ./ops/cloudhypervisor/build-base-image.sh
 ```
 
-The base image builder only prepares the raw Ubuntu cloud image. Fascinate installs the developer toolchain, Claude Code, and Codex CLI during VM first boot.
+The base image builder only prepares the raw Ubuntu cloud image. Fascinate installs the developer toolchain, Claude Code, Codex CLI, and GitHub CLI during VM first boot.
 
 If you want Fascinate to own port `22`, move host admin SSH first:
 
@@ -236,6 +245,7 @@ New machines built from `fascinate-base` come with:
 - Python 3, git, jq, ripgrep, sqlite3, tmux, fzf, curl, wget, unzip, zip, rsync, and common build tooling
 - Claude Code available as `claude`
 - Codex CLI available as `codex`
+- GitHub CLI available as `gh`
 
 ## Persistent Tool Auth
 
@@ -243,9 +253,10 @@ Fascinate now keeps tool auth as a per-user host asset instead of a per-VM-only 
 
 Current scope:
 - framework supports `session_state`, `secret_material`, and `provider_credentials` storage modes
-- shipped session-state adapters are Claude Code subscription login and Codex ChatGPT/device-code login
+- shipped session-state adapters are Claude Code subscription login, Codex ChatGPT/device-code login, and GitHub CLI login
 - running VM sync happens on shell/tutorial exit and on a background interval
 - later VMs for the same user restore the stored tool auth before the machine becomes `RUNNING`
+- shell entry shows a GitHub hint when `gh` is installed but not connected yet: `gh auth login && gh auth setup-git`
 
 Host storage:
 - encrypted bundles live under `FASCINATE_TOOL_AUTH_DIR`
@@ -270,6 +281,7 @@ snapshot save habits habits-snap
 snapshot delete habits-snap
 delete habits --confirm habits
 shell habits
+tutorial habits
 whoami
 help
 exit
@@ -293,6 +305,6 @@ Runtime notes:
 ## Next Milestones
 
 1. Add recovery and “attach another SSH key” flows for existing accounts.
-2. Replace the current single-screen dashboard with fuller Bubble Tea flows for machine creation, detail, and errors.
-3. Enforce per-user quotas and approval rules.
-4. Add account recovery and attach-another-key flows.
+2. Add signup and email-code abuse guardrails such as rate limits and quotas around account creation.
+3. Improve snapshot and clone UX in the dashboard, including clearer retention and cleanup flows.
+4. Add more persistent tool-auth adapters beyond the current Claude, Codex, and GitHub session-state set.
