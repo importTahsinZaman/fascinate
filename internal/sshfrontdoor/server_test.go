@@ -438,12 +438,27 @@ func TestTutorialShellCommandUsesParentWorkspace(t *testing.T) {
 	}
 }
 
+func TestGuestShellCommandIncludesGitHubAuthHint(t *testing.T) {
+	t.Parallel()
+
+	command := guestShellCommand()
+	if !bytes.Contains([]byte(command), []byte("gh auth login && gh auth setup-git")) {
+		t.Fatalf("expected guest shell command to mention GitHub auth setup, got %q", command)
+	}
+	if !bytes.Contains([]byte(command), []byte("gh auth status --hostname github.com")) {
+		t.Fatalf("expected guest shell command to probe gh auth state, got %q", command)
+	}
+}
+
 func TestGuestSSHRemoteCommandQuotesShellCommand(t *testing.T) {
 	t.Parallel()
 
-	command := guestSSHRemoteCommand("xterm-256color", "if command -v bash >/dev/null 2>&1; then exec bash -l; else exec sh -l; fi")
-	if !bytes.Contains([]byte(command), []byte("sh -lc 'if command -v bash >/dev/null 2>&1; then exec bash -l; else exec sh -l; fi'")) {
+	command := guestSSHRemoteCommand("xterm-256color", guestShellCommand())
+	if !bytes.Contains([]byte(command), []byte("sh -lc 'if command -v gh >/dev/null 2>&1 && ! gh auth status --hostname github.com >/dev/null 2>&1; then")) {
 		t.Fatalf("unexpected guest ssh command: %q", command)
+	}
+	if !bytes.Contains([]byte(command), []byte("gh auth login && gh auth setup-git")) {
+		t.Fatalf("expected quoted shell command to keep GitHub auth hint, got %q", command)
 	}
 }
 

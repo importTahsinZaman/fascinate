@@ -193,8 +193,11 @@ func TestCloudInitUserDataInstallsCanonicalAgentDocs(t *testing.T) {
 		"/home/ubuntu/.codex/AGENTS.md",
 		"chown ubuntu:ubuntu /home/ubuntu/.claude /home/ubuntu/.codex || true",
 		"@openai/codex@latest",
+		"apt-get install -y build-essential ca-certificates curl docker.io file fzf gh git",
 		"https://tic-tac-toe.fascinate.dev",
 		"add this hostname to allowedDevOrigins",
+		"gh auth login",
+		"gh auth setup-git",
 	} {
 		if !strings.Contains(userData, snippet) {
 			t.Fatalf("expected cloud-init user-data to contain %q", snippet)

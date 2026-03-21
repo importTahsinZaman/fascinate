@@ -60,6 +60,7 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 		runtimeClient,
 		toolauth.ClaudeSubscriptionAdapter{},
 		toolauth.CodexChatGPTAdapter{},
+		toolauth.GitHubCLIAdapter{},
 	)
 	if err != nil {
 		store.Close()

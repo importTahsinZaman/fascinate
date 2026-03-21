@@ -217,6 +217,49 @@ func TestManagerCaptureAndRestoreCodexSessionState(t *testing.T) {
 	}
 }
 
+func TestManagerCaptureAndRestoreGitHubCLISessionState(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	guest := &fakeGuestTransport{
+		captureArchive: archiveWithFile(t, "/home/ubuntu/.config/gh/hosts.yml", "github.com:\n    user: octocat\n"),
+	}
+	manager, err := NewManager(store, guest, GitHubCLIAdapter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := context.Background()
+	if err := manager.CaptureAll(ctx, "user-1", "tic-tac-toe", "ubuntu"); err != nil {
+		t.Fatal(err)
+	}
+	if guest.captureRuntime != "tic-tac-toe" {
+		t.Fatalf("unexpected capture runtime: %q", guest.captureRuntime)
+	}
+	if len(guest.captureSpec.Roots) != 3 {
+		t.Fatalf("unexpected capture roots: %+v", guest.captureSpec.Roots)
+	}
+	if guest.captureSpec.Roots[0].Path != "/home/ubuntu/.gitconfig" || guest.captureSpec.Roots[0].Kind != SessionStateRootKindFile {
+		t.Fatalf("unexpected git config root: %+v", guest.captureSpec.Roots[0])
+	}
+	if guest.captureSpec.Roots[1].Path != "/home/ubuntu/.git-credentials" || guest.captureSpec.Roots[1].Kind != SessionStateRootKindFile {
+		t.Fatalf("unexpected git credentials root: %+v", guest.captureSpec.Roots[1])
+	}
+	if guest.captureSpec.Roots[2].Path != "/home/ubuntu/.config/gh" || guest.captureSpec.Roots[2].Kind != SessionStateRootKindDirectory {
+		t.Fatalf("unexpected gh config root: %+v", guest.captureSpec.Roots[2])
+	}
+
+	if err := manager.RestoreAll(ctx, "user-1", "space-shooter", "ubuntu"); err != nil {
+		t.Fatal(err)
+	}
+	if guest.restoreRuntime != "space-shooter" {
+		t.Fatalf("unexpected restore runtime: %q", guest.restoreRuntime)
+	}
+	if !bytes.Equal(guest.restoreArchive, guest.captureArchive) {
+		t.Fatalf("expected stored archive to be restored")
+	}
+}
+
 func TestClaudeSubscriptionAdapterIncludesTopLevelConfigFile(t *testing.T) {
 	t.Parallel()
 
@@ -244,6 +287,24 @@ func TestCodexChatGPTAdapterIncludesCodexDirectory(t *testing.T) {
 	}
 	if len(spec.Roots[0].ExcludeBaseNames) != 1 || spec.Roots[0].ExcludeBaseNames[0] != "AGENTS.md" {
 		t.Fatalf("unexpected codex exclude list: %+v", spec.Roots[0].ExcludeBaseNames)
+	}
+}
+
+func TestGitHubCLIAdapterIncludesGHAndGitRoots(t *testing.T) {
+	t.Parallel()
+
+	spec := (GitHubCLIAdapter{}).SessionStateSpec("ubuntu")
+	if len(spec.Roots) != 3 {
+		t.Fatalf("expected 3 roots, got %+v", spec.Roots)
+	}
+	if spec.Roots[0].Path != "/home/ubuntu/.gitconfig" || spec.Roots[0].Kind != SessionStateRootKindFile {
+		t.Fatalf("unexpected gitconfig root: %+v", spec.Roots[0])
+	}
+	if spec.Roots[1].Path != "/home/ubuntu/.git-credentials" || spec.Roots[1].Kind != SessionStateRootKindFile {
+		t.Fatalf("unexpected git credentials root: %+v", spec.Roots[1])
+	}
+	if spec.Roots[2].Path != "/home/ubuntu/.config/gh" || spec.Roots[2].Kind != SessionStateRootKindDirectory {
+		t.Fatalf("unexpected gh config root: %+v", spec.Roots[2])
 	}
 }
 

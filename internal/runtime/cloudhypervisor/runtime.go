@@ -626,7 +626,7 @@ func (m *Manager) cleanupMachine(ctx context.Context, meta metadata) error {
 func (m *Manager) waitForGuestSSH(ctx context.Context, meta metadata) error {
 	deadline := time.Now().Add(15 * time.Minute)
 	for {
-		err := m.runGuestCommand(ctx, meta, "test -f /var/lib/cloud/instance/boot-finished && command -v claude >/dev/null 2>&1 && command -v codex >/dev/null 2>&1 && command -v node >/dev/null 2>&1 && command -v go >/dev/null 2>&1 && command -v docker >/dev/null 2>&1 && systemctl is-active --quiet docker")
+		err := m.runGuestCommand(ctx, meta, "test -f /var/lib/cloud/instance/boot-finished && command -v claude >/dev/null 2>&1 && command -v codex >/dev/null 2>&1 && command -v gh >/dev/null 2>&1 && command -v node >/dev/null 2>&1 && command -v go >/dev/null 2>&1 && command -v docker >/dev/null 2>&1 && systemctl is-active --quiet docker")
 		if err == nil {
 			return nil
 		}
@@ -830,7 +830,7 @@ install_go() {
 
 apt-get update
 apt-get upgrade -y
-apt-get install -y build-essential ca-certificates curl docker.io file fzf git gnupg jq lsb-release make openssh-client procps python-is-python3 python3 python3-pip python3-venv ripgrep rsync sqlite3 tmux unzip wget xz-utils zip
+apt-get install -y build-essential ca-certificates curl docker.io file fzf gh git gnupg jq lsb-release make openssh-client procps python-is-python3 python3 python3-pip python3-venv ripgrep rsync sqlite3 tmux unzip wget xz-utils zip
 
 NODE_RESOLVED_VERSION="$(resolve_node_version)"
 GO_RESOLVED_VERSION="$(resolve_go_version)"

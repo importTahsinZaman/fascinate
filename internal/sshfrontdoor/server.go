@@ -676,7 +676,7 @@ func (s *Server) syncToolAuthAfterSession(channel ssh.Channel, userEmail, machin
 }
 
 func (s *Server) runGuestShell(channel ssh.Channel, requests <-chan *ssh.Request, size windowSize, machine controlplane.Machine) error {
-	return s.runGuestCommand(channel, requests, size, machine, "if command -v bash >/dev/null 2>&1; then exec bash -l; else exec sh -l; fi")
+	return s.runGuestCommand(channel, requests, size, machine, guestShellCommand())
 }
 
 func (s *Server) runGuestTutorial(channel ssh.Channel, requests <-chan *ssh.Request, size windowSize, machine controlplane.Machine) error {
@@ -686,6 +686,15 @@ func (s *Server) runGuestTutorial(channel ssh.Channel, requests <-chan *ssh.Requ
 func tutorialShellCommand() string {
 	safePrompt := shellQuoteSingle(tutorialPrompt)
 	return "mkdir -p " + tutorialWorkspace + " && cd " + tutorialWorkspace + " && if ! command -v claude >/dev/null 2>&1; then echo \"Claude Code is not installed on this machine.\"; exec bash -l; fi && exec claude '" + safePrompt + "'"
+}
+
+func guestShellCommand() string {
+	return strings.Join([]string{
+		"if command -v gh >/dev/null 2>&1 && ! gh auth status --hostname github.com >/dev/null 2>&1; then",
+		`printf '\nGitHub not connected. For private GitHub repos, run: gh auth login && gh auth setup-git\n\n'`,
+		"fi",
+		"if command -v bash >/dev/null 2>&1; then exec bash -l; else exec sh -l; fi",
+	}, " ")
 }
 
 func (s *Server) runGuestCommand(channel ssh.Channel, requests <-chan *ssh.Request, size windowSize, machine controlplane.Machine, shellCommand string) error {

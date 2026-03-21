@@ -77,5 +77,6 @@ Rules:
 - Docker is available.
 - Data on disk persists across restarts.
 - Claude Code is preinstalled as 'claude'.
-- Codex CLI is preinstalled as 'codex'.`, publicHost, primaryPort, publicHost, publicHost)
+- Codex CLI is preinstalled as 'codex'.
+- GitHub CLI is preinstalled as 'gh'. For private GitHub repositories, run 'gh auth login' and then 'gh auth setup-git'; Fascinate will persist that login to future VMs.`, publicHost, primaryPort, publicHost, publicHost)
 }
