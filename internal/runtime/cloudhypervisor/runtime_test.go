@@ -157,6 +157,24 @@ func TestTapDeviceNameIsStableAndHashed(t *testing.T) {
 	}
 }
 
+func TestHostVethNameIsStableAndAvoidsPrefixCollisions(t *testing.T) {
+	t.Parallel()
+
+	first := hostVethName("tic-tac-toe")
+	second := hostVethName("tic_tac_toe")
+	other := hostVethName("tic-tac-toe-v2")
+
+	if first != second {
+		t.Fatalf("expected equivalent names to hash the same, got %q vs %q", first, second)
+	}
+	if first == other {
+		t.Fatalf("expected different names to avoid collisions, got %q", first)
+	}
+	if len(first) > 15 {
+		t.Fatalf("host veth name too long: %q", first)
+	}
+}
+
 func TestCloudInitUserDataInstallsCanonicalAgentDocs(t *testing.T) {
 	t.Parallel()
 

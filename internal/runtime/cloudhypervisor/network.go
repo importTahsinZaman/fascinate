@@ -3,6 +3,7 @@ package cloudhypervisor
 import (
 	"context"
 	"fmt"
+	"hash/fnv"
 	"net"
 	"net/netip"
 	"os"
@@ -331,10 +332,12 @@ func namespaceName(name string) string {
 
 func hostVethName(name string) string {
 	base := compactTapName(name)
-	if len(base) > 6 {
-		base = base[:6]
+	if len(base) > 4 {
+		base = base[:4]
 	}
-	return "fsv" + base
+	hasher := fnv.New32a()
+	_, _ = hasher.Write([]byte(compactTapName(name)))
+	return fmt.Sprintf("fsv%s%06x", base, hasher.Sum32()&0xffffff)
 }
 
 func guestMACAddress() string {
