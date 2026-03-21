@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -150,6 +151,59 @@ func (s *Store) MarkRestoreResult(_ context.Context, key ProfileKey, restoreErr 
 		message := restoreErr.Error()
 		profile.LastRestoreError = &message
 	})
+}
+
+func (s *Store) ListProfiles(_ context.Context, userID string) ([]Profile, error) {
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return nil, nil
+	}
+
+	root := filepath.Join(s.rootDir, sanitizePathPart(userID))
+	toolEntries, err := os.ReadDir(root)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	var profiles []Profile
+	for _, toolEntry := range toolEntries {
+		if !toolEntry.IsDir() {
+			continue
+		}
+		authEntries, err := os.ReadDir(filepath.Join(root, toolEntry.Name()))
+		if err != nil {
+			return nil, err
+		}
+		for _, authEntry := range authEntries {
+			if !authEntry.IsDir() {
+				continue
+			}
+			body, err := os.ReadFile(filepath.Join(root, toolEntry.Name(), authEntry.Name(), "profile.json"))
+			if err != nil {
+				if errors.Is(err, os.ErrNotExist) {
+					continue
+				}
+				return nil, err
+			}
+			var profile Profile
+			if err := json.Unmarshal(body, &profile); err != nil {
+				return nil, err
+			}
+			profiles = append(profiles, profile)
+		}
+	}
+
+	sort.Slice(profiles, func(i, j int) bool {
+		if profiles[i].Key.ToolID == profiles[j].Key.ToolID {
+			return profiles[i].Key.AuthMethodID < profiles[j].Key.AuthMethodID
+		}
+		return profiles[i].Key.ToolID < profiles[j].Key.ToolID
+	})
+
+	return profiles, nil
 }
 
 func (s *Store) profileDir(key ProfileKey) string {

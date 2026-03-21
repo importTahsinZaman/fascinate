@@ -41,6 +41,10 @@ Current HTTP API:
 - `GET /v1/snapshots`
 - `POST /v1/snapshots`
 - `DELETE /v1/snapshots/{name}`
+- `GET /v1/diagnostics/events`
+- `GET /v1/diagnostics/tool-auth`
+- `GET /v1/diagnostics/machines/{name}`
+- `GET /v1/diagnostics/snapshots/{name}`
 
 Current SSH/frontdoor surface:
 - `fascinate seed-ssh-key --email ... --name ... --public-key-file ...`
@@ -57,8 +61,11 @@ Current SSH/frontdoor surface:
 - [`ops/host/write-caddyfile.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/write-caddyfile.sh): writes the host Caddy config for Fascinate
 - [`ops/host/install-control-plane.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/install-control-plane.sh): builds and installs the Fascinate service on a host
 - [`ops/host/smoke.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/smoke.sh): validates the basic create, route, restart, and delete lifecycle
+- [`ops/host/stress.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/stress.sh): validates realistic app, local DB, Docker, restart, snapshot, restore, clone, divergence, and cleanup behavior
+- [`ops/host/diagnostics.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/diagnostics.sh): queries machine, snapshot, tool-auth, and event diagnostics from a configured host
 - [`ops/host/smoke-tool-auth.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/smoke-tool-auth.sh): validates persisted tool auth across later VMs
 - [`ops/host/smoke-snapshots.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/smoke-snapshots.sh): validates saved snapshots, create-from-snapshot, and true clone flows
+- [`docs/stress-matrix.md`](/Users/tahsin/Desktop/vmcloud/docs/stress-matrix.md): expectation matrix and operator guidance for live validation
 - [`ops/cloudhypervisor/build-base-image.sh`](/Users/tahsin/Desktop/vmcloud/ops/cloudhypervisor/build-base-image.sh): builds an agent-ready qcow2 guest image
 - [`ops/systemd/fascinate.service`](/Users/tahsin/Desktop/vmcloud/ops/systemd/fascinate.service): example systemd unit
 - [`cmd/fascinate/main.go`](/Users/tahsin/Desktop/vmcloud/cmd/fascinate/main.go): entrypoint
@@ -90,7 +97,13 @@ Run the host smoke path after deploys or major runtime changes:
 sudo ./ops/host/smoke.sh
 ```
 
-Run the manual tool-auth smoke path when validating Claude, Codex, and GitHub auth persistence across VMs:
+Run the workload stress path when validating app, local DB, Docker, restart, snapshot, restore, clone, and cleanup behavior together:
+
+```bash
+sudo ./ops/host/stress.sh
+```
+
+Run the automated tool-auth smoke path when validating Claude, Codex, and GitHub auth persistence across VMs:
 
 ```bash
 sudo ./ops/host/smoke-tool-auth.sh
@@ -100,6 +113,15 @@ Run the snapshot smoke path when validating saved snapshots and true clone seman
 
 ```bash
 sudo ./ops/host/smoke-snapshots.sh
+```
+
+Query live diagnostics from a configured host:
+
+```bash
+sudo ./ops/host/diagnostics.sh machine you@example.com machine-name
+sudo ./ops/host/diagnostics.sh snapshot you@example.com snapshot-name
+sudo ./ops/host/diagnostics.sh tool-auth you@example.com
+sudo ./ops/host/diagnostics.sh events you@example.com 100
 ```
 
 Notes:
@@ -212,6 +234,16 @@ export FASCINATE_SMOKE_EMAIL=smoke@example.com
 export FASCINATE_SMOKE_NAME=smoke-$(date +%s)
 ```
 
+For the workload stress harness you can also override:
+
+```bash
+export FASCINATE_STRESS_EMAIL=stress@example.com
+export FASCINATE_STRESS_SOURCE_NAME=stress-source-$(date +%s)
+export FASCINATE_STRESS_SNAPSHOT_NAME=stress-snapshot-$(date +%s)
+export FASCINATE_STRESS_RESTORE_NAME=stress-restore-$(date +%s)
+export FASCINATE_STRESS_CLONE_NAME=stress-clone-$(date +%s)
+```
+
 Seed an SSH key into the local SQLite DB:
 
 ```bash
@@ -257,6 +289,14 @@ Current scope:
 - running VM sync happens on shell/tutorial exit and on a background interval
 - later VMs for the same user restore the stored tool auth before the machine becomes `RUNNING`
 - shell entry shows a GitHub hint when `gh` is installed but not connected yet: `gh auth login && gh auth setup-git`
+- tool-auth operator diagnostics are available under `/v1/diagnostics/tool-auth` and `ops/host/diagnostics.sh tool-auth ...`
+
+## Diagnostics And Stress Validation
+
+- See [`docs/stress-matrix.md`](/Users/tahsin/Desktop/vmcloud/docs/stress-matrix.md) for the current expectation matrix and coverage map.
+- Machine diagnostics surface runtime handles, forwarding ports, reachability, and recent lifecycle events.
+- Snapshot diagnostics surface artifact locations, runtime metadata, and recent snapshot lifecycle events.
+- Owner event diagnostics surface machine, snapshot, and tool-auth lifecycle history without needing manual host log forensics.
 
 Host storage:
 - encrypted bundles live under `FASCINATE_TOOL_AUTH_DIR`

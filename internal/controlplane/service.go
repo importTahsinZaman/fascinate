@@ -17,6 +17,7 @@ import (
 	"fascinate/internal/config"
 	"fascinate/internal/database"
 	machineruntime "fascinate/internal/runtime"
+	"fascinate/internal/toolauth"
 )
 
 var machineNamePattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
@@ -71,31 +72,32 @@ type CloneMachineInput struct {
 }
 
 type Snapshot struct {
-	ID                string                  `json:"id"`
-	Name              string                  `json:"name"`
-	OwnerEmail        string                  `json:"owner_email"`
-	SourceMachineName string                  `json:"source_machine_name,omitempty"`
-	State             string                  `json:"state"`
-	ArtifactDir       string                  `json:"artifact_dir,omitempty"`
-	DiskSizeBytes     int64                   `json:"disk_size_bytes,omitempty"`
-	MemorySizeBytes   int64                   `json:"memory_size_bytes,omitempty"`
-	RuntimeVersion    string                  `json:"runtime_version,omitempty"`
-	FirmwareVersion   string                  `json:"firmware_version,omitempty"`
-	CreatedAt         string                  `json:"created_at"`
-	UpdatedAt         string                  `json:"updated_at"`
+	ID                string                   `json:"id"`
+	Name              string                   `json:"name"`
+	OwnerEmail        string                   `json:"owner_email"`
+	SourceMachineName string                   `json:"source_machine_name,omitempty"`
+	State             string                   `json:"state"`
+	ArtifactDir       string                   `json:"artifact_dir,omitempty"`
+	DiskSizeBytes     int64                    `json:"disk_size_bytes,omitempty"`
+	MemorySizeBytes   int64                    `json:"memory_size_bytes,omitempty"`
+	RuntimeVersion    string                   `json:"runtime_version,omitempty"`
+	FirmwareVersion   string                   `json:"firmware_version,omitempty"`
+	CreatedAt         string                   `json:"created_at"`
+	UpdatedAt         string                   `json:"updated_at"`
 	Runtime           *machineruntime.Snapshot `json:"runtime,omitempty"`
 }
 
 type CreateSnapshotInput struct {
-	MachineName string
+	MachineName  string
 	SnapshotName string
-	OwnerEmail string
+	OwnerEmail   string
 }
 
 type toolAuthManager interface {
 	RestoreAll(context.Context, string, string, string) error
 	CaptureAll(context.Context, string, string, string) error
 	CaptureAllNonDestructive(context.Context, string, string, string) error
+	ListProfiles(context.Context, string) ([]toolauth.Profile, error)
 }
 
 func New(cfg config.Config, store *database.Store, runtime machineruntime.Manager, extras ...toolAuthManager) *Service {
@@ -222,17 +224,24 @@ func (s *Service) CreateMachine(ctx context.Context, input CreateMachineInput) (
 	defer cancel()
 
 	record, err := s.store.CreateMachine(persistCtx, database.CreateMachineParams{
-		ID:          uuid.NewString(),
-		Name:        name,
-		OwnerUserID: user.ID,
-		RuntimeName: name,
+		ID:               uuid.NewString(),
+		Name:             name,
+		OwnerUserID:      user.ID,
+		RuntimeName:      name,
 		SourceSnapshotID: sourceSnapshotID,
-		State:       machineStateCreating,
-		PrimaryPort: s.cfg.DefaultPrimaryPort,
+		State:            machineStateCreating,
+		PrimaryPort:      s.cfg.DefaultPrimaryPort,
 	})
 	if err != nil {
 		return Machine{}, err
 	}
+	s.recordEventBestEffort(&user.ID, &record.ID, "machine.create.queued", map[string]any{
+		"machine_name":        record.Name,
+		"runtime_name":        runtimeNameForRecord(record),
+		"source_snapshot_id":  sourceSnapshotIDValue(record.SourceSnapshotID),
+		"source_snapshot_set": record.SourceSnapshotID != nil,
+		"stage":               "queued",
+	})
 
 	if len(existingRecords) > 0 {
 		if err := s.store.MarkUserTutorialCompleted(persistCtx, user.ID); err != nil {
@@ -257,6 +266,10 @@ func (s *Service) DeleteMachine(ctx context.Context, name, ownerEmail string) er
 	if err != nil {
 		return err
 	}
+	s.recordEventBestEffort(&record.OwnerUserID, &record.ID, "machine.delete.started", map[string]any{
+		"machine_name": record.Name,
+		"runtime_name": runtimeNameForRecord(record),
+	})
 
 	deleteCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -269,10 +282,22 @@ func (s *Service) DeleteMachine(ctx context.Context, name, ownerEmail string) er
 	s.captureToolAuthBestEffort(deleteCtx, record)
 
 	if err := s.runtime.DeleteMachine(deleteCtx, runtimeName); err != nil && !errors.Is(err, machineruntime.ErrMachineNotFound) {
+		s.recordEventBestEffort(&record.OwnerUserID, &record.ID, "machine.delete.failed", map[string]any{
+			"machine_name": record.Name,
+			"runtime_name": runtimeName,
+			"error":        err.Error(),
+		})
 		return err
 	}
 
-	return s.store.MarkMachineDeleted(deleteCtx, record.ID)
+	if err := s.store.MarkMachineDeleted(deleteCtx, record.ID); err != nil {
+		return err
+	}
+	s.recordEventBestEffort(&record.OwnerUserID, &record.ID, "machine.delete.succeeded", map[string]any{
+		"machine_name": record.Name,
+		"runtime_name": runtimeName,
+	})
+	return nil
 }
 
 func (s *Service) CloneMachine(ctx context.Context, input CloneMachineInput) (Machine, error) {
@@ -323,6 +348,13 @@ func (s *Service) CloneMachine(ctx context.Context, input CloneMachineInput) (Ma
 	if err != nil {
 		return Machine{}, err
 	}
+	s.recordEventBestEffort(&user.ID, &sourceRecord.ID, "machine.clone.started", map[string]any{
+		"stage":          "runtime_clone",
+		"source_name":    sourceName,
+		"source_id":      sourceRecord.ID,
+		"target_name":    targetName,
+		"source_runtime": runtimeNameForRecord(sourceRecord),
+	})
 
 	liveMachine, err := s.runtime.CloneMachine(ctx, machineruntime.CloneMachineRequest{
 		SourceName:   runtimeNameForRecord(sourceRecord),
@@ -330,6 +362,12 @@ func (s *Service) CloneMachine(ctx context.Context, input CloneMachineInput) (Ma
 		RootDiskSize: rootDiskSize,
 	})
 	if err != nil {
+		s.recordEventBestEffort(&user.ID, &sourceRecord.ID, "machine.clone.failed", map[string]any{
+			"stage":       "runtime_clone",
+			"source_name": sourceName,
+			"target_name": targetName,
+			"error":       err.Error(),
+		})
 		return Machine{}, err
 	}
 
@@ -352,6 +390,13 @@ func (s *Service) CloneMachine(ctx context.Context, input CloneMachineInput) (Ma
 	if err := s.store.MarkUserTutorialCompleted(persistCtx, user.ID); err != nil {
 		return Machine{}, err
 	}
+	s.recordEventBestEffort(&user.ID, &record.ID, "machine.clone.succeeded", map[string]any{
+		"stage":        "complete",
+		"source_name":  sourceName,
+		"target_name":  targetName,
+		"target_id":    record.ID,
+		"runtime_name": liveMachine.Name,
+	})
 
 	return s.machineFromRecord(ctx, record, liveMachine), nil
 }
@@ -435,6 +480,13 @@ func (s *Service) CreateSnapshot(ctx context.Context, input CreateSnapshotInput)
 	if err != nil {
 		return Snapshot{}, err
 	}
+	s.recordEventBestEffort(&user.ID, &machineRecord.ID, "snapshot.create.queued", map[string]any{
+		"snapshot_id":    record.ID,
+		"snapshot_name":  record.Name,
+		"runtime_name":   record.RuntimeName,
+		"source_machine": machineRecord.Name,
+		"stage":          "queued",
+	})
 
 	go s.runSnapshotCreate(record)
 	return s.snapshotFromRecord(ctx, record, machineruntime.Snapshot{}), nil
@@ -456,13 +508,32 @@ func (s *Service) DeleteSnapshot(ctx context.Context, name, ownerEmail string) e
 	if err != nil {
 		return err
 	}
+	s.recordEventBestEffort(&user.ID, record.SourceMachineID, "snapshot.delete.started", map[string]any{
+		"snapshot_id":   record.ID,
+		"snapshot_name": record.Name,
+		"runtime_name":  record.RuntimeName,
+	})
 
 	deleteCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if err := s.runtime.DeleteSnapshot(deleteCtx, record.RuntimeName); err != nil && !errors.Is(err, machineruntime.ErrSnapshotNotFound) {
+		s.recordEventBestEffort(&user.ID, record.SourceMachineID, "snapshot.delete.failed", map[string]any{
+			"snapshot_id":   record.ID,
+			"snapshot_name": record.Name,
+			"runtime_name":  record.RuntimeName,
+			"error":         err.Error(),
+		})
 		return err
 	}
-	return s.store.MarkSnapshotDeleted(deleteCtx, record.ID)
+	if err := s.store.MarkSnapshotDeleted(deleteCtx, record.ID); err != nil {
+		return err
+	}
+	s.recordEventBestEffort(&user.ID, record.SourceMachineID, "snapshot.delete.succeeded", map[string]any{
+		"snapshot_id":   record.ID,
+		"snapshot_name": record.Name,
+		"runtime_name":  record.RuntimeName,
+	})
+	return nil
 }
 
 func (s *Service) ownedMachineRecord(ctx context.Context, name, ownerEmail string) (database.MachineRecord, error) {
@@ -721,6 +792,12 @@ func (s *Service) SyncRunningToolAuth(ctx context.Context) error {
 			continue
 		}
 		if err := s.syncToolAuthForRecord(ctx, record, false); err != nil && !errors.Is(err, database.ErrNotFound) && !errors.Is(err, machineruntime.ErrMachineNotFound) {
+			s.recordEventBestEffort(&record.OwnerUserID, &record.ID, "toolauth.capture.failed", map[string]any{
+				"machine_name": record.Name,
+				"runtime_name": runtimeNameForRecord(record),
+				"checkpoint":   "background_sync",
+				"error":        err.Error(),
+			})
 			syncErrs = append(syncErrs, fmt.Errorf("%s: %w", record.Name, err))
 		}
 	}
@@ -768,7 +845,7 @@ func (s *Service) queueMachineCreate(record database.MachineRecord) {
 	if record.SourceSnapshotID != nil && strings.TrimSpace(*record.SourceSnapshotID) != "" {
 		snapshotRecord, err := s.store.GetSnapshotByID(context.Background(), strings.TrimSpace(*record.SourceSnapshotID))
 		if err != nil {
-			s.finishCreateFailure(record, runtimeName, err)
+			s.finishCreateFailure(record, runtimeName, "snapshot_lookup", err)
 			s.clearCreateCancel(runtimeName)
 			return
 		}
@@ -783,16 +860,26 @@ func (s *Service) runMachineCreate(ctx context.Context, record database.MachineR
 	defer func() {
 		s.clearCreateCancel(req.Name)
 	}()
+	s.recordEventBestEffort(&record.OwnerUserID, &record.ID, "machine.create.started", map[string]any{
+		"machine_name": record.Name,
+		"runtime_name": req.Name,
+		"stage":        "runtime_create",
+	})
 
 	liveMachine, err := s.runtime.CreateMachine(ctx, req)
 	if err != nil {
-		s.finishCreateFailure(record, req.Name, err)
+		s.finishCreateFailure(record, req.Name, "runtime_create", err)
 		return
 	}
+	s.recordEventBestEffort(&record.OwnerUserID, &record.ID, "machine.create.runtime_ready", map[string]any{
+		"machine_name": record.Name,
+		"runtime_name": req.Name,
+		"stage":        "runtime_ready",
+	})
 
 	if record.SourceSnapshotID == nil {
 		if err := s.restoreToolAuth(ctx, record, liveMachine); err != nil {
-			s.finishCreateFailure(record, req.Name, err)
+			s.finishCreateFailure(record, req.Name, "tool_auth_restore", err)
 			return
 		}
 	}
@@ -803,6 +890,12 @@ func (s *Service) runMachineCreate(ctx context.Context, record database.MachineR
 func (s *Service) runSnapshotCreate(record database.SnapshotRecord) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
+	s.recordEventBestEffort(&record.OwnerUserID, record.SourceMachineID, "snapshot.create.started", map[string]any{
+		"snapshot_id":   record.ID,
+		"snapshot_name": record.Name,
+		"runtime_name":  record.RuntimeName,
+		"stage":         "runtime_snapshot",
+	})
 
 	runtimeSnapshot, err := s.runtime.CreateSnapshot(ctx, machineruntime.CreateSnapshotRequest{
 		MachineName:  sourceMachineNameForSnapshot(record),
@@ -810,7 +903,7 @@ func (s *Service) runSnapshotCreate(record database.SnapshotRecord) {
 		ArtifactDir:  record.ArtifactDir,
 	})
 	if err != nil {
-		s.finishSnapshotFailure(record, err)
+		s.finishSnapshotFailure(record, "runtime_snapshot", err)
 		return
 	}
 	s.finishSnapshotSuccess(record, runtimeSnapshot)
@@ -891,9 +984,15 @@ func (s *Service) finishCreateSuccess(record database.MachineRecord, liveMachine
 		}
 		log.Printf("fascinate: update machine %s state: %v", record.Name, err)
 	}
+	s.recordEventBestEffort(&record.OwnerUserID, &record.ID, "machine.create.succeeded", map[string]any{
+		"machine_name": record.Name,
+		"runtime_name": liveMachine.Name,
+		"stage":        "complete",
+		"state":        liveMachine.State,
+	})
 }
 
-func (s *Service) finishCreateFailure(record database.MachineRecord, runtimeName string, createErr error) {
+func (s *Service) finishCreateFailure(record database.MachineRecord, runtimeName, stage string, createErr error) {
 	log.Printf("fascinate: machine create failed for %s: %v", record.Name, createErr)
 	s.cleanupRuntimeMachine(runtimeName)
 
@@ -911,6 +1010,12 @@ func (s *Service) finishCreateFailure(record database.MachineRecord, runtimeName
 	if err := s.store.UpdateMachineState(persistCtx, currentRecord.ID, machineStateFailed); err != nil && !errors.Is(err, database.ErrNotFound) {
 		log.Printf("fascinate: mark machine %s failed: %v", record.Name, err)
 	}
+	s.recordEventBestEffort(&record.OwnerUserID, &record.ID, "machine.create.failed", map[string]any{
+		"machine_name": record.Name,
+		"runtime_name": runtimeName,
+		"stage":        strings.TrimSpace(stage),
+		"error":        createErr.Error(),
+	})
 }
 
 func (s *Service) finishSnapshotSuccess(record database.SnapshotRecord, runtimeSnapshot machineruntime.Snapshot) {
@@ -933,9 +1038,15 @@ func (s *Service) finishSnapshotSuccess(record database.SnapshotRecord, runtimeS
 	if err := s.store.UpdateSnapshotState(persistCtx, currentRecord.ID, snapshotStateReady); err != nil && !errors.Is(err, database.ErrNotFound) {
 		log.Printf("fascinate: update snapshot %s state: %v", record.Name, err)
 	}
+	s.recordEventBestEffort(&record.OwnerUserID, record.SourceMachineID, "snapshot.create.succeeded", map[string]any{
+		"snapshot_id":   record.ID,
+		"snapshot_name": record.Name,
+		"runtime_name":  record.RuntimeName,
+		"stage":         "complete",
+	})
 }
 
-func (s *Service) finishSnapshotFailure(record database.SnapshotRecord, snapshotErr error) {
+func (s *Service) finishSnapshotFailure(record database.SnapshotRecord, stage string, snapshotErr error) {
 	log.Printf("fascinate: snapshot create failed for %s: %v", record.Name, snapshotErr)
 
 	persistCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -951,6 +1062,13 @@ func (s *Service) finishSnapshotFailure(record database.SnapshotRecord, snapshot
 	if err := s.store.UpdateSnapshotState(persistCtx, currentRecord.ID, snapshotStateFailed); err != nil && !errors.Is(err, database.ErrNotFound) {
 		log.Printf("fascinate: mark snapshot %s failed: %v", record.Name, err)
 	}
+	s.recordEventBestEffort(&record.OwnerUserID, record.SourceMachineID, "snapshot.create.failed", map[string]any{
+		"snapshot_id":   record.ID,
+		"snapshot_name": record.Name,
+		"runtime_name":  record.RuntimeName,
+		"stage":         strings.TrimSpace(stage),
+		"error":         snapshotErr.Error(),
+	})
 }
 
 func (s *Service) restoreToolAuth(ctx context.Context, record database.MachineRecord, liveMachine machineruntime.Machine) error {
@@ -969,8 +1087,16 @@ func (s *Service) restoreToolAuth(ctx context.Context, record database.MachineRe
 	if runtimeName == "" || guestUser == "" {
 		return nil
 	}
-
-	return s.toolAuth.RestoreAll(ctx, record.OwnerUserID, runtimeName, guestUser)
+	err := s.toolAuth.RestoreAll(ctx, record.OwnerUserID, runtimeName, guestUser)
+	if err != nil {
+		s.recordEventBestEffort(&record.OwnerUserID, &record.ID, "toolauth.restore.failed", map[string]any{
+			"machine_name": record.Name,
+			"runtime_name": runtimeName,
+			"checkpoint":   "machine_create",
+			"error":        err.Error(),
+		})
+	}
+	return err
 }
 
 func (s *Service) syncToolAuthForRecord(ctx context.Context, record database.MachineRecord, exact bool) error {
@@ -1033,6 +1159,12 @@ func (s *Service) syncToolAuthFromOwnerRunningMachines(ctx context.Context, owne
 		if err := s.syncToolAuthForRecord(ctx, candidate, false); err != nil &&
 			!errors.Is(err, database.ErrNotFound) &&
 			!errors.Is(err, machineruntime.ErrMachineNotFound) {
+			s.recordEventBestEffort(&candidate.OwnerUserID, &candidate.ID, "toolauth.capture.failed", map[string]any{
+				"machine_name": candidate.Name,
+				"runtime_name": runtimeNameForRecord(candidate),
+				"checkpoint":   "pre_create_sync",
+				"error":        err.Error(),
+			})
 			log.Printf("fascinate: pre-create tool auth sync from %s: %v", candidate.Name, err)
 		}
 	}
@@ -1041,7 +1173,20 @@ func (s *Service) syncToolAuthFromOwnerRunningMachines(ctx context.Context, owne
 func (s *Service) captureToolAuthBestEffort(ctx context.Context, record database.MachineRecord) {
 	if err := s.syncToolAuthForRecord(ctx, record, true); err != nil && !errors.Is(err, database.ErrNotFound) && !errors.Is(err, machineruntime.ErrMachineNotFound) {
 		log.Printf("fascinate: capture tool auth for %s: %v", record.Name, err)
+		s.recordEventBestEffort(&record.OwnerUserID, &record.ID, "toolauth.capture.failed", map[string]any{
+			"machine_name": record.Name,
+			"runtime_name": runtimeNameForRecord(record),
+			"checkpoint":   "machine_delete",
+			"error":        err.Error(),
+		})
 	}
+}
+
+func sourceSnapshotIDValue(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return strings.TrimSpace(*value)
 }
 
 func machineStateAllowsMissingRuntime(state string) bool {

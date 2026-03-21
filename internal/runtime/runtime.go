@@ -66,7 +66,49 @@ type Snapshot struct {
 }
 
 type CreateSnapshotRequest struct {
-	MachineName   string
-	SnapshotName  string
-	ArtifactDir   string
+	MachineName  string
+	SnapshotName string
+	ArtifactDir  string
+}
+
+type MachineDiagnostics struct {
+	Machine             Machine  `json:"machine"`
+	RuntimeName         string   `json:"runtime_name"`
+	NamespaceName       string   `json:"namespace_name,omitempty"`
+	BridgeName          string   `json:"bridge_name,omitempty"`
+	TapDevice           string   `json:"tap_device,omitempty"`
+	MACAddress          string   `json:"mac_address,omitempty"`
+	DiskPath            string   `json:"disk_path,omitempty"`
+	SeedPath            string   `json:"seed_path,omitempty"`
+	LogPath             string   `json:"log_path,omitempty"`
+	SocketPath          string   `json:"socket_path,omitempty"`
+	RestoreDir          string   `json:"restore_dir,omitempty"`
+	HostVethName        string   `json:"host_veth_name,omitempty"`
+	NamespaceVethName   string   `json:"namespace_veth_name,omitempty"`
+	HostVethIPv4        string   `json:"host_veth_ipv4,omitempty"`
+	NamespaceVethIPv4   string   `json:"namespace_veth_ipv4,omitempty"`
+	VMMProcessID        int      `json:"vmm_process_id,omitempty"`
+	VMMProcessAlive     bool     `json:"vmm_process_alive"`
+	AppForwardPID       int      `json:"app_forward_pid,omitempty"`
+	AppForwardPort      int      `json:"app_forward_port,omitempty"`
+	AppForwardAlive     bool     `json:"app_forward_alive"`
+	AppForwardReachable bool     `json:"app_forward_reachable"`
+	SSHForwardPID       int      `json:"ssh_forward_pid,omitempty"`
+	SSHForwardPort      int      `json:"ssh_forward_port,omitempty"`
+	SSHForwardAlive     bool     `json:"ssh_forward_alive"`
+	SSHForwardReachable bool     `json:"ssh_forward_reachable"`
+	LogTail             []string `json:"log_tail,omitempty"`
+}
+
+type SnapshotDiagnostics struct {
+	Snapshot          Snapshot `json:"snapshot"`
+	RuntimeName       string   `json:"runtime_name"`
+	ArtifactDir       string   `json:"artifact_dir,omitempty"`
+	DiskPath          string   `json:"disk_path,omitempty"`
+	SeedPath          string   `json:"seed_path,omitempty"`
+	RestoreDir        string   `json:"restore_dir,omitempty"`
+	ArtifactDirExists bool     `json:"artifact_dir_exists"`
+	DiskExists        bool     `json:"disk_exists"`
+	SeedExists        bool     `json:"seed_exists"`
+	RestoreDirExists  bool     `json:"restore_dir_exists"`
 }

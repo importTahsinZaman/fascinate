@@ -9,27 +9,27 @@ type User struct {
 }
 
 type MachineRecord struct {
-	ID          string  `json:"id"`
-	Name        string  `json:"name"`
-	OwnerUserID string  `json:"owner_user_id"`
-	OwnerEmail  string  `json:"owner_email"`
-	RuntimeName string  `json:"runtime_name"`
-	SourceSnapshotID   *string `json:"source_snapshot_id,omitempty"`
-	State       string  `json:"state"`
-	PrimaryPort int     `json:"primary_port"`
-	CreatedAt   string  `json:"created_at"`
-	UpdatedAt   string  `json:"updated_at"`
-	DeletedAt   *string `json:"deleted_at,omitempty"`
+	ID               string  `json:"id"`
+	Name             string  `json:"name"`
+	OwnerUserID      string  `json:"owner_user_id"`
+	OwnerEmail       string  `json:"owner_email"`
+	RuntimeName      string  `json:"runtime_name"`
+	SourceSnapshotID *string `json:"source_snapshot_id,omitempty"`
+	State            string  `json:"state"`
+	PrimaryPort      int     `json:"primary_port"`
+	CreatedAt        string  `json:"created_at"`
+	UpdatedAt        string  `json:"updated_at"`
+	DeletedAt        *string `json:"deleted_at,omitempty"`
 }
 
 type CreateMachineParams struct {
-	ID          string
-	Name        string
-	OwnerUserID string
-	RuntimeName string
+	ID               string
+	Name             string
+	OwnerUserID      string
+	RuntimeName      string
 	SourceSnapshotID *string
-	State       string
-	PrimaryPort int
+	State            string
+	PrimaryPort      int
 }
 
 type SnapshotRecord struct {
@@ -84,4 +84,21 @@ type EmailCodeRecord struct {
 	ExpiresAt  string  `json:"expires_at"`
 	ConsumedAt *string `json:"consumed_at,omitempty"`
 	CreatedAt  string  `json:"created_at"`
+}
+
+type EventRecord struct {
+	ID          string  `json:"id"`
+	ActorUserID *string `json:"actor_user_id,omitempty"`
+	MachineID   *string `json:"machine_id,omitempty"`
+	Kind        string  `json:"kind"`
+	PayloadJSON string  `json:"payload_json"`
+	CreatedAt   string  `json:"created_at"`
+}
+
+type CreateEventParams struct {
+	ID          string
+	ActorUserID *string
+	MachineID   *string
+	Kind        string
+	PayloadJSON string
 }

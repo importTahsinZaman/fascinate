@@ -36,9 +36,14 @@ func archiveHasEntries(archive []byte) (bool, error) {
 
 	tarReader := tar.NewReader(gzipReader)
 	for {
-		_, err := tarReader.Next()
+		header, err := tarReader.Next()
 		if err == nil {
-			return true, nil
+			switch header.Typeflag {
+			case tar.TypeDir, tar.TypeXGlobalHeader, tar.TypeXHeader:
+				continue
+			default:
+				return true, nil
+			}
 		}
 		if err == io.EOF {
 			return false, nil

@@ -12,6 +12,7 @@ import (
 	"fascinate/internal/config"
 	"fascinate/internal/database"
 	machineruntime "fascinate/internal/runtime"
+	"fascinate/internal/toolauth"
 )
 
 type fakeRuntime struct {
@@ -47,6 +48,9 @@ type fakeToolAuth struct {
 	callOrder        []string
 	captureStarted   chan struct{}
 	captureBlock     chan struct{}
+
+	profiles        []toolauth.Profile
+	listProfilesErr error
 }
 
 func (f *fakeRuntime) HealthCheck(context.Context) error {
@@ -224,6 +228,19 @@ func (f *fakeToolAuth) CaptureAllNonDestructive(_ context.Context, userID, runti
 		<-f.captureBlock
 	}
 	return f.captureErr
+}
+
+func (f *fakeToolAuth) ListProfiles(_ context.Context, userID string) ([]toolauth.Profile, error) {
+	if f.listProfilesErr != nil {
+		return nil, f.listProfilesErr
+	}
+	var profiles []toolauth.Profile
+	for _, profile := range f.profiles {
+		if strings.TrimSpace(profile.Key.UserID) == strings.TrimSpace(userID) {
+			profiles = append(profiles, profile)
+		}
+	}
+	return profiles, nil
 }
 
 func TestServiceCreateCloneAndDeleteMachine(t *testing.T) {

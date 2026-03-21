@@ -343,6 +343,36 @@ func TestManagerCapturePersistsExactEmptyState(t *testing.T) {
 	}
 }
 
+func TestManagerCaptureTreatsDirectoryOnlyArchiveAsEmpty(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	guest := &fakeGuestTransport{
+		captureArchive: archiveWithEmptyDir(t, "/home/ubuntu/.codex"),
+	}
+	manager, err := NewManager(store, guest, CodexChatGPTAdapter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := context.Background()
+	if err := manager.CaptureAll(ctx, "user-1", "space-shooter", "ubuntu"); err != nil {
+		t.Fatal(err)
+	}
+
+	profile, _, err := store.LoadSessionState(ctx, ProfileKey{
+		UserID:       "user-1",
+		ToolID:       ToolIDCodex,
+		AuthMethodID: AuthMethodCodexChatGPT,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !profile.Empty {
+		t.Fatalf("expected directory-only archive to be treated as empty")
+	}
+}
+
 func TestManagerCaptureAllNonDestructivePreservesExistingNonEmptyState(t *testing.T) {
 	t.Parallel()
 
@@ -549,6 +579,30 @@ func archiveWithFile(t *testing.T, path, body string) []byte {
 		t.Fatal(err)
 	}
 	if _, err := tarWriter.Write(payload); err != nil {
+		t.Fatal(err)
+	}
+	if err := tarWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gzipWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	return buffer.Bytes()
+}
+
+func archiveWithEmptyDir(t *testing.T, path string) []byte {
+	t.Helper()
+
+	var buffer bytes.Buffer
+	gzipWriter := gzip.NewWriter(&buffer)
+	tarWriter := tar.NewWriter(gzipWriter)
+
+	if err := tarWriter.WriteHeader(&tar.Header{
+		Name:     path,
+		Mode:     0o700,
+		Typeflag: tar.TypeDir,
+	}); err != nil {
 		t.Fatal(err)
 	}
 	if err := tarWriter.Close(); err != nil {

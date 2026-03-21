@@ -11,8 +11,10 @@ This repo uses Go modules and Make; there is no root JavaScript package manager.
 - Build the binary: `make build`
 - Verify ops scripts: `make verify-ops`
 - Host lifecycle smoke (configured host only): `bash ops/host/smoke.sh`
+- Host workload stress (configured host only): `bash ops/host/stress.sh`
 - Snapshot smoke (configured host only): `bash ops/host/smoke-snapshots.sh`
 - Tool-auth smoke (configured host only): `bash ops/host/smoke-tool-auth.sh`
+- Host diagnostics helper: `bash ops/host/diagnostics.sh <machine|snapshot|tool-auth|events> ...`
 
 ## Testing
 - Prefer package-scoped tests first, then `go test ./...` when changes cross packages.
@@ -30,6 +32,7 @@ This repo uses Go modules and Make; there is no root JavaScript package manager.
 - `internal/tui/` — Bubble Tea dashboard and signup flows
 - `internal/toolauth/` — persisted auth adapters for Claude, Codex, and GitHub CLI
 - `ops/host/` — bootstrap, deploy, verify, and live smoke scripts
+- `docs/stress-matrix.md` — expectation matrix and live validation guidance
 - `openspec/` — current and archived change/spec history
 
 ## Code Style

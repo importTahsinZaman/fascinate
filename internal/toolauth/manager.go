@@ -76,6 +76,13 @@ func (m *Manager) CaptureAllNonDestructive(ctx context.Context, userID, runtimeN
 	return m.captureAll(ctx, userID, runtimeName, guestUser, captureModePreserveNonEmpty)
 }
 
+func (m *Manager) ListProfiles(ctx context.Context, userID string) ([]Profile, error) {
+	if m == nil || m.store == nil {
+		return nil, nil
+	}
+	return m.store.ListProfiles(ctx, userID)
+}
+
 func (m *Manager) captureAll(ctx context.Context, userID, runtimeName, guestUser string, mode captureMode) error {
 	if m == nil {
 		return nil

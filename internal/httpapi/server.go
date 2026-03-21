@@ -37,8 +37,16 @@ type machineManager interface {
 	DeleteSnapshot(context.Context, string, string) error
 }
 
+type diagnosticsManager interface {
+	GetMachineDiagnostics(context.Context, string, string) (controlplane.MachineDiagnostics, error)
+	GetSnapshotDiagnostics(context.Context, string, string) (controlplane.SnapshotDiagnostics, error)
+	GetToolAuthDiagnostics(context.Context, string) (controlplane.ToolAuthDiagnostics, error)
+	ListOwnerEvents(context.Context, string, int) ([]controlplane.Event, error)
+}
+
 func New(cfg config.Config, store *database.Store, runtime runtimeChecker, machines machineManager) http.Handler {
 	mux := http.NewServeMux()
+	diagnostics, _ := machines.(diagnosticsManager)
 
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
@@ -311,6 +319,130 @@ func New(cfg config.Config, store *database.Store, runtime runtimeChecker, machi
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
+	})
+
+	mux.HandleFunc("/v1/diagnostics/events", func(w http.ResponseWriter, r *http.Request) {
+		if diagnostics == nil {
+			http.NotFound(w, r)
+			return
+		}
+		if r.Method != http.MethodGet {
+			writeMethodNotAllowed(w, http.MethodGet)
+			return
+		}
+
+		ownerEmail, err := requiredOwnerEmail(strings.TrimSpace(r.URL.Query().Get("owner_email")))
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		limit := 50
+		if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+			value, err := strconv.Atoi(raw)
+			if err != nil || value <= 0 {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "limit must be a positive integer"})
+				return
+			}
+			limit = value
+		}
+
+		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+		defer cancel()
+
+		events, err := diagnostics.ListOwnerEvents(ctx, ownerEmail, limit)
+		if err != nil {
+			writeServiceError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"events": events})
+	})
+
+	mux.HandleFunc("/v1/diagnostics/tool-auth", func(w http.ResponseWriter, r *http.Request) {
+		if diagnostics == nil {
+			http.NotFound(w, r)
+			return
+		}
+		if r.Method != http.MethodGet {
+			writeMethodNotAllowed(w, http.MethodGet)
+			return
+		}
+
+		ownerEmail, err := requiredOwnerEmail(strings.TrimSpace(r.URL.Query().Get("owner_email")))
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+		defer cancel()
+
+		diag, err := diagnostics.GetToolAuthDiagnostics(ctx, ownerEmail)
+		if err != nil {
+			writeServiceError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, diag)
+	})
+
+	mux.HandleFunc("/v1/diagnostics/machines/", func(w http.ResponseWriter, r *http.Request) {
+		if diagnostics == nil {
+			http.NotFound(w, r)
+			return
+		}
+		if r.Method != http.MethodGet {
+			writeMethodNotAllowed(w, http.MethodGet)
+			return
+		}
+		name := strings.Trim(strings.TrimPrefix(r.URL.Path, "/v1/diagnostics/machines/"), "/")
+		if name == "" {
+			http.NotFound(w, r)
+			return
+		}
+
+		ownerEmail, err := requiredOwnerEmail(strings.TrimSpace(r.URL.Query().Get("owner_email")))
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+		defer cancel()
+
+		diag, err := diagnostics.GetMachineDiagnostics(ctx, name, ownerEmail)
+		if err != nil {
+			writeServiceError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, diag)
+	})
+
+	mux.HandleFunc("/v1/diagnostics/snapshots/", func(w http.ResponseWriter, r *http.Request) {
+		if diagnostics == nil {
+			http.NotFound(w, r)
+			return
+		}
+		if r.Method != http.MethodGet {
+			writeMethodNotAllowed(w, http.MethodGet)
+			return
+		}
+		name := strings.Trim(strings.TrimPrefix(r.URL.Path, "/v1/diagnostics/snapshots/"), "/")
+		if name == "" {
+			http.NotFound(w, r)
+			return
+		}
+
+		ownerEmail, err := requiredOwnerEmail(strings.TrimSpace(r.URL.Query().Get("owner_email")))
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+		defer cancel()
+
+		diag, err := diagnostics.GetSnapshotDiagnostics(ctx, name, ownerEmail)
+		if err != nil {
+			writeServiceError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, diag)
 	})
 
 	return withMachineProxy(cfg, machines, mux)

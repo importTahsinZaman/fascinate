@@ -38,30 +38,47 @@ func (f *fakeRuntime) ListMachines(context.Context) ([]machineruntime.Machine, e
 }
 
 type fakeMachineManager struct {
-	listOwnerEmail string
-	listResult     []controlplane.Machine
-	listErr        error
-	getOwnerEmail  string
-	getResult      controlplane.Machine
-	getErr         error
-	createInput    controlplane.CreateMachineInput
-	createResult   controlplane.Machine
-	createErr      error
-	deleteName     string
-	deleteOwner    string
-	deleteErr      error
-	cloneInput     controlplane.CloneMachineInput
-	cloneResult    controlplane.Machine
-	cloneErr       error
-	listSnapshotsOwner string
+	listOwnerEmail      string
+	listResult          []controlplane.Machine
+	listErr             error
+	getOwnerEmail       string
+	getResult           controlplane.Machine
+	getErr              error
+	createInput         controlplane.CreateMachineInput
+	createResult        controlplane.Machine
+	createErr           error
+	deleteName          string
+	deleteOwner         string
+	deleteErr           error
+	cloneInput          controlplane.CloneMachineInput
+	cloneResult         controlplane.Machine
+	cloneErr            error
+	listSnapshotsOwner  string
 	listSnapshotsResult []controlplane.Snapshot
-	listSnapshotsErr error
-	createSnapshotInput controlplane.CreateSnapshotInput
+	listSnapshotsErr    error
+
+	createSnapshotInput  controlplane.CreateSnapshotInput
 	createSnapshotResult controlplane.Snapshot
-	createSnapshotErr error
-	deleteSnapshotName string
-	deleteSnapshotOwner string
-	deleteSnapshotErr error
+	createSnapshotErr    error
+	deleteSnapshotName   string
+	deleteSnapshotOwner  string
+	deleteSnapshotErr    error
+
+	diagMachineOwner   string
+	diagMachineName    string
+	diagMachineResult  controlplane.MachineDiagnostics
+	diagMachineErr     error
+	diagSnapshotOwner  string
+	diagSnapshotName   string
+	diagSnapshotResult controlplane.SnapshotDiagnostics
+	diagSnapshotErr    error
+	diagToolAuthOwner  string
+	diagToolAuthResult controlplane.ToolAuthDiagnostics
+	diagToolAuthErr    error
+	diagEventsOwner    string
+	diagEventsLimit    int
+	diagEventsResult   []controlplane.Event
+	diagEventsErr      error
 }
 
 func (f *fakeMachineManager) ListMachines(_ context.Context, ownerEmail string) ([]controlplane.Machine, error) {
@@ -129,6 +146,41 @@ func (f *fakeMachineManager) DeleteSnapshot(_ context.Context, name, ownerEmail 
 	f.deleteSnapshotName = name
 	f.deleteSnapshotOwner = ownerEmail
 	return f.deleteSnapshotErr
+}
+
+func (f *fakeMachineManager) GetMachineDiagnostics(_ context.Context, name, ownerEmail string) (controlplane.MachineDiagnostics, error) {
+	f.diagMachineName = name
+	f.diagMachineOwner = ownerEmail
+	if f.diagMachineErr != nil {
+		return controlplane.MachineDiagnostics{}, f.diagMachineErr
+	}
+	return f.diagMachineResult, nil
+}
+
+func (f *fakeMachineManager) GetSnapshotDiagnostics(_ context.Context, name, ownerEmail string) (controlplane.SnapshotDiagnostics, error) {
+	f.diagSnapshotName = name
+	f.diagSnapshotOwner = ownerEmail
+	if f.diagSnapshotErr != nil {
+		return controlplane.SnapshotDiagnostics{}, f.diagSnapshotErr
+	}
+	return f.diagSnapshotResult, nil
+}
+
+func (f *fakeMachineManager) GetToolAuthDiagnostics(_ context.Context, ownerEmail string) (controlplane.ToolAuthDiagnostics, error) {
+	f.diagToolAuthOwner = ownerEmail
+	if f.diagToolAuthErr != nil {
+		return controlplane.ToolAuthDiagnostics{}, f.diagToolAuthErr
+	}
+	return f.diagToolAuthResult, nil
+}
+
+func (f *fakeMachineManager) ListOwnerEvents(_ context.Context, ownerEmail string, limit int) ([]controlplane.Event, error) {
+	f.diagEventsOwner = ownerEmail
+	f.diagEventsLimit = limit
+	if f.diagEventsErr != nil {
+		return nil, f.diagEventsErr
+	}
+	return f.diagEventsResult, nil
 }
 
 func TestListMachinesEndpointPassesOwnerEmail(t *testing.T) {
@@ -260,6 +312,95 @@ func TestDeleteMachineEndpointCallsManager(t *testing.T) {
 	}
 	if manager.deleteOwner != "dev@example.com" {
 		t.Fatalf("expected delete owner dev@example.com, got %q", manager.deleteOwner)
+	}
+}
+
+func TestDiagnosticsEventsEndpointCallsManager(t *testing.T) {
+	t.Parallel()
+
+	manager := &fakeMachineManager{
+		diagEventsResult: []controlplane.Event{{ID: "event-1", Kind: "machine.create.succeeded"}},
+	}
+	handler := newTestHandler(t, &fakeRuntime{}, manager)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/diagnostics/events?owner_email=dev@example.com&limit=25", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	if manager.diagEventsOwner != "dev@example.com" || manager.diagEventsLimit != 25 {
+		t.Fatalf("unexpected diagnostics events args: owner=%q limit=%d", manager.diagEventsOwner, manager.diagEventsLimit)
+	}
+	if !strings.Contains(rec.Body.String(), "machine.create.succeeded") {
+		t.Fatalf("expected event body, got %q", rec.Body.String())
+	}
+}
+
+func TestDiagnosticsMachineEndpointCallsManager(t *testing.T) {
+	t.Parallel()
+
+	manager := &fakeMachineManager{
+		diagMachineResult: controlplane.MachineDiagnostics{
+			Machine: controlplane.Machine{Name: "habits", OwnerEmail: "dev@example.com"},
+		},
+	}
+	handler := newTestHandler(t, &fakeRuntime{}, manager)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/diagnostics/machines/habits?owner_email=dev@example.com", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	if manager.diagMachineOwner != "dev@example.com" || manager.diagMachineName != "habits" {
+		t.Fatalf("unexpected machine diagnostics args: owner=%q name=%q", manager.diagMachineOwner, manager.diagMachineName)
+	}
+}
+
+func TestDiagnosticsSnapshotEndpointCallsManager(t *testing.T) {
+	t.Parallel()
+
+	manager := &fakeMachineManager{
+		diagSnapshotResult: controlplane.SnapshotDiagnostics{
+			Snapshot: controlplane.Snapshot{Name: "baseline", OwnerEmail: "dev@example.com"},
+		},
+	}
+	handler := newTestHandler(t, &fakeRuntime{}, manager)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/diagnostics/snapshots/baseline?owner_email=dev@example.com", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	if manager.diagSnapshotOwner != "dev@example.com" || manager.diagSnapshotName != "baseline" {
+		t.Fatalf("unexpected snapshot diagnostics args: owner=%q name=%q", manager.diagSnapshotOwner, manager.diagSnapshotName)
+	}
+}
+
+func TestDiagnosticsToolAuthEndpointCallsManager(t *testing.T) {
+	t.Parallel()
+
+	manager := &fakeMachineManager{
+		diagToolAuthResult: controlplane.ToolAuthDiagnostics{
+			OwnerEmail: "dev@example.com",
+		},
+	}
+	handler := newTestHandler(t, &fakeRuntime{}, manager)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/diagnostics/tool-auth?owner_email=dev@example.com", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	if manager.diagToolAuthOwner != "dev@example.com" {
+		t.Fatalf("unexpected tool-auth diagnostics owner: %q", manager.diagToolAuthOwner)
 	}
 }
 
