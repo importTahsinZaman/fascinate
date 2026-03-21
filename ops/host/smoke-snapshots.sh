@@ -151,6 +151,71 @@ wait_for_route_body() {
   exit 1
 }
 
+machine_runtime_dir() {
+  local name="$1"
+  printf '/var/lib/fascinate/machines/%s' "${name}"
+}
+
+snapshot_runtime_dir() {
+  local name="$1"
+  local runtime_name
+  runtime_name="$(sqlite3 "${FASCINATE_DB_PATH}" "select runtime_name from snapshots where name='${name}' order by created_at desc limit 1;")"
+  if [[ -z "${runtime_name}" ]]; then
+    runtime_name="${name}"
+  fi
+  printf '/var/lib/fascinate/snapshots/%s' "${runtime_name}"
+}
+
+guest_boot_id() {
+  local host="$1"
+  local port="$2"
+  run_guest_command "${host}" "${port}" "cat /proc/sys/kernel/random/boot_id"
+}
+
+guest_http_server_signature() {
+  local host="$1"
+  local port="$2"
+  run_guest_command "${host}" "${port}" "ps -eo pid=,args= --sort=pid | grep '[p]ython3 -m http.server 3000 --bind 0.0.0.0 --directory /home/ubuntu/fascinate-snapshot-smoke' | tr -s ' '"
+}
+
+wait_for_machine_deleted() {
+  local name="$1"
+  local attempts=30
+
+  while (( attempts > 0 )); do
+    if ! curl -fsS "$(api_url "/v1/machines/${name}?owner_email=${SMOKE_EMAIL}")" >/dev/null 2>&1; then
+      if [[ ! -d "$(machine_runtime_dir "${name}")" ]]; then
+        return 0
+      fi
+    fi
+    attempts=$((attempts - 1))
+    sleep 2
+  done
+
+  echo "machine ${name} was not deleted cleanly" >&2
+  exit 1
+}
+
+wait_for_snapshot_deleted() {
+  local name="$1"
+  local attempts=30
+  local artifact_dir
+  artifact_dir="$(snapshot_runtime_dir "${name}")"
+
+  while (( attempts > 0 )); do
+    local state
+    state="$(snapshot_state "${name}" 2>/dev/null || true)"
+    if [[ -z "${state}" && ! -d "${artifact_dir}" ]]; then
+      return 0
+    fi
+    attempts=$((attempts - 1))
+    sleep 2
+  done
+
+  echo "snapshot ${name} was not deleted cleanly" >&2
+  exit 1
+}
+
 create_machine() {
   local name="$1"
   local snapshot_name="${2:-}"
@@ -172,7 +237,7 @@ create_machine() {
 main() {
   require_root
 
-  for command_name in curl jq grep; do
+  for command_name in curl jq grep sqlite3; do
     require_command "${command_name}"
   done
 
@@ -202,7 +267,7 @@ main() {
   read -r source_host source_port <<<"$(wait_for_machine_ready "${SOURCE_NAME}")"
 
   echo "starting long-lived app on ${SOURCE_NAME}"
-  run_guest_command "${source_host}" "${source_port}" "python3 -c \"import pathlib, subprocess; root=pathlib.Path('/home/ubuntu/fascinate-snapshot-smoke'); root.mkdir(parents=True, exist_ok=True); (root / 'index.html').write_text('snapshot-smoke-${SOURCE_NAME}'); log=open('/tmp/fascinate-snapshot-smoke.log','ab', buffering=0); subprocess.Popen(['python3','-m','http.server','3000','--bind','0.0.0.0','--directory',str(root)], stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, start_new_session=True); print('started')\""
+  run_guest_command "${source_host}" "${source_port}" "python3 -c \"import pathlib, subprocess; root=pathlib.Path('/home/ubuntu/fascinate-snapshot-smoke'); root.mkdir(parents=True, exist_ok=True); (root / 'index.html').write_text('snapshot-smoke-${SOURCE_NAME}'); log=open('/tmp/fascinate-snapshot-smoke.log','ab', buffering=0); proc=subprocess.Popen(['python3','-m','http.server','3000','--bind','0.0.0.0','--directory',str(root)], stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, start_new_session=True); pathlib.Path('/tmp/fascinate-snapshot-smoke.pid').write_text(str(proc.pid)); print('started')\""
   wait_for_route_body "${SOURCE_NAME}" "snapshot-smoke-${SOURCE_NAME}"
 
   echo "saving snapshot ${SNAPSHOT_NAME}"
@@ -215,7 +280,8 @@ main() {
 
   echo "restoring ${RESTORE_NAME} from ${SNAPSHOT_NAME}"
   create_machine "${RESTORE_NAME}" "${SNAPSHOT_NAME}"
-  wait_for_machine_ready "${RESTORE_NAME}" >/dev/null
+  local restore_host restore_port
+  read -r restore_host restore_port <<<"$(wait_for_machine_ready "${RESTORE_NAME}")"
   wait_for_route_body "${RESTORE_NAME}" "snapshot-smoke-${SOURCE_NAME}"
 
   echo "cloning ${SOURCE_NAME} to ${CLONE_NAME}"
@@ -224,8 +290,57 @@ main() {
     -H 'Content-Type: application/json' \
     -d "{\"target_name\":\"${CLONE_NAME}\",\"owner_email\":\"${SMOKE_EMAIL}\"}" \
     "$(api_url "/v1/machines/${SOURCE_NAME}/clone")" >/dev/null
-  wait_for_machine_ready "${CLONE_NAME}" >/dev/null
+  local clone_host clone_port
+  read -r clone_host clone_port <<<"$(wait_for_machine_ready "${CLONE_NAME}")"
   wait_for_route_body "${CLONE_NAME}" "snapshot-smoke-${SOURCE_NAME}"
+
+  echo "verifying restored runtime identity"
+  local source_boot_id restore_boot_id clone_boot_id
+  source_boot_id="$(guest_boot_id "${source_host}" "${source_port}")"
+  restore_boot_id="$(guest_boot_id "${restore_host}" "${restore_port}")"
+  clone_boot_id="$(guest_boot_id "${clone_host}" "${clone_port}")"
+  if [[ "${source_boot_id}" != "${restore_boot_id}" || "${source_boot_id}" != "${clone_boot_id}" ]]; then
+    echo "snapshot boot IDs diverged: source=${source_boot_id} restore=${restore_boot_id} clone=${clone_boot_id}" >&2
+    exit 1
+  fi
+
+  local source_sig restore_sig clone_sig
+  source_sig="$(guest_http_server_signature "${source_host}" "${source_port}")"
+  restore_sig="$(guest_http_server_signature "${restore_host}" "${restore_port}")"
+  clone_sig="$(guest_http_server_signature "${clone_host}" "${clone_port}")"
+  if [[ -z "${source_sig}" || "${source_sig}" != "${restore_sig}" || "${source_sig}" != "${clone_sig}" ]]; then
+    echo "snapshot process signatures diverged" >&2
+    printf 'source=%s\nrestore=%s\nclone=%s\n' "${source_sig}" "${restore_sig}" "${clone_sig}" >&2
+    exit 1
+  fi
+
+  echo "verifying clone independence after source mutation"
+  run_guest_command "${source_host}" "${source_port}" "printf 'snapshot-mutated-${SOURCE_NAME}\n' >/home/ubuntu/fascinate-snapshot-smoke/index.html"
+  wait_for_route_body "${SOURCE_NAME}" "snapshot-mutated-${SOURCE_NAME}"
+  wait_for_route_body "${RESTORE_NAME}" "snapshot-smoke-${SOURCE_NAME}"
+  wait_for_route_body "${CLONE_NAME}" "snapshot-smoke-${SOURCE_NAME}"
+
+  echo "restarting fascinate"
+  systemctl restart fascinate
+  sleep 2
+  curl -fsS "http://${FASCINATE_HTTP_ADDR}/healthz" >/dev/null
+  wait_for_route_body "${SOURCE_NAME}" "snapshot-mutated-${SOURCE_NAME}"
+  wait_for_route_body "${RESTORE_NAME}" "snapshot-smoke-${SOURCE_NAME}"
+  wait_for_route_body "${CLONE_NAME}" "snapshot-smoke-${SOURCE_NAME}"
+
+  echo "verifying clone independence after source shutdown"
+  run_guest_command "${source_host}" "${source_port}" "kill \$(cat /tmp/fascinate-snapshot-smoke.pid)"
+  wait_for_route_body "${SOURCE_NAME}" "No services detected"
+  wait_for_route_body "${RESTORE_NAME}" "snapshot-smoke-${SOURCE_NAME}"
+  wait_for_route_body "${CLONE_NAME}" "snapshot-smoke-${SOURCE_NAME}"
+
+  echo "cleaning up snapshot smoke artifacts"
+  cleanup
+  trap - EXIT
+  wait_for_machine_deleted "${CLONE_NAME}"
+  wait_for_machine_deleted "${RESTORE_NAME}"
+  wait_for_machine_deleted "${SOURCE_NAME}"
+  wait_for_snapshot_deleted "${SNAPSHOT_NAME}"
 
   echo "snapshot smoke passed"
 }
