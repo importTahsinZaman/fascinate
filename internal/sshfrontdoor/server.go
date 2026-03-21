@@ -691,10 +691,10 @@ func tutorialShellCommand() string {
 func guestShellCommand() string {
 	return strings.Join([]string{
 		"if command -v gh >/dev/null 2>&1 && ! gh auth status --hostname github.com >/dev/null 2>&1; then",
-		`printf '\nGitHub not connected. For private GitHub repos, run: gh auth login && gh auth setup-git\n\n'`,
+		`  printf '\nGitHub not connected. For private GitHub repos, run: gh auth login && gh auth setup-git\n\n'`,
 		"fi",
 		"if command -v bash >/dev/null 2>&1; then exec bash -l; else exec sh -l; fi",
-	}, " ")
+	}, "\n")
 }
 
 func (s *Server) runGuestCommand(channel ssh.Channel, requests <-chan *ssh.Request, size windowSize, machine controlplane.Machine, shellCommand string) error {

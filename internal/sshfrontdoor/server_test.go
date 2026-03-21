@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"io"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -447,6 +448,15 @@ func TestGuestShellCommandIncludesGitHubAuthHint(t *testing.T) {
 	}
 	if !bytes.Contains([]byte(command), []byte("gh auth status --hostname github.com")) {
 		t.Fatalf("expected guest shell command to probe gh auth state, got %q", command)
+	}
+}
+
+func TestGuestShellCommandIsShellValid(t *testing.T) {
+	t.Parallel()
+
+	cmd := exec.Command("bash", "-n", "-c", guestShellCommand())
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("guest shell command should parse as shell, got %v: %s", err, strings.TrimSpace(string(output)))
 	}
 }
 
