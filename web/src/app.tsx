@@ -100,6 +100,7 @@ function LoginView({ onVerified }: { onVerified: () => void }) {
         <div className="login-actions">
           {!requested ? (
             <button
+              className="button-primary"
               onClick={() => requestCodeMutation.mutate(email)}
               disabled={!email || requestCodeMutation.isPending}
             >
@@ -107,6 +108,7 @@ function LoginView({ onVerified }: { onVerified: () => void }) {
             </button>
           ) : (
             <button
+              className="button-primary"
               onClick={() => verifyMutation.mutate({ email, code })}
               disabled={!email || !code || verifyMutation.isPending}
             >
@@ -350,6 +352,7 @@ function CommandCenter({ email }: { email: string }) {
                 </select>
               </label>
               <button
+                className="button-primary"
                 onClick={() => createMachineMutation.mutate({ name: machineName, snapshotName: snapshotSource || undefined })}
                 disabled={!machineName || createMachineMutation.isPending}
               >
@@ -376,6 +379,7 @@ function CommandCenter({ email }: { email: string }) {
                 <input value={cloneTarget} onChange={(event) => setCloneTarget(event.target.value)} placeholder="m-1-v2" />
               </label>
               <button
+                className="button-primary"
                 onClick={() => cloneMachineMutation.mutate({ source: cloneSource, target: cloneTarget })}
                 disabled={!cloneSource || !cloneTarget || cloneMachineMutation.isPending}
               >
@@ -434,6 +438,7 @@ function CommandCenter({ email }: { email: string }) {
                 <input value={snapshotName} onChange={(event) => setSnapshotName(event.target.value)} placeholder="m-1-snapshot" />
               </label>
               <button
+                className="button-primary"
                 onClick={() => createSnapshotMutation.mutate({ machine: snapshotMachine, name: snapshotName })}
                 disabled={!snapshotMachine || !snapshotName || createSnapshotMutation.isPending}
               >
@@ -460,6 +465,7 @@ function CommandCenter({ email }: { email: string }) {
                 <input value={restoreTarget} onChange={(event) => setRestoreTarget(event.target.value)} placeholder="snapshot-vm" />
               </label>
               <button
+                className="button-primary"
                 onClick={() => createMachineMutation.mutate({ name: restoreTarget, snapshotName: restoreSnapshot })}
                 disabled={!restoreSnapshot || !restoreTarget || createMachineMutation.isPending}
               >
@@ -518,6 +524,7 @@ function CommandCenter({ email }: { email: string }) {
                 />
               </label>
               <button
+                className="button-primary"
                 onClick={() => setEnvMutation.mutate(envForm)}
                 disabled={!envForm.key || !envForm.value || setEnvMutation.isPending}
               >

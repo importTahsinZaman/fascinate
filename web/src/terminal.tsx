@@ -57,9 +57,13 @@ export function TerminalView({ machineName, title, sessionId, onSessionId }: Pro
       cursorBlink: true,
       scrollback: 3000,
       fontSize: 13,
+      fontFamily: '"SF Mono", "SFMono-Regular", ui-monospace, Menlo, Consolas, monospace',
       theme: {
-        background: "#111111",
-        foreground: "#f5f2e8",
+        background: "#121212",
+        foreground: "#f3f1eb",
+        cursor: "#f3f1eb",
+        cursorAccent: "#121212",
+        selectionBackground: "rgba(255, 255, 255, 0.14)",
       },
     });
     const fitAddon = new FitAddon();
