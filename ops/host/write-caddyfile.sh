@@ -29,8 +29,6 @@ mkdir -p "$(dirname "${OUTPUT_PATH}")"
   echo "}"
   echo
   printf "https://%s {\n" "${BASE_DOMAIN}"
-  echo "  @private_api path /v1 /v1/*"
-  echo "  respond @private_api 404"
   printf "  reverse_proxy %s\n" "${HTTP_ADDR}"
   echo "}"
   echo

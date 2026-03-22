@@ -7,11 +7,27 @@ REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
 INSTALL_DIR="${FASCINATE_INSTALL_DIR:-/opt/fascinate}"
 BIN_DIR="${INSTALL_DIR}/bin"
 BINARY_PATH="${BIN_DIR}/fascinate"
+WEB_SOURCE_DIR="${REPO_ROOT}/web"
+WEB_DIST_SOURCE_DIR="${WEB_SOURCE_DIR}/dist"
+WEB_DIST_TARGET_DIR="${INSTALL_DIR}/web/dist"
 CONFIG_DIR="${FASCINATE_CONFIG_DIR:-/etc/fascinate}"
 ENV_FILE="${FASCINATE_ENV_FILE:-${CONFIG_DIR}/fascinate.env}"
 DATA_DIR="${FASCINATE_DATA_DIR:-/var/lib/fascinate}"
 SERVICE_PATH="${FASCINATE_SERVICE_PATH:-/etc/systemd/system/fascinate.service}"
 OVERWRITE_ENV="${FASCINATE_OVERWRITE_ENV:-0}"
+
+resolve_pnpm() {
+  if command -v pnpm >/dev/null 2>&1; then
+    printf 'pnpm'
+    return
+  fi
+  if command -v corepack >/dev/null 2>&1; then
+    printf 'corepack pnpm'
+    return
+  fi
+  echo "pnpm or corepack is required to build the web app" >&2
+  exit 1
+}
 
 default_host_id() {
   if [[ -n "${FASCINATE_HOST_ID:-}" ]]; then
@@ -45,7 +61,7 @@ quote_env_value() {
 write_env_file() {
   mkdir -p "${CONFIG_DIR}" "${DATA_DIR}" "${DATA_DIR}/images" "${DATA_DIR}/machines" "${DATA_DIR}/snapshots"
 
-  cat >"${ENV_FILE}" <<EOF
+  cat >"${ENV_FILE}" <<EOF_ENV
 FASCINATE_HTTP_ADDR=$(quote_env_value "${FASCINATE_HTTP_ADDR:-127.0.0.1:8080}")
 FASCINATE_SSH_ADDR=$(quote_env_value "${FASCINATE_SSH_ADDR:-0.0.0.0:2222}")
 FASCINATE_DATA_DIR=$(quote_env_value "${DATA_DIR}")
@@ -88,13 +104,34 @@ FASCINATE_EMAIL_FROM=$(quote_env_value "${FASCINATE_EMAIL_FROM:-}")
 FASCINATE_RESEND_BASE_URL=$(quote_env_value "${FASCINATE_RESEND_BASE_URL:-https://api.resend.com}")
 FASCINATE_SIGNUP_CODE_TTL=$(quote_env_value "${FASCINATE_SIGNUP_CODE_TTL:-15m}")
 FASCINATE_ACME_EMAIL=$(quote_env_value "${FASCINATE_ACME_EMAIL:-}")
-EOF
+FASCINATE_WEB_DIST_DIR=$(quote_env_value "${FASCINATE_WEB_DIST_DIR:-${WEB_DIST_TARGET_DIR}}")
+EOF_ENV
 }
 
 install_binary() {
   mkdir -p "${BIN_DIR}" "${DATA_DIR}"
   (cd "${REPO_ROOT}" && go build -o "${BINARY_PATH}" ./cmd/fascinate)
   chmod 0755 "${BINARY_PATH}"
+}
+
+build_web_dist() {
+  if [[ -f "${WEB_DIST_SOURCE_DIR}/index.html" ]]; then
+    return 0
+  fi
+  local pnpm_cmd
+  pnpm_cmd="$(resolve_pnpm)"
+  (
+    cd "${WEB_SOURCE_DIR}"
+    eval "${pnpm_cmd} install --frozen-lockfile"
+    eval "${pnpm_cmd} build"
+  )
+}
+
+install_web_dist() {
+  build_web_dist
+  rm -rf "${WEB_DIST_TARGET_DIR}"
+  mkdir -p "${WEB_DIST_TARGET_DIR}"
+  cp -R "${WEB_DIST_SOURCE_DIR}/." "${WEB_DIST_TARGET_DIR}/"
 }
 
 install_systemd_unit() {
@@ -118,6 +155,7 @@ maybe_open_firewall_port() {
 main() {
   require_root
   install_binary
+  install_web_dist
   install_systemd_unit
 
   if [[ ! -f "${ENV_FILE}" || "${OVERWRITE_ENV}" == "1" ]]; then

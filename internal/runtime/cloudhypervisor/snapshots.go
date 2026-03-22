@@ -190,7 +190,7 @@ func (m *Manager) restoreMachineFromSnapshot(ctx context.Context, snapshotName s
 		return machineruntime.Machine{}, err
 	}
 
-	if err := m.copyDisk(ctx, snapshotMeta.DiskPath, targetMeta.DiskPath); err != nil {
+	if err := m.materializeSnapshotDisk(ctx, snapshotMeta.DiskPath, targetMeta.DiskPath); err != nil {
 		_ = os.RemoveAll(targetDir)
 		return machineruntime.Machine{}, err
 	}

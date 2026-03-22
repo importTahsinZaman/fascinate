@@ -370,6 +370,54 @@ func TestCopyDiskPrefersSparseFilesystemCopy(t *testing.T) {
 	}
 }
 
+func TestMaterializeSnapshotDiskUsesQemuImgConvert(t *testing.T) {
+	tempDir := t.TempDir()
+	argsPath := filepath.Join(tempDir, "args.txt")
+	sourcePath := filepath.Join(tempDir, "source.qcow2")
+	targetPath := filepath.Join(tempDir, "nested", "target.qcow2")
+	scriptPath := filepath.Join(tempDir, "qemu-img")
+
+	if err := os.WriteFile(sourcePath, []byte("snapshot-disk"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	script := "#!/bin/sh\n" +
+		"printf '%s\\n' \"$@\" > \"" + argsPath + "\"\n" +
+		"mkdir -p \"$(dirname \"$5\")\"\n" +
+		"/bin/cp \"$4\" \"$5\"\n"
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	manager := &Manager{qemuImgBinary: scriptPath}
+	if err := manager.materializeSnapshotDisk(context.Background(), sourcePath, targetPath); err != nil {
+		t.Fatal(err)
+	}
+
+	targetBytes, err := os.ReadFile(targetPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(targetBytes) != "snapshot-disk" {
+		t.Fatalf("expected materialized disk bytes, got %q", string(targetBytes))
+	}
+
+	argsBytes, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := strings.Fields(string(argsBytes))
+	want := []string{"convert", "-O", "qcow2", sourcePath, targetPath}
+	if len(got) != len(want) {
+		t.Fatalf("unexpected qemu-img args %q", got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("qemu-img arg %d = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
 func TestStoreSnapshotMetadataAtWritesSnapshotFile(t *testing.T) {
 	t.Parallel()
 

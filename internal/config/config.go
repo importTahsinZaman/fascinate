@@ -13,6 +13,7 @@ type Config struct {
 	SSHAddr               string
 	DataDir               string
 	DBPath                string
+	WebDistDir            string
 	BaseDomain            string
 	AdminEmails           []string
 	HostID                string
@@ -50,6 +51,9 @@ type Config struct {
 	ResendBaseURL         string
 	EmailFrom             string
 	SignupCodeTTL         time.Duration
+	WebSessionTTL         time.Duration
+	WebSessionCookieName  string
+	TerminalSessionTTL    time.Duration
 }
 
 func Load() Config {
@@ -104,6 +108,7 @@ func Load() Config {
 		SSHAddr:               getenv("FASCINATE_SSH_ADDR", "127.0.0.1:2222"),
 		DataDir:               dataDir,
 		DBPath:                dbPath,
+		WebDistDir:            getenv("FASCINATE_WEB_DIST_DIR", "./web/dist"),
 		BaseDomain:            getenv("FASCINATE_BASE_DOMAIN", ""),
 		AdminEmails:           splitCSV(getenv("FASCINATE_ADMIN_EMAILS", "")),
 		HostID:                hostID,
@@ -141,6 +146,9 @@ func Load() Config {
 		ResendBaseURL:         getenv("FASCINATE_RESEND_BASE_URL", "https://api.resend.com"),
 		EmailFrom:             getenv("FASCINATE_EMAIL_FROM", ""),
 		SignupCodeTTL:         getenvDuration("FASCINATE_SIGNUP_CODE_TTL", 15*time.Minute),
+		WebSessionTTL:         getenvDuration("FASCINATE_WEB_SESSION_TTL", 30*24*time.Hour),
+		WebSessionCookieName:  getenv("FASCINATE_WEB_SESSION_COOKIE_NAME", "fascinate_session"),
+		TerminalSessionTTL:    getenvDuration("FASCINATE_TERMINAL_SESSION_TTL", 5*time.Minute),
 	}
 }
 

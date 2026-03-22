@@ -11,6 +11,8 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
+	"fascinate/internal/browserauth"
+	"fascinate/internal/browserterm"
 	"fascinate/internal/config"
 	"fascinate/internal/controlplane"
 	"fascinate/internal/database"
@@ -86,14 +88,16 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 		return nil, err
 	}
 	reconcileCancel()
-	handler := httpapi.New(cfg, store, runtimeClient, controlPlane)
 	emailClient := email.NewResendClient(cfg.ResendBaseURL, cfg.ResendAPIKey, cfg.EmailFrom)
 	signupService := signup.New(cfg, store, emailClient)
+	browserAuth := browserauth.New(cfg, store, emailClient)
+	terminalGateway := browserterm.New(cfg, controlPlane)
 	sshServer, err := sshfrontdoor.New(cfg, store, controlPlane, signupService)
 	if err != nil {
 		store.Close()
 		return nil, err
 	}
+	handler := httpapi.New(cfg, store, runtimeClient, controlPlane, browserAuth, terminalGateway)
 
 	httpServer := &http.Server{
 		Addr:              cfg.HTTPAddr,

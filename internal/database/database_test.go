@@ -293,3 +293,107 @@ func TestUserEnvVarLifecycle(t *testing.T) {
 		t.Fatalf("expected ErrNotFound after delete, got %v", err)
 	}
 }
+
+func TestWebSessionLifecycle(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, err := Open(ctx, filepath.Join(t.TempDir(), "fascinate.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	if err := store.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	user, err := store.UpsertUser(ctx, "dev@example.com", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	record, err := store.CreateWebSession(ctx, CreateWebSessionParams{
+		UserID:    user.ID,
+		TokenHash: "token-hash",
+		ExpiresAt: "2099-01-01 00:00:00",
+		UserAgent: "Vitest",
+		IPAddress: "127.0.0.1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.UserEmail != "dev@example.com" {
+		t.Fatalf("unexpected session owner %q", record.UserEmail)
+	}
+
+	record, err = store.GetActiveWebSessionByTokenHash(ctx, "token-hash")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.LastSeenAt == "" {
+		t.Fatalf("expected last_seen_at to be populated")
+	}
+
+	if err := store.TouchWebSession(ctx, record.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RevokeWebSession(ctx, record.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.GetActiveWebSessionByTokenHash(ctx, "token-hash"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected revoked session to disappear, got %v", err)
+	}
+}
+
+func TestWorkspaceLayoutLifecycle(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, err := Open(ctx, filepath.Join(t.TempDir(), "fascinate.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	if err := store.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	user, err := store.UpsertUser(ctx, "dev@example.com", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	record, err := store.UpsertWorkspaceLayout(ctx, UpsertWorkspaceLayoutParams{
+		UserID:     user.ID,
+		Name:       "default",
+		LayoutJSON: `{"version":1,"windows":[{"id":"one"}]}`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.Name != "default" {
+		t.Fatalf("unexpected layout name %q", record.Name)
+	}
+
+	record, err = store.UpsertWorkspaceLayout(ctx, UpsertWorkspaceLayoutParams{
+		UserID:     user.ID,
+		Name:       "default",
+		LayoutJSON: `{"version":1,"windows":[{"id":"two"}]}`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.LayoutJSON != `{"version":1,"windows":[{"id":"two"}]}` {
+		t.Fatalf("unexpected layout json %q", record.LayoutJSON)
+	}
+
+	record, err = store.GetWorkspaceLayout(ctx, user.ID, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.UserEmail != "dev@example.com" {
+		t.Fatalf("unexpected layout owner %q", record.UserEmail)
+	}
+}

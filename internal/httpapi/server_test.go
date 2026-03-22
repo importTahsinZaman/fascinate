@@ -13,7 +13,10 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
+	"fascinate/internal/browserauth"
+	"fascinate/internal/browserterm"
 	"fascinate/internal/config"
 	"fascinate/internal/controlplane"
 	"fascinate/internal/database"
@@ -94,6 +97,90 @@ type fakeMachineManager struct {
 	diagEventsLimit    int
 	diagEventsResult   []controlplane.Event
 	diagEventsErr      error
+}
+
+type fakeBrowserAuth struct {
+	requestEmail string
+	verifyEmail  string
+	verifyCode   string
+	token        string
+	session      browserauth.Session
+	authErr      error
+}
+
+func (f *fakeBrowserAuth) Enabled() bool {
+	return true
+}
+
+func (f *fakeBrowserAuth) RequestCode(_ context.Context, email string) error {
+	f.requestEmail = email
+	return nil
+}
+
+func (f *fakeBrowserAuth) VerifyCode(_ context.Context, email, code, _ string, _ string) (browserauth.Session, error) {
+	f.verifyEmail = email
+	f.verifyCode = code
+	return f.session, f.authErr
+}
+
+func (f *fakeBrowserAuth) Authenticate(_ context.Context, rawToken string) (database.User, database.WebSessionRecord, error) {
+	if f.authErr != nil {
+		return database.User{}, database.WebSessionRecord{}, f.authErr
+	}
+	if rawToken != f.token {
+		return database.User{}, database.WebSessionRecord{}, database.ErrNotFound
+	}
+	return f.session.User, f.session.Record, nil
+}
+
+func (f *fakeBrowserAuth) Logout(context.Context, string) error {
+	return nil
+}
+
+type fakeTerminalManager struct {
+	userEmail   string
+	machineName string
+	sessionID   string
+	cols        int
+	rows        int
+	init        browserterm.SessionInit
+	err         error
+}
+
+func (f *fakeTerminalManager) CreateSession(_ context.Context, userEmail, machineName string, cols, rows int) (browserterm.SessionInit, error) {
+	f.userEmail = userEmail
+	f.machineName = machineName
+	f.cols = cols
+	f.rows = rows
+	if f.err != nil {
+		return browserterm.SessionInit{}, f.err
+	}
+	return f.init, nil
+}
+
+func (f *fakeTerminalManager) ReattachSession(_ context.Context, userEmail, sessionID string, cols, rows int) (browserterm.SessionInit, error) {
+	f.userEmail = userEmail
+	f.sessionID = sessionID
+	f.cols = cols
+	f.rows = rows
+	if f.err != nil {
+		return browserterm.SessionInit{}, f.err
+	}
+	return f.init, nil
+}
+
+func (f *fakeTerminalManager) CloseSession(_ context.Context, userEmail, sessionID string) error {
+	f.userEmail = userEmail
+	f.sessionID = sessionID
+	return f.err
+}
+
+func (f *fakeTerminalManager) StreamSession(http.ResponseWriter, *http.Request, string) error {
+	return nil
+}
+
+func (f *fakeTerminalManager) Diagnostics() browserterm.Diagnostics {
+	return browserterm.Diagnostics{ActiveSessions: 1, TotalCreated: 2}
 }
 
 func (f *fakeMachineManager) ListMachines(_ context.Context, ownerEmail string) ([]controlplane.Machine, error) {
@@ -271,8 +358,8 @@ func TestListMachinesEndpointRequiresOwnerEmail(t *testing.T) {
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d", rec.Code)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", rec.Code)
 	}
 }
 
@@ -748,6 +835,11 @@ func newTestHandler(t *testing.T, runtime *fakeRuntime, machines *fakeMachineMan
 
 func newTestHandlerWithConfig(t *testing.T, cfg config.Config, runtime *fakeRuntime, machines *fakeMachineManager) http.Handler {
 	t.Helper()
+	return newTestHandlerWithExtras(t, cfg, runtime, machines, nil, nil, nil)
+}
+
+func newTestHandlerWithExtras(t *testing.T, cfg config.Config, runtime *fakeRuntime, machines *fakeMachineManager, auth browserAuthService, terminals terminalManager, seed func(context.Context, *database.Store)) http.Handler {
+	t.Helper()
 
 	ctx := context.Background()
 	store, err := database.Open(ctx, filepath.Join(t.TempDir(), "fascinate.db"))
@@ -762,5 +854,209 @@ func newTestHandlerWithConfig(t *testing.T, cfg config.Config, runtime *fakeRunt
 		t.Fatal(err)
 	}
 
-	return New(cfg, store, runtime, machines)
+	if seed != nil {
+		seed(ctx, store)
+	}
+
+	return New(cfg, store, runtime, machines, auth, terminals)
+}
+
+func TestVerifyBrowserLoginSetsSessionCookie(t *testing.T) {
+	t.Parallel()
+
+	auth := &fakeBrowserAuth{
+		session: browserauth.Session{
+			User: database.User{ID: "user-1", Email: "dev@example.com"},
+			Record: database.WebSessionRecord{
+				ID:        "session-1",
+				UserID:    "user-1",
+				UserEmail: "dev@example.com",
+			},
+			RawToken:  "raw-session-token",
+			ExpiresAt: time.Now().UTC().Add(24 * time.Hour),
+		},
+	}
+	handler := newTestHandlerWithExtras(t, config.Config{
+		BaseDomain:           "fascinate.dev",
+		WebSessionCookieName: "fascinate_session",
+	}, &fakeRuntime{}, &fakeMachineManager{}, auth, nil, nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/auth/verify", strings.NewReader(`{"email":"dev@example.com","code":"123456"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if auth.verifyEmail != "dev@example.com" || auth.verifyCode != "123456" {
+		t.Fatalf("unexpected verify call %+v", auth)
+	}
+	cookies := rec.Result().Cookies()
+	if len(cookies) != 1 || cookies[0].Name != "fascinate_session" || cookies[0].Value != "raw-session-token" {
+		t.Fatalf("unexpected cookies %+v", cookies)
+	}
+}
+
+func TestWorkspaceEndpointPersistsLayoutForBrowserSession(t *testing.T) {
+	t.Parallel()
+
+	auth := &fakeBrowserAuth{
+		token:   "session-token",
+		session: browserauth.Session{},
+	}
+	handler := newTestHandlerWithExtras(t, config.Config{
+		BaseDomain:           "fascinate.dev",
+		WebSessionCookieName: "fascinate_session",
+	}, &fakeRuntime{}, &fakeMachineManager{}, auth, nil, func(ctx context.Context, store *database.Store) {
+		user, err := store.UpsertUser(ctx, "dev@example.com", false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		auth.session.User = user
+		auth.session.Record = database.WebSessionRecord{
+			ID:        "session-1",
+			UserID:    user.ID,
+			UserEmail: user.Email,
+		}
+	})
+
+	putReq := httptest.NewRequest(http.MethodPut, "/v1/workspaces/default", strings.NewReader(`{"layout":{"version":1,"windows":[{"id":"one","machineName":"m-1","title":"m-1 shell","x":1,"y":2,"width":320,"height":220,"z":1}]}}`))
+	putReq.Header.Set("Content-Type", "application/json")
+	putReq.AddCookie(&http.Cookie{Name: "fascinate_session", Value: "session-token"})
+	putRec := httptest.NewRecorder()
+	handler.ServeHTTP(putRec, putReq)
+
+	if putRec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", putRec.Code, putRec.Body.String())
+	}
+
+	getReq := httptest.NewRequest(http.MethodGet, "/v1/workspaces/default", nil)
+	getReq.AddCookie(&http.Cookie{Name: "fascinate_session", Value: "session-token"})
+	getRec := httptest.NewRecorder()
+	handler.ServeHTTP(getRec, getReq)
+
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", getRec.Code, getRec.Body.String())
+	}
+	if !strings.Contains(getRec.Body.String(), `"machineName":"m-1"`) {
+		t.Fatalf("expected saved workspace layout, got %s", getRec.Body.String())
+	}
+}
+
+func TestCreateTerminalSessionUsesBrowserSession(t *testing.T) {
+	t.Parallel()
+
+	auth := &fakeBrowserAuth{
+		token: "session-token",
+		session: browserauth.Session{
+			User: database.User{ID: "user-1", Email: "dev@example.com"},
+			Record: database.WebSessionRecord{
+				ID:        "session-1",
+				UserID:    "user-1",
+				UserEmail: "dev@example.com",
+			},
+		},
+	}
+	terminals := &fakeTerminalManager{
+		init: browserterm.SessionInit{
+			ID:          "term-1",
+			HostID:      "local-host",
+			MachineName: "m-1",
+			AttachURL:   "/v1/terminal/sessions/term-1/stream?token=abc",
+			ExpiresAt:   time.Now().UTC().Add(time.Minute).Format(time.RFC3339),
+		},
+	}
+	handler := newTestHandlerWithExtras(t, config.Config{
+		BaseDomain:           "fascinate.dev",
+		WebSessionCookieName: "fascinate_session",
+	}, &fakeRuntime{}, &fakeMachineManager{}, auth, terminals, nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/terminal/sessions", strings.NewReader(`{"machine_name":"m-1","cols":120,"rows":40}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(&http.Cookie{Name: "fascinate_session", Value: "session-token"})
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if terminals.userEmail != "dev@example.com" || terminals.machineName != "m-1" {
+		t.Fatalf("unexpected terminal create args %+v", terminals)
+	}
+}
+
+func TestReattachTerminalSessionUsesBrowserSession(t *testing.T) {
+	t.Parallel()
+
+	auth := &fakeBrowserAuth{
+		token: "session-token",
+		session: browserauth.Session{
+			User: database.User{ID: "user-1", Email: "dev@example.com"},
+			Record: database.WebSessionRecord{
+				ID:        "session-1",
+				UserID:    "user-1",
+				UserEmail: "dev@example.com",
+			},
+		},
+	}
+	terminals := &fakeTerminalManager{
+		init: browserterm.SessionInit{
+			ID:          "term-1",
+			HostID:      "local-host",
+			MachineName: "m-1",
+			AttachURL:   "/v1/terminal/sessions/term-1/stream?token=abc",
+			ExpiresAt:   time.Now().UTC().Add(time.Minute).Format(time.RFC3339),
+		},
+	}
+	handler := newTestHandlerWithExtras(t, config.Config{
+		BaseDomain:           "fascinate.dev",
+		WebSessionCookieName: "fascinate_session",
+	}, &fakeRuntime{}, &fakeMachineManager{}, auth, terminals, nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/terminal/sessions/term-1/attach", strings.NewReader(`{"cols":160,"rows":60}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(&http.Cookie{Name: "fascinate_session", Value: "session-token"})
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if terminals.userEmail != "dev@example.com" || terminals.sessionID != "term-1" || terminals.cols != 160 || terminals.rows != 60 {
+		t.Fatalf("unexpected terminal attach args %+v", terminals)
+	}
+}
+
+func TestCloseTerminalSessionUsesBrowserSession(t *testing.T) {
+	t.Parallel()
+
+	auth := &fakeBrowserAuth{
+		token: "session-token",
+		session: browserauth.Session{
+			User: database.User{ID: "user-1", Email: "dev@example.com"},
+			Record: database.WebSessionRecord{
+				ID:        "session-1",
+				UserID:    "user-1",
+				UserEmail: "dev@example.com",
+			},
+		},
+	}
+	terminals := &fakeTerminalManager{}
+	handler := newTestHandlerWithExtras(t, config.Config{
+		BaseDomain:           "fascinate.dev",
+		WebSessionCookieName: "fascinate_session",
+	}, &fakeRuntime{}, &fakeMachineManager{}, auth, terminals, nil)
+
+	req := httptest.NewRequest(http.MethodDelete, "/v1/terminal/sessions/term-1", nil)
+	req.AddCookie(&http.Cookie{Name: "fascinate_session", Value: "session-token"})
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if terminals.userEmail != "dev@example.com" || terminals.sessionID != "term-1" {
+		t.Fatalf("unexpected terminal close args %+v", terminals)
+	}
 }

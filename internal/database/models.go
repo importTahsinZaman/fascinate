@@ -173,3 +173,42 @@ type UpsertEnvVarParams struct {
 	Key      string
 	RawValue string
 }
+
+type WebSessionRecord struct {
+	ID         string  `json:"id"`
+	UserID     string  `json:"user_id"`
+	UserEmail  string  `json:"user_email"`
+	TokenHash  string  `json:"token_hash"`
+	ExpiresAt  string  `json:"expires_at"`
+	LastSeenAt string  `json:"last_seen_at"`
+	UserAgent  *string `json:"user_agent,omitempty"`
+	IPAddress  *string `json:"ip_address,omitempty"`
+	RevokedAt  *string `json:"revoked_at,omitempty"`
+	CreatedAt  string  `json:"created_at"`
+}
+
+type CreateWebSessionParams struct {
+	ID        string
+	UserID    string
+	TokenHash string
+	ExpiresAt string
+	UserAgent string
+	IPAddress string
+}
+
+type WorkspaceLayoutRecord struct {
+	ID         string `json:"id"`
+	UserID     string `json:"user_id"`
+	UserEmail  string `json:"user_email"`
+	Name       string `json:"name"`
+	LayoutJSON string `json:"layout_json"`
+	CreatedAt  string `json:"created_at"`
+	UpdatedAt  string `json:"updated_at"`
+}
+
+type UpsertWorkspaceLayoutParams struct {
+	ID         string
+	UserID     string
+	Name       string
+	LayoutJSON string
+}

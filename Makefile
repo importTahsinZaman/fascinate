@@ -1,20 +1,32 @@
 GO ?= go
 BINARY ?= fascinate
+PNPM ?= pnpm
 
-.PHONY: fmt test build run verify-ops smoke-host smoke-snapshots smoke-tool-auth stress-host benchmark-host
+.PHONY: fmt test build run web-install web-build web-test verify-ops smoke-host smoke-snapshots smoke-tool-auth stress-host benchmark-host
 
 fmt:
 	gofmt -w cmd internal
 
 test:
 	$(GO) test ./...
+	$(MAKE) web-test
 
 build:
 	mkdir -p bin
 	$(GO) build -o bin/$(BINARY) ./cmd/fascinate
+	$(MAKE) web-build
 
 run:
 	$(GO) run ./cmd/fascinate serve
+
+web-install:
+	cd web && $(PNPM) install
+
+web-build: web-install
+	cd web && $(PNPM) build
+
+web-test: web-install
+	cd web && $(PNPM) test
 
 verify-ops:
 	bash -n ops/host/bootstrap.sh

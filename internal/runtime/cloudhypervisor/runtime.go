@@ -595,9 +595,26 @@ func (m *Manager) copyDisk(ctx context.Context, sourcePath, targetPath string) e
 	return copyFile(sourcePath, targetPath)
 }
 
+func (m *Manager) materializeSnapshotDisk(ctx context.Context, sourcePath, targetPath string) error {
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+		return err
+	}
+	_, err := m.run(ctx, m.qemuImgBinary, "convert", "-O", "qcow2", sourcePath, targetPath)
+	if err != nil {
+		return err
+	}
+	if _, err := os.Stat(targetPath); err != nil {
+		return fmt.Errorf("materialized snapshot disk missing at %q: %w", targetPath, err)
+	}
+	return nil
+}
+
 func (m *Manager) resizeDisk(ctx context.Context, diskPath, size string) error {
 	if strings.TrimSpace(size) == "" {
 		return nil
+	}
+	if _, err := os.Stat(diskPath); err != nil {
+		return fmt.Errorf("disk %q is not available for resize: %w", diskPath, err)
 	}
 	sizeArg, err := qemuImgSizeArg(size)
 	if err != nil {

@@ -1,17 +1,19 @@
 # fascinate
 
-`fascinate` is a terminal-first control plane for persistent developer machines.
+`fascinate` is a browser-first command center for persistent developer machines.
 
 This repo now contains:
+- a React/Vite web app under [`web/`](/Users/tahsin/Desktop/vmcloud/web)
 - a reproducible host bootstrap path under [`ops/host/bootstrap.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/bootstrap.sh)
 - a host redeploy path under [`ops/host/install-control-plane.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/install-control-plane.sh)
 - a Caddy config writer under [`ops/host/write-caddyfile.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/write-caddyfile.sh)
 - a VM base image builder under [`ops/cloudhypervisor/build-base-image.sh`](/Users/tahsin/Desktop/vmcloud/ops/cloudhypervisor/build-base-image.sh)
 - a Go control plane under [`cmd/fascinate/main.go`](/Users/tahsin/Desktop/vmcloud/cmd/fascinate/main.go)
-- SQLite migrations for the first platform tables
+- SQLite migrations for product, auth, host, and workspace state
 - a first-class host registry and local-host heartbeat model
 - a Cloud Hypervisor runtime wrapper and health endpoints
-- an SSH frontdoor backed by SQLite-stored public keys
+- browser auth with emailed verification codes and DB-backed web sessions
+- a browser terminal gateway with PTY-backed WebSocket shells
 - first-class full-VM snapshots and snapshot-backed cloning
 
 ## Current Product Surface
@@ -23,7 +25,7 @@ Fascinate currently gives us:
   - load config from env
   - initialize SQLite
   - run migrations
-  - expose `/healthz`, `/readyz`, and `/v1/runtime/machines`
+  - expose `/healthz`, `/readyz`, and runtime/diagnostics APIs
   - register the current box as a first-class host and heartbeat its capacity
   - talk to the local `cloud-hypervisor` runtime through a host executor boundary
   - provision persistent VMs asynchronously
@@ -31,11 +33,20 @@ Fascinate currently gives us:
   - perform true snapshot-backed cloning
   - persist per-user Fascinate env vars and rewrite machine-specific built-ins on create, restore, and clone
   - persist supported tool auth across later VMs for the same user
+  - serve the browser command center on the primary Fascinate origin
+  - authenticate browser users through emailed verification codes and DB-backed sessions
+  - issue browser terminal sessions and stream PTY traffic over dedicated WebSockets
+  - persist per-user workspace layouts for the browser terminal canvas
 
-Still missing:
-- recovery and account-management flows for additional SSH keys
-
-Current HTTP API:
+Current browser HTTP API:
+- `POST /v1/auth/request-code`
+- `POST /v1/auth/verify`
+- `GET /v1/auth/session`
+- `POST /v1/auth/logout`
+- `GET /v1/workspaces/default`
+- `PUT /v1/workspaces/default`
+- `POST /v1/terminal/sessions`
+- `GET /v1/terminal/sessions/{id}/stream`
 - `GET /v1/machines`
 - `POST /v1/machines`
 - `GET /v1/machines/{name}`
@@ -53,38 +64,36 @@ Current HTTP API:
 - `GET /v1/diagnostics/tool-auth`
 - `GET /v1/diagnostics/machines/{name}`
 - `GET /v1/diagnostics/snapshots/{name}`
+- `GET /v1/diagnostics/terminal-sessions`
 
-Current SSH/frontdoor surface:
-- `fascinate seed-ssh-key --email ... --name ... --public-key-file ...`
-- a DB-backed SSH server on `FASCINATE_SSH_ADDR`
-- command handling for `help`, `whoami`, `machines`, `snapshots`, `env`, `create`, `clone`, `snapshot`, `delete`, `shell`, and `tutorial`
-- a Bubble Tea dashboard for interactive `ssh fascinate.dev` sessions
-- unknown-key signup with emailed 6-digit verification codes
-- wildcard machine routing inside the HTTP server for `https://<machine>.<base-domain>`
+Legacy/secondary admin surfaces still exist in the repo:
+- SSH/frontdoor commands for machine, snapshot, env-var, and shell flows
+- the Bubble Tea dashboard for interactive SSH sessions
 
 ## Repo Layout
 
+- [`web/`](/Users/tahsin/Desktop/vmcloud/web): React/Vite browser command center and xterm workspace canvas
 - [`ops/host/bootstrap.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/bootstrap.sh): installs host dependencies and baseline VM networking/runtime config
 - [`ops/host/verify.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/verify.sh): checks the host after bootstrap
 - [`ops/host/write-caddyfile.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/write-caddyfile.sh): writes the host Caddy config for Fascinate
-- [`ops/host/install-control-plane.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/install-control-plane.sh): builds and installs the Fascinate service on a host
+- [`ops/host/install-control-plane.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/install-control-plane.sh): builds and installs the Fascinate service and web bundle on a host
 - [`ops/host/smoke.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/smoke.sh): validates the basic create, route, restart, and delete lifecycle
 - [`ops/host/benchmark.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/benchmark.sh): prints structured timing metrics for create, snapshot, restore, and clone
 - [`ops/host/stress.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/stress.sh): validates realistic app, local DB, Docker, restart, snapshot, restore, clone, divergence, and cleanup behavior
-- [`ops/host/diagnostics.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/diagnostics.sh): queries host, machine, snapshot, tool-auth, and event diagnostics from a configured host
+- [`ops/host/diagnostics.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/diagnostics.sh): queries host, machine, snapshot, tool-auth, terminal-session, and event diagnostics from a configured host
 - [`ops/host/smoke-tool-auth.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/smoke-tool-auth.sh): targeted persistence harness for Claude, Codex, and GitHub auth across later VMs
 - [`ops/host/smoke-snapshots.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/smoke-snapshots.sh): validates saved snapshots, create-from-snapshot, and true clone flows
 - [`docs/stress-matrix.md`](/Users/tahsin/Desktop/vmcloud/docs/stress-matrix.md): expectation matrix and operator guidance for live validation
 - [`ops/cloudhypervisor/build-base-image.sh`](/Users/tahsin/Desktop/vmcloud/ops/cloudhypervisor/build-base-image.sh): builds an agent-ready qcow2 guest image
 - [`ops/systemd/fascinate.service`](/Users/tahsin/Desktop/vmcloud/ops/systemd/fascinate.service): example systemd unit
 - [`cmd/fascinate/main.go`](/Users/tahsin/Desktop/vmcloud/cmd/fascinate/main.go): entrypoint
+- [`internal/browserauth/service.go`](/Users/tahsin/Desktop/vmcloud/internal/browserauth/service.go): browser auth and session lifecycle
+- [`internal/browserterm/manager.go`](/Users/tahsin/Desktop/vmcloud/internal/browserterm/manager.go): host-local browser terminal gateway and diagnostics
 - [`internal/config/config.go`](/Users/tahsin/Desktop/vmcloud/internal/config/config.go): env-backed config
 - [`internal/controlplane/hosts.go`](/Users/tahsin/Desktop/vmcloud/internal/controlplane/hosts.go): host registry, heartbeat, placement, and local-host executor wiring
+- [`internal/httpapi/server.go`](/Users/tahsin/Desktop/vmcloud/internal/httpapi/server.go): browser/auth/session API surface and static web serving
 - [`internal/database/migrations/0001_init.sql`](/Users/tahsin/Desktop/vmcloud/internal/database/migrations/0001_init.sql): initial SQLite schema
 - [`internal/runtime/cloudhypervisor/runtime.go`](/Users/tahsin/Desktop/vmcloud/internal/runtime/cloudhypervisor/runtime.go): Cloud Hypervisor VM runtime
-- [`internal/sshfrontdoor/server.go`](/Users/tahsin/Desktop/vmcloud/internal/sshfrontdoor/server.go): SSH transport and auth
-- [`internal/tui/dashboard.go`](/Users/tahsin/Desktop/vmcloud/internal/tui/dashboard.go): Bubble Tea dashboard model
-
 ## Quick Start
 
 ### Fresh Host
@@ -186,11 +195,19 @@ Important for Cloudflare:
 
 ### Local Development
 
-Run the control plane locally:
+Build the browser app and control plane locally:
+
+```bash
+make build
+```
+
+For backend-only development you can still run:
 
 ```bash
 make run
 ```
+
+If you want the browser UI locally, build the web bundle first with `make web-build` (or just run `make build`) so the Go server can serve `web/dist`. 
 
 Then check:
 

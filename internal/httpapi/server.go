@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"fascinate/internal/browserterm"
 	"fascinate/internal/config"
 	"fascinate/internal/controlplane"
 	"fascinate/internal/database"
@@ -49,21 +50,17 @@ type diagnosticsManager interface {
 	ListOwnerEvents(context.Context, string, int) ([]controlplane.Event, error)
 }
 
-func New(cfg config.Config, store *database.Store, runtime runtimeChecker, machines machineManager) http.Handler {
+type terminalManager interface {
+	CreateSession(context.Context, string, string, int, int) (browserterm.SessionInit, error)
+	ReattachSession(context.Context, string, string, int, int) (browserterm.SessionInit, error)
+	CloseSession(context.Context, string, string) error
+	StreamSession(http.ResponseWriter, *http.Request, string) error
+	Diagnostics() browserterm.Diagnostics
+}
+
+func New(cfg config.Config, store *database.Store, runtime runtimeChecker, machines machineManager, auth browserAuthService, terminals terminalManager) http.Handler {
 	mux := http.NewServeMux()
 	diagnostics, _ := machines.(diagnosticsManager)
-
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/" {
-			http.NotFound(w, r)
-			return
-		}
-
-		writeJSON(w, http.StatusOK, map[string]any{
-			"service":     "fascinate",
-			"base_domain": cfg.BaseDomain,
-		})
-	})
 
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -110,15 +107,256 @@ func New(cfg config.Config, store *database.Store, runtime runtimeChecker, machi
 		})
 	})
 
+	mux.HandleFunc("/v1/auth/request-code", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeMethodNotAllowed(w, http.MethodPost)
+			return
+		}
+		if auth == nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "browser auth is not configured"})
+			return
+		}
+		var body struct {
+			Email string `json:"email"`
+		}
+		if err := decodeJSON(r, &body); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+		defer cancel()
+		if err := auth.RequestCode(ctx, body.Email); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusAccepted, map[string]string{"status": "verification code sent"})
+	})
+
+	mux.HandleFunc("/v1/auth/verify", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeMethodNotAllowed(w, http.MethodPost)
+			return
+		}
+		if auth == nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "browser auth is not configured"})
+			return
+		}
+		var body struct {
+			Email string `json:"email"`
+			Code  string `json:"code"`
+		}
+		if err := decodeJSON(r, &body); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+		defer cancel()
+		session, err := auth.VerifyCode(ctx, body.Email, body.Code, r.UserAgent(), requestIPAddress(r))
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		setSessionCookie(w, cfg, session.RawToken, session.ExpiresAt)
+		writeJSON(w, http.StatusOK, map[string]any{
+			"user":       session.User,
+			"expires_at": session.ExpiresAt.Format(time.RFC3339),
+		})
+	})
+
+	mux.HandleFunc("/v1/auth/session", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeMethodNotAllowed(w, http.MethodGet)
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+		defer cancel()
+		session, err := requireBrowserSession(ctx, r, cfg, auth)
+		if err != nil {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"user": session.User,
+		})
+	})
+
+	mux.HandleFunc("/v1/auth/logout", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeMethodNotAllowed(w, http.MethodPost)
+			return
+		}
+		if auth != nil {
+			ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+			defer cancel()
+			cookie, err := r.Cookie(cfg.WebSessionCookieName)
+			if err == nil {
+				_ = auth.Logout(ctx, cookie.Value)
+			}
+		}
+		clearSessionCookie(w, cfg)
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	mux.HandleFunc("/v1/workspaces/default", func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+		defer cancel()
+		session, err := requireBrowserSession(ctx, r, cfg, auth)
+		if err != nil {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
+			return
+		}
+
+		switch r.Method {
+		case http.MethodGet:
+			record, err := store.GetWorkspaceLayout(ctx, session.User.ID, "default")
+			if err != nil {
+				if !errors.Is(err, database.ErrNotFound) {
+					writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+					return
+				}
+				writeJSON(w, http.StatusOK, map[string]any{
+					"name":   "default",
+					"layout": json.RawMessage(`{"version":1,"windows":[]}`),
+				})
+				return
+			}
+			writeWorkspaceLayout(w, record)
+		case http.MethodPut:
+			var body struct {
+				Layout json.RawMessage `json:"layout"`
+			}
+			if err := decodeJSON(r, &body); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
+			layoutBody := strings.TrimSpace(string(body.Layout))
+			if layoutBody == "" {
+				layoutBody = `{"version":1,"windows":[]}`
+			}
+			if !json.Valid([]byte(layoutBody)) {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "layout must be valid JSON"})
+				return
+			}
+			record, err := store.UpsertWorkspaceLayout(ctx, database.UpsertWorkspaceLayoutParams{
+				UserID:     session.User.ID,
+				Name:       "default",
+				LayoutJSON: layoutBody,
+			})
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+				return
+			}
+			writeWorkspaceLayout(w, record)
+		default:
+			writeMethodNotAllowed(w, http.MethodGet, http.MethodPut)
+		}
+	})
+
+	mux.HandleFunc("/v1/terminal/sessions", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeMethodNotAllowed(w, http.MethodPost)
+			return
+		}
+		if terminals == nil {
+			http.NotFound(w, r)
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+		defer cancel()
+		session, err := requireBrowserSession(ctx, r, cfg, auth)
+		if err != nil {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
+			return
+		}
+		var body struct {
+			MachineName string `json:"machine_name"`
+			Cols        int    `json:"cols"`
+			Rows        int    `json:"rows"`
+		}
+		if err := decodeJSON(r, &body); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		init, err := terminals.CreateSession(ctx, session.User.Email, body.MachineName, body.Cols, body.Rows)
+		if err != nil {
+			writeServiceError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusCreated, init)
+	})
+
+	mux.HandleFunc("/v1/terminal/sessions/", func(w http.ResponseWriter, r *http.Request) {
+		if terminals == nil {
+			http.NotFound(w, r)
+			return
+		}
+		path := strings.Trim(strings.TrimPrefix(r.URL.Path, "/v1/terminal/sessions/"), "/")
+		if path == "" {
+			http.NotFound(w, r)
+			return
+		}
+		parts := strings.Split(path, "/")
+		if len(parts) == 2 && parts[1] == "stream" {
+			if err := terminals.StreamSession(w, r, parts[0]); err != nil {
+				writeServiceError(w, err)
+			}
+			return
+		}
+		if len(parts) == 2 && parts[1] == "attach" {
+			if r.Method != http.MethodPost {
+				writeMethodNotAllowed(w, http.MethodPost)
+				return
+			}
+			ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+			defer cancel()
+			session, err := requireBrowserSession(ctx, r, cfg, auth)
+			if err != nil {
+				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
+				return
+			}
+			var body struct {
+				Cols int `json:"cols"`
+				Rows int `json:"rows"`
+			}
+			if err := decodeJSON(r, &body); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
+			init, err := terminals.ReattachSession(ctx, session.User.Email, parts[0], body.Cols, body.Rows)
+			if err != nil {
+				writeServiceError(w, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, init)
+			return
+		}
+		if len(parts) == 1 && r.Method == http.MethodDelete {
+			ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+			defer cancel()
+			session, err := requireBrowserSession(ctx, r, cfg, auth)
+			if err != nil {
+				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
+				return
+			}
+			if err := terminals.CloseSession(ctx, session.User.Email, parts[0]); err != nil {
+				writeServiceError(w, err)
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		http.NotFound(w, r)
+	})
+
 	mux.HandleFunc("/v1/machines", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
 			ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 			defer cancel()
 
-			ownerEmail, err := requiredOwnerEmail(strings.TrimSpace(r.URL.Query().Get("owner_email")))
+			ownerEmail, err := ownerEmailForRequest(ctx, r, cfg, auth, strings.TrimSpace(r.URL.Query().Get("owner_email")))
 			if err != nil {
-				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
 				return
 			}
 			machineList, err := machines.ListMachines(ctx, ownerEmail)
@@ -138,9 +376,9 @@ func New(cfg config.Config, store *database.Store, runtime runtimeChecker, machi
 				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 				return
 			}
-			ownerEmail, err := requiredOwnerEmail(body.OwnerEmail)
+			ownerEmail, err := ownerEmailForRequest(r.Context(), r, cfg, auth, body.OwnerEmail)
 			if err != nil {
-				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
 				return
 			}
 
@@ -169,9 +407,9 @@ func New(cfg config.Config, store *database.Store, runtime runtimeChecker, machi
 			ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 			defer cancel()
 
-			ownerEmail, err := requiredOwnerEmail(strings.TrimSpace(r.URL.Query().Get("owner_email")))
+			ownerEmail, err := ownerEmailForRequest(ctx, r, cfg, auth, strings.TrimSpace(r.URL.Query().Get("owner_email")))
 			if err != nil {
-				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
 				return
 			}
 			envVars, err := machines.ListEnvVars(ctx, ownerEmail)
@@ -190,9 +428,9 @@ func New(cfg config.Config, store *database.Store, runtime runtimeChecker, machi
 				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 				return
 			}
-			ownerEmail, err := requiredOwnerEmail(body.OwnerEmail)
+			ownerEmail, err := ownerEmailForRequest(r.Context(), r, cfg, auth, body.OwnerEmail)
 			if err != nil {
-				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
 				return
 			}
 			ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
@@ -223,9 +461,9 @@ func New(cfg config.Config, store *database.Store, runtime runtimeChecker, machi
 			http.NotFound(w, r)
 			return
 		}
-		ownerEmail, err := requiredOwnerEmail(strings.TrimSpace(r.URL.Query().Get("owner_email")))
+		ownerEmail, err := ownerEmailForRequest(r.Context(), r, cfg, auth, strings.TrimSpace(r.URL.Query().Get("owner_email")))
 		if err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
 			return
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
@@ -251,9 +489,9 @@ func New(cfg config.Config, store *database.Store, runtime runtimeChecker, machi
 		if len(parts) == 1 {
 			switch r.Method {
 			case http.MethodGet:
-				ownerEmail, err := requiredOwnerEmail(strings.TrimSpace(r.URL.Query().Get("owner_email")))
+				ownerEmail, err := ownerEmailForRequest(r.Context(), r, cfg, auth, strings.TrimSpace(r.URL.Query().Get("owner_email")))
 				if err != nil {
-					writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+					writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
 					return
 				}
 				ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
@@ -267,9 +505,9 @@ func New(cfg config.Config, store *database.Store, runtime runtimeChecker, machi
 
 				writeJSON(w, http.StatusOK, machine)
 			case http.MethodDelete:
-				ownerEmail, err := requiredOwnerEmail(strings.TrimSpace(r.URL.Query().Get("owner_email")))
+				ownerEmail, err := ownerEmailForRequest(r.Context(), r, cfg, auth, strings.TrimSpace(r.URL.Query().Get("owner_email")))
 				if err != nil {
-					writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+					writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
 					return
 				}
 				ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
@@ -301,9 +539,9 @@ func New(cfg config.Config, store *database.Store, runtime runtimeChecker, machi
 				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 				return
 			}
-			ownerEmail, err := requiredOwnerEmail(body.OwnerEmail)
+			ownerEmail, err := ownerEmailForRequest(r.Context(), r, cfg, auth, body.OwnerEmail)
 			if err != nil {
-				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
 				return
 			}
 
@@ -329,9 +567,9 @@ func New(cfg config.Config, store *database.Store, runtime runtimeChecker, machi
 				writeMethodNotAllowed(w, http.MethodGet)
 				return
 			}
-			ownerEmail, err := requiredOwnerEmail(strings.TrimSpace(r.URL.Query().Get("owner_email")))
+			ownerEmail, err := ownerEmailForRequest(r.Context(), r, cfg, auth, strings.TrimSpace(r.URL.Query().Get("owner_email")))
 			if err != nil {
-				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
 				return
 			}
 			ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
@@ -355,9 +593,9 @@ func New(cfg config.Config, store *database.Store, runtime runtimeChecker, machi
 			ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 			defer cancel()
 
-			ownerEmail, err := requiredOwnerEmail(strings.TrimSpace(r.URL.Query().Get("owner_email")))
+			ownerEmail, err := ownerEmailForRequest(r.Context(), r, cfg, auth, strings.TrimSpace(r.URL.Query().Get("owner_email")))
 			if err != nil {
-				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
 				return
 			}
 			snapshotList, err := machines.ListSnapshots(ctx, ownerEmail)
@@ -376,9 +614,9 @@ func New(cfg config.Config, store *database.Store, runtime runtimeChecker, machi
 				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 				return
 			}
-			ownerEmail, err := requiredOwnerEmail(body.OwnerEmail)
+			ownerEmail, err := ownerEmailForRequest(r.Context(), r, cfg, auth, body.OwnerEmail)
 			if err != nil {
-				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
 				return
 			}
 			ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
@@ -409,9 +647,9 @@ func New(cfg config.Config, store *database.Store, runtime runtimeChecker, machi
 			return
 		}
 
-		ownerEmail, err := requiredOwnerEmail(strings.TrimSpace(r.URL.Query().Get("owner_email")))
+		ownerEmail, err := ownerEmailForRequest(r.Context(), r, cfg, auth, strings.TrimSpace(r.URL.Query().Get("owner_email")))
 		if err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
 			return
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
@@ -433,9 +671,9 @@ func New(cfg config.Config, store *database.Store, runtime runtimeChecker, machi
 			return
 		}
 
-		ownerEmail, err := requiredOwnerEmail(strings.TrimSpace(r.URL.Query().Get("owner_email")))
+		ownerEmail, err := ownerEmailForRequest(r.Context(), r, cfg, auth, strings.TrimSpace(r.URL.Query().Get("owner_email")))
 		if err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
 			return
 		}
 		limit := 50
@@ -490,9 +728,9 @@ func New(cfg config.Config, store *database.Store, runtime runtimeChecker, machi
 			return
 		}
 
-		ownerEmail, err := requiredOwnerEmail(strings.TrimSpace(r.URL.Query().Get("owner_email")))
+		ownerEmail, err := ownerEmailForRequest(r.Context(), r, cfg, auth, strings.TrimSpace(r.URL.Query().Get("owner_email")))
 		if err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
 			return
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
@@ -521,9 +759,9 @@ func New(cfg config.Config, store *database.Store, runtime runtimeChecker, machi
 			return
 		}
 
-		ownerEmail, err := requiredOwnerEmail(strings.TrimSpace(r.URL.Query().Get("owner_email")))
+		ownerEmail, err := ownerEmailForRequest(r.Context(), r, cfg, auth, strings.TrimSpace(r.URL.Query().Get("owner_email")))
 		if err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
 			return
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
@@ -552,9 +790,9 @@ func New(cfg config.Config, store *database.Store, runtime runtimeChecker, machi
 			return
 		}
 
-		ownerEmail, err := requiredOwnerEmail(strings.TrimSpace(r.URL.Query().Get("owner_email")))
+		ownerEmail, err := ownerEmailForRequest(r.Context(), r, cfg, auth, strings.TrimSpace(r.URL.Query().Get("owner_email")))
 		if err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
 			return
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
@@ -567,6 +805,20 @@ func New(cfg config.Config, store *database.Store, runtime runtimeChecker, machi
 		}
 		writeJSON(w, http.StatusOK, diag)
 	})
+
+	mux.HandleFunc("/v1/diagnostics/terminal-sessions", func(w http.ResponseWriter, r *http.Request) {
+		if terminals == nil {
+			http.NotFound(w, r)
+			return
+		}
+		if r.Method != http.MethodGet {
+			writeMethodNotAllowed(w, http.MethodGet)
+			return
+		}
+		writeJSON(w, http.StatusOK, terminals.Diagnostics())
+	})
+
+	mux.Handle("/", newWebUIHandler(cfg))
 
 	return withMachineProxy(cfg, machines, mux)
 }
@@ -590,14 +842,6 @@ func decodeJSON(r *http.Request, dest any) error {
 	return nil
 }
 
-func requiredOwnerEmail(value string) (string, error) {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return "", fmt.Errorf("owner_email is required")
-	}
-	return value, nil
-}
-
 func writeServiceError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, database.ErrNotFound), errors.Is(err, machineruntime.ErrMachineNotFound):
@@ -607,6 +851,20 @@ func writeServiceError(w http.ResponseWriter, err error) {
 	default:
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 	}
+}
+
+func writeWorkspaceLayout(w http.ResponseWriter, record database.WorkspaceLayoutRecord) {
+	layout := json.RawMessage(record.LayoutJSON)
+	if !json.Valid(layout) {
+		layout = json.RawMessage(`{"version":1,"windows":[]}`)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"id":         record.ID,
+		"name":       record.Name,
+		"layout":     layout,
+		"created_at": record.CreatedAt,
+		"updated_at": record.UpdatedAt,
+	})
 }
 
 func writeMethodNotAllowed(w http.ResponseWriter, methods ...string) {
