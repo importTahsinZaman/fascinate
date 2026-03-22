@@ -38,6 +38,8 @@ type fakeMachines struct {
 	getResult            controlplane.Machine
 	getErr               error
 	getOwner             string
+	getEnvResult         controlplane.MachineEnv
+	getEnvErr            error
 	createInput          controlplane.CreateMachineInput
 	createResult         controlplane.Machine
 	createErr            error
@@ -55,6 +57,14 @@ type fakeMachines struct {
 	deleteSnapshotName   string
 	deleteSnapshotOwner  string
 	deleteSnapshotErr    error
+	listEnvResult        []controlplane.EnvVar
+	listEnvErr           error
+	setEnvInput          controlplane.SetEnvVarInput
+	setEnvResult         controlplane.EnvVar
+	setEnvErr            error
+	deleteEnvOwner       string
+	deleteEnvKey         string
+	deleteEnvErr         error
 	syncName             string
 	syncOwner            string
 	syncErr              error
@@ -91,6 +101,14 @@ func (f *fakeMachines) GetMachine(_ context.Context, _ string, ownerEmail string
 		return controlplane.Machine{}, f.getErr
 	}
 	return f.getResult, nil
+}
+
+func (f *fakeMachines) GetMachineEnv(_ context.Context, _ string, ownerEmail string) (controlplane.MachineEnv, error) {
+	f.getOwner = ownerEmail
+	if f.getEnvErr != nil {
+		return controlplane.MachineEnv{}, f.getEnvErr
+	}
+	return f.getEnvResult, nil
 }
 
 func (f *fakeMachines) CreateMachine(_ context.Context, input controlplane.CreateMachineInput) (controlplane.Machine, error) {
@@ -134,6 +152,27 @@ func (f *fakeMachines) DeleteSnapshot(_ context.Context, name, ownerEmail string
 	f.deleteSnapshotName = name
 	f.deleteSnapshotOwner = ownerEmail
 	return f.deleteSnapshotErr
+}
+
+func (f *fakeMachines) ListEnvVars(_ context.Context, _ string) ([]controlplane.EnvVar, error) {
+	if f.listEnvErr != nil {
+		return nil, f.listEnvErr
+	}
+	return f.listEnvResult, nil
+}
+
+func (f *fakeMachines) SetEnvVar(_ context.Context, input controlplane.SetEnvVarInput) (controlplane.EnvVar, error) {
+	f.setEnvInput = input
+	if f.setEnvErr != nil {
+		return controlplane.EnvVar{}, f.setEnvErr
+	}
+	return f.setEnvResult, nil
+}
+
+func (f *fakeMachines) DeleteEnvVar(_ context.Context, ownerEmail, key string) error {
+	f.deleteEnvOwner = ownerEmail
+	f.deleteEnvKey = key
+	return f.deleteEnvErr
 }
 
 func (f *fakeMachines) SyncToolAuth(_ context.Context, name, ownerEmail string) error {
@@ -291,6 +330,65 @@ func TestRunCommandCloneMachine(t *testing.T) {
 	}
 	if machines.cloneInput.SourceName != "habits" || machines.cloneInput.TargetName != "habits-v2" {
 		t.Fatalf("unexpected clone input: %+v", machines.cloneInput)
+	}
+}
+
+func TestRunCommandListEnvVars(t *testing.T) {
+	t.Parallel()
+
+	machines := &fakeMachines{
+		listEnvResult: []controlplane.EnvVar{{Key: "FRONTEND_URL", RawValue: "${FASCINATE_PUBLIC_URL}"}},
+	}
+	server := newTestServer(t, &fakeKeyLookup{}, machines)
+
+	channel := &stubChannel{}
+	status := server.runCommand(channel, nil, sessionAuth{userEmail: "dev@example.com"}, "env", sessionPTY{size: windowSize{width: 80, height: 24}, term: "xterm-256color"})
+	if status != 0 {
+		t.Fatalf("expected zero status, got %d", status)
+	}
+	if got := channel.String(); !bytes.Contains([]byte(got), []byte("FRONTEND_URL")) {
+		t.Fatalf("unexpected channel output: %q", got)
+	}
+}
+
+func TestRunCommandSetEnvVar(t *testing.T) {
+	t.Parallel()
+
+	machines := &fakeMachines{
+		setEnvResult: controlplane.EnvVar{Key: "FRONTEND_URL", RawValue: "${FASCINATE_PUBLIC_URL}"},
+	}
+	server := newTestServer(t, &fakeKeyLookup{}, machines)
+
+	channel := &stubChannel{}
+	status := server.runCommand(channel, nil, sessionAuth{userEmail: "dev@example.com"}, "env set FRONTEND_URL ${FASCINATE_PUBLIC_URL}", sessionPTY{size: windowSize{width: 80, height: 24}, term: "xterm-256color"})
+	if status != 0 {
+		t.Fatalf("expected zero status, got %d", status)
+	}
+	if machines.setEnvInput.Key != "FRONTEND_URL" || machines.setEnvInput.OwnerEmail != "dev@example.com" {
+		t.Fatalf("unexpected env input: %+v", machines.setEnvInput)
+	}
+}
+
+func TestRunCommandMachineEnv(t *testing.T) {
+	t.Parallel()
+
+	machines := &fakeMachines{
+		getEnvResult: controlplane.MachineEnv{
+			MachineName: "m-1",
+			Entries: []controlplane.EffectiveEnvVar{
+				{Key: "FASCINATE_PUBLIC_URL", Value: "https://m-1.fascinate.dev"},
+			},
+		},
+	}
+	server := newTestServer(t, &fakeKeyLookup{}, machines)
+
+	channel := &stubChannel{}
+	status := server.runCommand(channel, nil, sessionAuth{userEmail: "dev@example.com"}, "env machine m-1", sessionPTY{size: windowSize{width: 80, height: 24}, term: "xterm-256color"})
+	if status != 0 {
+		t.Fatalf("expected zero status, got %d", status)
+	}
+	if got := channel.String(); !bytes.Contains([]byte(got), []byte("FASCINATE_PUBLIC_URL=https://m-1.fascinate.dev")) {
+		t.Fatalf("unexpected channel output: %q", got)
 	}
 }
 

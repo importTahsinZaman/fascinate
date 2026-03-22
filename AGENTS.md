@@ -23,12 +23,14 @@ This repo uses Go modules and Make; there is no root JavaScript package manager.
 - Only run the host smoke and benchmark scripts on a machine that is already bootstrapped for Fascinate, and only when the task calls for live validation.
 - Treat `ops/host/smoke-tool-auth.sh` as a targeted harness for tool-auth changes, not as the default always-run host acceptance smoke.
 - Add or update tests for behavioral changes, especially around control-plane state transitions, snapshots/cloning, shell entry, and tool-auth persistence.
+- Add or update tests for behavioral changes around managed env vars, especially interpolation, guest file rewrites, and create/clone behavior.
 
 ## Project Structure
 - `cmd/fascinate/main.go` — CLI entrypoint and admin commands
 - `internal/app/` — app wiring, background loops, adapter registration
 - `internal/config/` — environment config and env-file loading
 - `internal/controlplane/` — machine and snapshot orchestration, state transitions, quotas
+- `internal/controlplane/envvars.go` — Fascinate env-var validation, interpolation, rendering, and sync
 - `internal/controlplane/hosts.go` — first-class host registry, heartbeat, placement, and host dispatch
 - `internal/runtime/cloudhypervisor/` — VM runtime, network namespaces, snapshots, restore/clone
 - `internal/sshfrontdoor/` — SSH command handling, guest shell handoff, dashboard launch
@@ -42,6 +44,7 @@ This repo uses Go modules and Make; there is no root JavaScript package manager.
 - Follow existing Go patterns: small structs, explicit errors, narrow helper functions, and `gofmt` output.
 - Keep user-visible state transitions explicit (`CREATING`, `RUNNING`, `FAILED`, `DELETING`) and cover them with tests.
 - Preserve the current architecture: Cloud Hypervisor VMs, per-VM network namespaces/forwarders, and host-managed persisted tool auth.
+- Preserve the current managed-env model: built-in `FASCINATE_*` vars plus user-defined per-user env vars rendered into `/etc/fascinate/env*` inside guests.
 - Preserve the current host model: even on one box, machines and snapshots are host-owned and runtime work should flow through the host executor boundary.
 
 ## Boundaries
@@ -53,7 +56,7 @@ This repo uses Go modules and Make; there is no root JavaScript package manager.
 
 **Ask first:**
 - Any live-host action that changes data or availability, including deploys, prod smoke runs, or wiping users/VMs/snapshots/tool-auth data.
-- Schema migrations or persisted-format changes for snapshots or tool auth.
+- Schema migrations or persisted-format changes for snapshots, tool auth, or managed env vars.
 - Adding dependencies, changing Cloudflare/Caddy/DNS behavior, or changing default machine quotas or sizes.
 
 **Never:**

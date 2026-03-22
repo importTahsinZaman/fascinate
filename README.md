@@ -29,6 +29,7 @@ Fascinate currently gives us:
   - provision persistent VMs asynchronously
   - save full-VM snapshots and restore new VMs from them
   - perform true snapshot-backed cloning
+  - persist per-user Fascinate env vars and rewrite machine-specific built-ins on create, restore, and clone
   - persist supported tool auth across later VMs for the same user
 
 Still missing:
@@ -38,8 +39,12 @@ Current HTTP API:
 - `GET /v1/machines`
 - `POST /v1/machines`
 - `GET /v1/machines/{name}`
+- `GET /v1/machines/{name}/env`
 - `DELETE /v1/machines/{name}`
 - `POST /v1/machines/{name}/clone`
+- `GET /v1/env-vars`
+- `PUT /v1/env-vars`
+- `DELETE /v1/env-vars/{key}`
 - `GET /v1/snapshots`
 - `POST /v1/snapshots`
 - `DELETE /v1/snapshots/{name}`
@@ -52,7 +57,7 @@ Current HTTP API:
 Current SSH/frontdoor surface:
 - `fascinate seed-ssh-key --email ... --name ... --public-key-file ...`
 - a DB-backed SSH server on `FASCINATE_SSH_ADDR`
-- command handling for `help`, `whoami`, `machines`, `snapshots`, `create`, `clone`, `snapshot`, `delete`, `shell`, and `tutorial`
+- command handling for `help`, `whoami`, `machines`, `snapshots`, `env`, `create`, `clone`, `snapshot`, `delete`, `shell`, and `tutorial`
 - a Bubble Tea dashboard for interactive `ssh fascinate.dev` sessions
 - unknown-key signup with emailed 6-digit verification codes
 - wildcard machine routing inside the HTTP server for `https://<machine>.<base-domain>`
@@ -307,6 +312,39 @@ Current scope:
 - shipped session-state adapters are Claude Code subscription login, Codex ChatGPT/device-code login, and GitHub CLI login
 - running VM sync happens on shell/tutorial exit and on a background interval
 - later VMs for the same user restore the stored tool auth before the machine becomes `RUNNING`
+
+## Fascinate Env Vars
+
+Fascinate now keeps plain user-defined env vars as a first-class per-user object and combines them with built-in machine identity vars inside every VM.
+
+Built-in machine vars currently include:
+- `FASCINATE_MACHINE_NAME`
+- `FASCINATE_MACHINE_ID`
+- `FASCINATE_PUBLIC_URL`
+- `FASCINATE_PRIMARY_PORT`
+- `FASCINATE_BASE_DOMAIN`
+- `FASCINATE_HOST_ID`
+- `FASCINATE_HOST_REGION`
+
+User-defined env vars:
+- are stored centrally per user
+- cannot override the reserved `FASCINATE_` prefix
+- support `${NAME}` interpolation across built-ins and other user vars
+- are rewritten into restored and cloned VMs before those machines are surfaced as ready
+
+Inside each VM, Fascinate writes:
+- `/etc/fascinate/env`
+- `/etc/fascinate/env.sh`
+- `/etc/fascinate/env.json`
+- `/etc/profile.d/fascinate-env.sh`
+
+Use these for clone-safe app config. For example:
+
+```env
+FRONTEND_URL=${FASCINATE_PUBLIC_URL}
+```
+
+Instead of hardcoding `https://<machine>.<base-domain>`.
 - shell entry shows a GitHub hint when `gh` is installed but not connected yet: `gh auth login && gh auth setup-git`
 - tool-auth operator diagnostics are available under `/v1/diagnostics/tool-auth` and `ops/host/diagnostics.sh tool-auth ...`
 

@@ -19,6 +19,7 @@ type fakeRuntime struct {
 	machines      map[string]machineruntime.Machine
 	snapshots     map[string]machineruntime.Snapshot
 	createErr     error
+	envSyncErr    error
 	startErr      error
 	deleteErr     error
 	cloneErr      error
@@ -28,6 +29,7 @@ type fakeRuntime struct {
 	createBlock   <-chan struct{}
 	deleted       []string
 	createdReq    []machineruntime.CreateMachineRequest
+	envSyncReq    map[string]machineruntime.ManagedEnvRequest
 	started       []string
 	clonedReq     []machineruntime.CloneMachineRequest
 }
@@ -112,6 +114,21 @@ func (f *fakeRuntime) CreateMachine(ctx context.Context, req machineruntime.Crea
 	}
 	f.machines[req.Name] = machine
 	return machine, nil
+}
+
+func (f *fakeRuntime) SyncManagedEnv(_ context.Context, name string, req machineruntime.ManagedEnvRequest) error {
+	if f.envSyncErr != nil {
+		return f.envSyncErr
+	}
+	if f.envSyncReq == nil {
+		f.envSyncReq = map[string]machineruntime.ManagedEnvRequest{}
+	}
+	copyEntries := make(map[string]string, len(req.Entries))
+	for key, value := range req.Entries {
+		copyEntries[key] = value
+	}
+	f.envSyncReq[name] = machineruntime.ManagedEnvRequest{Entries: copyEntries}
+	return nil
 }
 
 func (f *fakeRuntime) StartMachine(_ context.Context, name string) (machineruntime.Machine, error) {

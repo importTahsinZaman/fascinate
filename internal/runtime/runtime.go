@@ -13,6 +13,7 @@ type Manager interface {
 	ListMachines(context.Context) ([]Machine, error)
 	GetMachine(context.Context, string) (Machine, error)
 	CreateMachine(context.Context, CreateMachineRequest) (Machine, error)
+	SyncManagedEnv(context.Context, string, ManagedEnvRequest) error
 	StartMachine(context.Context, string) (Machine, error)
 	DeleteMachine(context.Context, string) error
 	CloneMachine(context.Context, CloneMachineRequest) (Machine, error)
@@ -39,6 +40,7 @@ type Machine struct {
 }
 
 type CreateMachineRequest struct {
+	MachineID    string
 	Name         string
 	Image        string
 	Snapshot     string
@@ -49,9 +51,14 @@ type CreateMachineRequest struct {
 }
 
 type CloneMachineRequest struct {
+	MachineID    string
 	SourceName   string
 	TargetName   string
 	RootDiskSize string
+}
+
+type ManagedEnvRequest struct {
+	Entries map[string]string
 }
 
 type Snapshot struct {

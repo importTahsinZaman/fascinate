@@ -268,12 +268,17 @@ func TestCloudInitUserDataInstallsCanonicalAgentDocs(t *testing.T) {
 	t.Parallel()
 
 	userData := cloudInitUserData(metadata{
+		MachineID:   "machine-1",
 		Name:        "tic-tac-toe",
 		PrimaryPort: 3000,
 		GuestUser:   "ubuntu",
-	}, "fascinate.dev", "ssh-ed25519 AAAATEST fascinate")
+	}, "fascinate.dev", "ssh-ed25519 AAAATEST fascinate", "fascinate-01", "ca-east")
 
 	for _, snippet := range []string{
+		"/etc/fascinate/env",
+		"/etc/fascinate/env.sh",
+		"/etc/fascinate/env.json",
+		"/etc/profile.d/fascinate-env.sh",
 		"/etc/fascinate/AGENTS.md",
 		"/etc/claude-code/CLAUDE.md",
 		"/root/.claude/CLAUDE.md",
@@ -285,6 +290,11 @@ func TestCloudInitUserDataInstallsCanonicalAgentDocs(t *testing.T) {
 		"apt-get install -y build-essential ca-certificates curl docker.io file fzf gh git",
 		"https://tic-tac-toe.fascinate.dev",
 		"add this hostname to allowedDevOrigins",
+		"FASCINATE_PUBLIC_URL=https://tic-tac-toe.fascinate.dev",
+		"FASCINATE_MACHINE_ID=machine-1",
+		"FASCINATE_HOST_ID=fascinate-01",
+		"FASCINATE_HOST_REGION=ca-east",
+		"if [ -f /etc/fascinate/env.sh ]; then",
 		"gh auth login",
 		"gh auth setup-git",
 	} {

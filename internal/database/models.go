@@ -157,3 +157,19 @@ type CreateEventParams struct {
 	Kind        string
 	PayloadJSON string
 }
+
+type EnvVarRecord struct {
+	ID        string `json:"id"`
+	UserID    string `json:"user_id"`
+	Key       string `json:"key"`
+	RawValue  string `json:"raw_value"`
+	CreatedAt string `json:"created_at"`
+	UpdatedAt string `json:"updated_at"`
+}
+
+type UpsertEnvVarParams struct {
+	ID       string
+	UserID   string
+	Key      string
+	RawValue string
+}

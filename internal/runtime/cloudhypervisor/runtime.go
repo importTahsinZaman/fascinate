@@ -42,6 +42,7 @@ const (
 )
 
 type metadata struct {
+	MachineID         string `json:"machine_id"`
 	Name              string `json:"name"`
 	CPU               string `json:"cpu"`
 	Memory            string `json:"memory"`
@@ -101,6 +102,8 @@ type Manager struct {
 	stateDir          string
 	snapshotDir       string
 	baseDomain        string
+	hostID            string
+	hostRegion        string
 	bridgePrefix      netip.Prefix
 	guestPrefix       netip.Prefix
 	namespacePrefix   netip.Prefix
@@ -153,6 +156,8 @@ func New(cfg config.Config) (*Manager, error) {
 		stateDir:          strings.TrimSpace(cfg.RuntimeStateDir),
 		snapshotDir:       strings.TrimSpace(cfg.RuntimeSnapshotDir),
 		baseDomain:        strings.TrimSpace(cfg.BaseDomain),
+		hostID:            strings.TrimSpace(cfg.HostID),
+		hostRegion:        strings.TrimSpace(cfg.HostRegion),
 		bridgePrefix:      bridgePrefix,
 		guestPrefix:       guestPrefix,
 		namespacePrefix:   namespacePrefix,
@@ -181,6 +186,12 @@ func New(cfg config.Config) (*Manager, error) {
 	}
 	if manager.defaultGuestUser == "" {
 		manager.defaultGuestUser = "ubuntu"
+	}
+	if manager.hostID == "" {
+		manager.hostID = "local-host"
+	}
+	if manager.hostRegion == "" {
+		manager.hostRegion = "local"
 	}
 
 	return manager, nil
@@ -410,6 +421,7 @@ func (m *Manager) prepareMetadata(name string, req machineruntime.CreateMachineR
 	guestIPv4 := advanceAddr(m.bridgePrefix.Addr(), 1).String()
 
 	return metadata{
+		MachineID:         strings.TrimSpace(req.MachineID),
 		Name:              name,
 		CPU:               strings.TrimSpace(req.CPU),
 		Memory:            strings.TrimSpace(req.Memory),
@@ -596,7 +608,7 @@ func (m *Manager) resizeDisk(ctx context.Context, diskPath, size string) error {
 }
 
 func (m *Manager) writeSeedImage(ctx context.Context, meta metadata) error {
-	userData := cloudInitUserData(meta, m.baseDomain, m.guestSSHPublicKey)
+	userData := cloudInitUserData(meta, m.baseDomain, m.guestSSHPublicKey, m.hostID, m.hostRegion)
 	metaData := fmt.Sprintf("instance-id: fascinate-%s\nlocal-hostname: %s\n", meta.Name, meta.Name)
 	networkConfig := cloudInitNetworkConfig(meta.IPv4, meta.MACAddress, m.guestPrefix, m.bridgePrefix.Addr())
 
@@ -752,6 +764,17 @@ func (m *Manager) RestoreSessionState(ctx context.Context, runtimeName string, s
 	return err
 }
 
+func (m *Manager) SyncManagedEnv(ctx context.Context, runtimeName string, req machineruntime.ManagedEnvRequest) error {
+	meta, err := m.loadMetadata(strings.TrimSpace(runtimeName))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return machineruntime.ErrMachineNotFound
+		}
+		return err
+	}
+	return m.syncManagedEnvFiles(ctx, meta, req.Entries)
+}
+
 func (m *Manager) runGuestCommandOutput(ctx context.Context, meta metadata, command string, stdin io.Reader) ([]byte, error) {
 	args := []string{
 		"netns", "exec", meta.NamespaceName,
@@ -796,7 +819,83 @@ func (m *Manager) run(ctx context.Context, binary string, args ...string) ([]byt
 	return output, nil
 }
 
-func cloudInitUserData(meta metadata, baseDomain, publicKey string) string {
+func (m *Manager) syncManagedEnvFiles(ctx context.Context, meta metadata, entries map[string]string) error {
+	envFile, envShell, envJSON, profileScript, err := renderManagedEnvFiles(entries)
+	if err != nil {
+		return err
+	}
+
+	command := strings.Join([]string{
+		"sudo mkdir -p /etc/fascinate /etc/profile.d",
+		"sudo tee /etc/fascinate/env >/dev/null <<'EOF_FASCINATE_ENV'\n" + envFile + "EOF_FASCINATE_ENV",
+		"sudo tee /etc/fascinate/env.sh >/dev/null <<'EOF_FASCINATE_ENV_SH'\n" + envShell + "EOF_FASCINATE_ENV_SH",
+		"sudo tee /etc/fascinate/env.json >/dev/null <<'EOF_FASCINATE_ENV_JSON'\n" + envJSON + "EOF_FASCINATE_ENV_JSON",
+		"sudo tee /etc/profile.d/fascinate-env.sh >/dev/null <<'EOF_FASCINATE_PROFILE'\n" + profileScript + "EOF_FASCINATE_PROFILE",
+		"sudo chmod 0644 /etc/fascinate/env /etc/fascinate/env.sh /etc/fascinate/env.json /etc/profile.d/fascinate-env.sh",
+	}, "\n")
+	return m.runGuestCommand(ctx, meta, command)
+}
+
+func managedEnvEntries(meta metadata, baseDomain, hostID, hostRegion string) map[string]string {
+	return map[string]string{
+		"FASCINATE_BASE_DOMAIN":  strings.TrimSpace(baseDomain),
+		"FASCINATE_HOST_ID":      strings.TrimSpace(hostID),
+		"FASCINATE_HOST_REGION":  strings.TrimSpace(hostRegion),
+		"FASCINATE_MACHINE_ID":   strings.TrimSpace(meta.MachineID),
+		"FASCINATE_MACHINE_NAME": strings.TrimSpace(meta.Name),
+		"FASCINATE_PRIMARY_PORT": strconv.Itoa(meta.PrimaryPort),
+		"FASCINATE_PUBLIC_URL":   "https://" + machinePublicHost(meta.Name, baseDomain),
+	}
+}
+
+func bootstrapManagedEnvFiles(meta metadata, baseDomain, hostID, hostRegion string) (string, string, string, string) {
+	envFile, envShell, envJSON, profileScript, err := renderManagedEnvFiles(managedEnvEntries(meta, baseDomain, hostID, hostRegion))
+	if err != nil {
+		return "", "", "{}\n", managedEnvProfileScript()
+	}
+	return envFile, envShell, envJSON, profileScript
+}
+
+func renderManagedEnvFiles(entries map[string]string) (string, string, string, string, error) {
+	keys := make([]string, 0, len(entries))
+	for key := range entries {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	var envBuilder strings.Builder
+	var shellBuilder strings.Builder
+	for _, key := range keys {
+		value := entries[key]
+		if strings.Contains(value, "\n") || strings.Contains(value, "\r") {
+			return "", "", "", "", fmt.Errorf("managed env value for %q must be single-line", key)
+		}
+		envBuilder.WriteString(key)
+		envBuilder.WriteString("=")
+		envBuilder.WriteString(value)
+		envBuilder.WriteString("\n")
+
+		shellBuilder.WriteString("export ")
+		shellBuilder.WriteString(key)
+		shellBuilder.WriteString("=")
+		shellBuilder.WriteString(shellQuote(value))
+		shellBuilder.WriteString("\n")
+	}
+
+	jsonBody, err := json.MarshalIndent(entries, "", "  ")
+	if err != nil {
+		return "", "", "", "", err
+	}
+
+	return envBuilder.String(), shellBuilder.String(), string(jsonBody) + "\n", managedEnvProfileScript(), nil
+}
+
+func managedEnvProfileScript() string {
+	return "if [ -f /etc/fascinate/env.sh ]; then\n  . /etc/fascinate/env.sh\nfi\n"
+}
+
+func cloudInitUserData(meta metadata, baseDomain, publicKey, hostID, hostRegion string) string {
+	envFile, envShell, envJSON, profileScript := bootstrapManagedEnvFiles(meta, baseDomain, hostID, hostRegion)
 	bootstrapScript := fmt.Sprintf(`#!/usr/bin/env bash
 set -euo pipefail
 
@@ -927,6 +1026,20 @@ mkdir -p /home/%s/.claude /home/%s/.codex
 mkdir -p /etc/skel/.claude /etc/skel/.codex
 chown %s:%s /home/%s/.claude /home/%s/.codex || true
 
+cat >/etc/fascinate/env <<'EOF_ENV'
+%sEOF_ENV
+
+cat >/etc/fascinate/env.sh <<'EOF_ENV_SH'
+%sEOF_ENV_SH
+
+cat >/etc/fascinate/env.json <<'EOF_ENV_JSON'
+%sEOF_ENV_JSON
+
+cat >/etc/profile.d/fascinate-env.sh <<'EOF_PROFILE'
+%sEOF_PROFILE
+
+chmod 0644 /etc/fascinate/env /etc/fascinate/env.sh /etc/fascinate/env.json /etc/profile.d/fascinate-env.sh
+
 cat >/etc/fascinate/AGENTS.md <<'EOF_AGENTS'
 %s
 EOF_AGENTS
@@ -947,7 +1060,7 @@ ln -sfn /etc/fascinate/AGENTS.md /etc/skel/.codex/AGENTS.md
 chown -h %s:%s /home/%s/AGENTS.md /home/%s/.claude/CLAUDE.md /home/%s/.codex/AGENTS.md || true
 apt-get clean
 rm -rf /var/lib/apt/lists/*
-`, meta.GuestUser, meta.GuestUser, meta.GuestUser, meta.GuestUser, meta.GuestUser, meta.GuestUser, meta.GuestUser, toolauth.ClaudeMachineInstructions(meta.Name, baseDomain, meta.PrimaryPort), meta.GuestUser, meta.GuestUser, meta.GuestUser, meta.GuestUser, meta.GuestUser, meta.GuestUser, meta.GuestUser, meta.GuestUser)
+`, meta.GuestUser, meta.GuestUser, meta.GuestUser, meta.GuestUser, meta.GuestUser, meta.GuestUser, meta.GuestUser, envFile, envShell, envJSON, profileScript, toolauth.ClaudeMachineInstructions(meta.Name, baseDomain, meta.PrimaryPort), meta.GuestUser, meta.GuestUser, meta.GuestUser, meta.GuestUser, meta.GuestUser, meta.GuestUser, meta.GuestUser, meta.GuestUser)
 
 	return fmt.Sprintf(`#cloud-config
 preserve_hostname: false

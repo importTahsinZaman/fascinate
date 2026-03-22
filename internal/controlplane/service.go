@@ -423,6 +423,7 @@ func (s *Service) CloneMachine(ctx context.Context, input CloneMachineInput) (Ma
 	if err != nil {
 		return Machine{}, err
 	}
+	targetID := uuid.NewString()
 	s.recordEventBestEffort(&user.ID, &sourceRecord.ID, "machine.clone.started", map[string]any{
 		"stage":          "runtime_clone",
 		"source_name":    sourceName,
@@ -432,6 +433,7 @@ func (s *Service) CloneMachine(ctx context.Context, input CloneMachineInput) (Ma
 	})
 
 	liveMachine, err := executor.CloneMachine(ctx, machineruntime.CloneMachineRequest{
+		MachineID:    targetID,
 		SourceName:   runtimeNameForRecord(sourceRecord),
 		TargetName:   targetName,
 		RootDiskSize: rootDiskSize,
@@ -450,7 +452,7 @@ func (s *Service) CloneMachine(ctx context.Context, input CloneMachineInput) (Ma
 	defer cancel()
 
 	record, err := s.store.CreateMachine(persistCtx, database.CreateMachineParams{
-		ID:          uuid.NewString(),
+		ID:          targetID,
 		Name:        targetName,
 		OwnerUserID: user.ID,
 		HostID:      &sourceHostID,
@@ -464,6 +466,19 @@ func (s *Service) CloneMachine(ctx context.Context, input CloneMachineInput) (Ma
 	}
 
 	if err := s.store.MarkUserTutorialCompleted(persistCtx, user.ID); err != nil {
+		return Machine{}, err
+	}
+	if err := s.syncManagedEnv(ctx, record); err != nil {
+		s.cleanupRuntimeMachine(targetName, sourceHostID)
+		deleteCtx, deleteCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer deleteCancel()
+		_ = s.store.MarkMachineDeleted(deleteCtx, record.ID)
+		s.recordEventBestEffort(&user.ID, &record.ID, "machine.clone.failed", map[string]any{
+			"stage":       "env_sync",
+			"source_name": sourceName,
+			"target_name": targetName,
+			"error":       err.Error(),
+		})
 		return Machine{}, err
 	}
 	s.recordEventBestEffort(&user.ID, &record.ID, "machine.clone.succeeded", map[string]any{
@@ -971,6 +986,7 @@ func (s *Service) queueMachineCreate(record database.MachineRecord) {
 	}
 
 	req := machineruntime.CreateMachineRequest{
+		MachineID:    record.ID,
 		Name:         runtimeName,
 		Image:        s.cfg.DefaultImage,
 		CPU:          s.cfg.DefaultMachineCPU,
@@ -1023,6 +1039,10 @@ func (s *Service) runMachineCreate(ctx context.Context, record database.MachineR
 			s.finishCreateFailure(record, req.Name, "tool_auth_restore", err)
 			return
 		}
+	}
+	if err := s.syncManagedEnv(ctx, record); err != nil {
+		s.finishCreateFailure(record, req.Name, "managed_env_sync", err)
+		return
 	}
 
 	s.finishCreateSuccess(record, liveMachine)

@@ -27,6 +27,7 @@ type hostExecutor interface {
 	ListMachines(context.Context) ([]machineruntime.Machine, error)
 	GetMachine(context.Context, string) (machineruntime.Machine, error)
 	CreateMachine(context.Context, machineruntime.CreateMachineRequest) (machineruntime.Machine, error)
+	SyncManagedEnv(context.Context, string, machineruntime.ManagedEnvRequest) error
 	StartMachine(context.Context, string) (machineruntime.Machine, error)
 	DeleteMachine(context.Context, string) error
 	CloneMachine(context.Context, machineruntime.CloneMachineRequest) (machineruntime.Machine, error)
@@ -65,6 +66,10 @@ func (l *localHostExecutor) GetMachine(ctx context.Context, name string) (machin
 
 func (l *localHostExecutor) CreateMachine(ctx context.Context, req machineruntime.CreateMachineRequest) (machineruntime.Machine, error) {
 	return l.runtime.CreateMachine(ctx, req)
+}
+
+func (l *localHostExecutor) SyncManagedEnv(ctx context.Context, name string, req machineruntime.ManagedEnvRequest) error {
+	return l.runtime.SyncManagedEnv(ctx, name, req)
 }
 
 func (l *localHostExecutor) StartMachine(ctx context.Context, name string) (machineruntime.Machine, error) {

@@ -44,6 +44,10 @@ type fakeMachineManager struct {
 	getOwnerEmail       string
 	getResult           controlplane.Machine
 	getErr              error
+	getEnvOwner         string
+	getEnvName          string
+	getEnvResult        controlplane.MachineEnv
+	getEnvErr           error
 	createInput         controlplane.CreateMachineInput
 	createResult        controlplane.Machine
 	createErr           error
@@ -63,6 +67,15 @@ type fakeMachineManager struct {
 	deleteSnapshotName   string
 	deleteSnapshotOwner  string
 	deleteSnapshotErr    error
+	listEnvOwner         string
+	listEnvResult        []controlplane.EnvVar
+	listEnvErr           error
+	setEnvInput          controlplane.SetEnvVarInput
+	setEnvResult         controlplane.EnvVar
+	setEnvErr            error
+	deleteEnvOwner       string
+	deleteEnvKey         string
+	deleteEnvErr         error
 
 	diagMachineOwner   string
 	diagMachineName    string
@@ -104,6 +117,15 @@ func (f *fakeMachineManager) GetPublicMachine(context.Context, string) (controlp
 		return controlplane.Machine{}, f.getErr
 	}
 	return f.getResult, nil
+}
+
+func (f *fakeMachineManager) GetMachineEnv(_ context.Context, name, ownerEmail string) (controlplane.MachineEnv, error) {
+	f.getEnvName = name
+	f.getEnvOwner = ownerEmail
+	if f.getEnvErr != nil {
+		return controlplane.MachineEnv{}, f.getEnvErr
+	}
+	return f.getEnvResult, nil
 }
 
 func (f *fakeMachineManager) CreateMachine(_ context.Context, input controlplane.CreateMachineInput) (controlplane.Machine, error) {
@@ -148,6 +170,28 @@ func (f *fakeMachineManager) DeleteSnapshot(_ context.Context, name, ownerEmail 
 	f.deleteSnapshotName = name
 	f.deleteSnapshotOwner = ownerEmail
 	return f.deleteSnapshotErr
+}
+
+func (f *fakeMachineManager) ListEnvVars(_ context.Context, ownerEmail string) ([]controlplane.EnvVar, error) {
+	f.listEnvOwner = ownerEmail
+	if f.listEnvErr != nil {
+		return nil, f.listEnvErr
+	}
+	return f.listEnvResult, nil
+}
+
+func (f *fakeMachineManager) SetEnvVar(_ context.Context, input controlplane.SetEnvVarInput) (controlplane.EnvVar, error) {
+	f.setEnvInput = input
+	if f.setEnvErr != nil {
+		return controlplane.EnvVar{}, f.setEnvErr
+	}
+	return f.setEnvResult, nil
+}
+
+func (f *fakeMachineManager) DeleteEnvVar(_ context.Context, ownerEmail, key string) error {
+	f.deleteEnvOwner = ownerEmail
+	f.deleteEnvKey = key
+	return f.deleteEnvErr
 }
 
 func (f *fakeMachineManager) GetMachineDiagnostics(_ context.Context, name, ownerEmail string) (controlplane.MachineDiagnostics, error) {
@@ -611,6 +655,89 @@ func TestMachineSubdomainReturnsNotFoundForUnknownMachine(t *testing.T) {
 	}
 	if body := rec.Body.String(); !strings.Contains(body, "Unknown machine") {
 		t.Fatalf("unexpected body: %q", body)
+	}
+}
+
+func TestListEnvVarsEndpoint(t *testing.T) {
+	t.Parallel()
+
+	handler := newTestHandler(t, &fakeRuntime{}, &fakeMachineManager{
+		listEnvResult: []controlplane.EnvVar{{Key: "FRONTEND_URL", RawValue: "${FASCINATE_PUBLIC_URL}"}},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/env-vars?owner_email=dev@example.com", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "FRONTEND_URL") {
+		t.Fatalf("unexpected response body %q", rec.Body.String())
+	}
+}
+
+func TestSetEnvVarEndpoint(t *testing.T) {
+	t.Parallel()
+
+	manager := &fakeMachineManager{
+		setEnvResult: controlplane.EnvVar{Key: "FRONTEND_URL", RawValue: "${FASCINATE_PUBLIC_URL}"},
+	}
+	handler := newTestHandler(t, &fakeRuntime{}, manager)
+
+	body := `{"owner_email":"dev@example.com","key":"FRONTEND_URL","value":"${FASCINATE_PUBLIC_URL}"}`
+	req := httptest.NewRequest(http.MethodPut, "/v1/env-vars", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if manager.setEnvInput.Key != "FRONTEND_URL" || manager.setEnvInput.OwnerEmail != "dev@example.com" {
+		t.Fatalf("unexpected env input %+v", manager.setEnvInput)
+	}
+}
+
+func TestDeleteEnvVarEndpoint(t *testing.T) {
+	t.Parallel()
+
+	manager := &fakeMachineManager{}
+	handler := newTestHandler(t, &fakeRuntime{}, manager)
+
+	req := httptest.NewRequest(http.MethodDelete, "/v1/env-vars/FRONTEND_URL?owner_email=dev@example.com", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d", rec.Code)
+	}
+	if manager.deleteEnvOwner != "dev@example.com" || manager.deleteEnvKey != "FRONTEND_URL" {
+		t.Fatalf("unexpected delete env call owner=%q key=%q", manager.deleteEnvOwner, manager.deleteEnvKey)
+	}
+}
+
+func TestGetMachineEnvEndpoint(t *testing.T) {
+	t.Parallel()
+
+	handler := newTestHandler(t, &fakeRuntime{}, &fakeMachineManager{
+		getEnvResult: controlplane.MachineEnv{
+			MachineName: "m-1",
+			Entries: []controlplane.EffectiveEnvVar{
+				{Key: "FASCINATE_PUBLIC_URL", Value: "https://m-1.fascinate.dev"},
+			},
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/machines/m-1/env?owner_email=dev@example.com", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "FASCINATE_PUBLIC_URL") {
+		t.Fatalf("unexpected response body %q", rec.Body.String())
 	}
 }
 

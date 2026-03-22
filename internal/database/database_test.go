@@ -234,3 +234,62 @@ func TestHostLifecycleAndOwnershipAssignment(t *testing.T) {
 		t.Fatalf("expected heartbeat timestamp")
 	}
 }
+
+func TestUserEnvVarLifecycle(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, err := Open(ctx, filepath.Join(t.TempDir(), "fascinate.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	if err := store.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	user, err := store.UpsertUser(ctx, "dev@example.com", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	record, err := store.UpsertUserEnvVar(ctx, UpsertEnvVarParams{
+		UserID:   user.ID,
+		Key:      "FRONTEND_URL",
+		RawValue: "${FASCINATE_PUBLIC_URL}",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.Key != "FRONTEND_URL" {
+		t.Fatalf("unexpected env key %q", record.Key)
+	}
+
+	record, err = store.UpsertUserEnvVar(ctx, UpsertEnvVarParams{
+		UserID:   user.ID,
+		Key:      "FRONTEND_URL",
+		RawValue: "https://example.com",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.RawValue != "https://example.com" {
+		t.Fatalf("unexpected env value %q", record.RawValue)
+	}
+
+	records, err := store.ListUserEnvVars(ctx, user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("expected 1 env var, got %d", len(records))
+	}
+
+	if err := store.DeleteUserEnvVar(ctx, user.ID, "FRONTEND_URL"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.GetUserEnvVar(ctx, user.ID, "FRONTEND_URL"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound after delete, got %v", err)
+	}
+}

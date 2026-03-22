@@ -35,12 +35,16 @@ type keyLookup interface {
 type machineManager interface {
 	ListMachines(context.Context, string) ([]controlplane.Machine, error)
 	GetMachine(context.Context, string, string) (controlplane.Machine, error)
+	GetMachineEnv(context.Context, string, string) (controlplane.MachineEnv, error)
 	CreateMachine(context.Context, controlplane.CreateMachineInput) (controlplane.Machine, error)
 	DeleteMachine(context.Context, string, string) error
 	CloneMachine(context.Context, controlplane.CloneMachineInput) (controlplane.Machine, error)
 	ListSnapshots(context.Context, string) ([]controlplane.Snapshot, error)
 	CreateSnapshot(context.Context, controlplane.CreateSnapshotInput) (controlplane.Snapshot, error)
 	DeleteSnapshot(context.Context, string, string) error
+	ListEnvVars(context.Context, string) ([]controlplane.EnvVar, error)
+	SetEnvVar(context.Context, controlplane.SetEnvVarInput) (controlplane.EnvVar, error)
+	DeleteEnvVar(context.Context, string, string) error
 	SyncToolAuth(context.Context, string, string) error
 	CompleteTutorial(context.Context, string) error
 }
@@ -263,6 +267,8 @@ func (s *Server) runCommand(channel ssh.Channel, requests <-chan *ssh.Request, a
 			return 1
 		}
 		return 0
+	case "env":
+		return s.envCommand(channel, auth.userEmail, fields)
 	case "create":
 		return s.createMachine(channel, auth.userEmail, fields)
 	case "clone":
@@ -277,7 +283,7 @@ func (s *Server) runCommand(channel ssh.Channel, requests <-chan *ssh.Request, a
 		return s.tutorialMachine(channel, requests, auth.userEmail, fields, ptyState)
 	default:
 		fmt.Fprintf(channel, "unknown command: %s\n", fields[0])
-		fmt.Fprintln(channel, "available commands: help, dashboard, whoami, machines, snapshots, create, clone, delete, snapshot, shell, tutorial, exit")
+		fmt.Fprintln(channel, "available commands: help, dashboard, whoami, machines, snapshots, env, create, clone, delete, snapshot, shell, tutorial, exit")
 		return 127
 	}
 }
@@ -425,7 +431,7 @@ func (s *Server) renderDashboard(channel ssh.Channel, userEmail string) {
 	if err := s.renderMachines(channel, userEmail); err != nil {
 		fmt.Fprintf(channel, "error loading machines: %v\n", err)
 	}
-	fmt.Fprintln(channel, "\ncommands: machines, snapshots, create <name> [--from-snapshot <snapshot>], clone <source> <target>, snapshot save <machine> <name>, snapshot delete <name>, delete <name> --confirm <name>, shell <name>, tutorial <name>, whoami, help, exit")
+	fmt.Fprintln(channel, "\ncommands: machines, snapshots, env, create <name> [--from-snapshot <snapshot>], clone <source> <target>, snapshot save <machine> <name>, snapshot delete <name>, delete <name> --confirm <name>, shell <name>, tutorial <name>, whoami, help, exit")
 }
 
 func (s *Server) renderMachines(channel ssh.Channel, userEmail string) error {
@@ -465,6 +471,90 @@ func (s *Server) renderSnapshots(channel ssh.Channel, userEmail string) error {
 		fmt.Fprintf(channel, "- %s\t%s\t%s\n", snapshot.Name, snapshot.State, snapshot.SourceMachineName)
 	}
 	return nil
+}
+
+func (s *Server) renderEnvVars(channel ssh.Channel, userEmail string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	envVars, err := s.machines.ListEnvVars(ctx, userEmail)
+	if err != nil {
+		return err
+	}
+	if len(envVars) == 0 {
+		fmt.Fprintln(channel, "no env vars set")
+		return nil
+	}
+	for _, envVar := range envVars {
+		fmt.Fprintf(channel, "%s=%s\n", envVar.Key, envVar.RawValue)
+	}
+	return nil
+}
+
+func (s *Server) envCommand(channel ssh.Channel, userEmail string, fields []string) uint32 {
+	if len(fields) == 1 {
+		if err := s.renderEnvVars(channel, userEmail); err != nil {
+			fmt.Fprintf(channel, "error: %v\n", err)
+			return 1
+		}
+		return 0
+	}
+
+	switch fields[1] {
+	case "set":
+		if len(fields) < 4 {
+			fmt.Fprintln(channel, "usage: env | env set <KEY> <value> | env unset <KEY> | env machine <name>")
+			return 2
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+
+		envVar, err := s.machines.SetEnvVar(ctx, controlplane.SetEnvVarInput{
+			OwnerEmail: userEmail,
+			Key:        fields[2],
+			Value:      strings.Join(fields[3:], " "),
+		})
+		if err != nil {
+			fmt.Fprintf(channel, "error: %v\n", err)
+			return 1
+		}
+		fmt.Fprintf(channel, "set %s=%s\n", envVar.Key, envVar.RawValue)
+		return 0
+	case "unset":
+		if len(fields) != 3 {
+			fmt.Fprintln(channel, "usage: env | env set <KEY> <value> | env unset <KEY> | env machine <name>")
+			return 2
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+
+		if err := s.machines.DeleteEnvVar(ctx, userEmail, fields[2]); err != nil {
+			fmt.Fprintf(channel, "error: %v\n", err)
+			return 1
+		}
+		fmt.Fprintf(channel, "unset %s\n", strings.ToUpper(strings.TrimSpace(fields[2])))
+		return 0
+	case "machine":
+		if len(fields) != 3 {
+			fmt.Fprintln(channel, "usage: env | env set <KEY> <value> | env unset <KEY> | env machine <name>")
+			return 2
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		env, err := s.machines.GetMachineEnv(ctx, fields[2], userEmail)
+		if err != nil {
+			fmt.Fprintf(channel, "error: %v\n", err)
+			return 1
+		}
+		for _, entry := range env.Entries {
+			fmt.Fprintf(channel, "%s=%s\n", entry.Key, entry.Value)
+		}
+		return 0
+	default:
+		fmt.Fprintln(channel, "usage: env | env set <KEY> <value> | env unset <KEY> | env machine <name>")
+		return 2
+	}
 }
 
 func (s *Server) createMachine(channel ssh.Channel, userEmail string, fields []string) uint32 {

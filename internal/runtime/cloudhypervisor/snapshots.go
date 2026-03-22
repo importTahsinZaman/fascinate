@@ -161,6 +161,7 @@ func (m *Manager) restoreMachineFromSnapshot(ctx context.Context, snapshotName s
 	}()
 
 	createReq := machineruntime.CreateMachineRequest{
+		MachineID:    strings.TrimSpace(req.MachineID),
 		Name:         name,
 		CPU:          snapshotMeta.CPU,
 		Memory:       snapshotMeta.Memory,
@@ -605,5 +606,8 @@ func (m *Manager) refreshMachineIdentity(ctx context.Context, meta metadata) err
 		"sudo mkdir -p /etc/fascinate",
 		"sudo tee /etc/fascinate/AGENTS.md >/dev/null <<'EOF'\n" + toolauth.ClaudeMachineInstructions(meta.Name, m.baseDomain, meta.PrimaryPort) + "\nEOF",
 	}, "\n")
-	return m.runGuestCommand(ctx, meta, command)
+	if err := m.runGuestCommand(ctx, meta, command); err != nil {
+		return err
+	}
+	return m.syncManagedEnvFiles(ctx, meta, managedEnvEntries(meta, m.baseDomain, m.hostID, m.hostRegion))
 }

@@ -29,12 +29,16 @@ type machineManager interface {
 	ListMachines(context.Context, string) ([]controlplane.Machine, error)
 	GetMachine(context.Context, string, string) (controlplane.Machine, error)
 	GetPublicMachine(context.Context, string) (controlplane.Machine, error)
+	GetMachineEnv(context.Context, string, string) (controlplane.MachineEnv, error)
 	CreateMachine(context.Context, controlplane.CreateMachineInput) (controlplane.Machine, error)
 	DeleteMachine(context.Context, string, string) error
 	CloneMachine(context.Context, controlplane.CloneMachineInput) (controlplane.Machine, error)
 	ListSnapshots(context.Context, string) ([]controlplane.Snapshot, error)
 	CreateSnapshot(context.Context, controlplane.CreateSnapshotInput) (controlplane.Snapshot, error)
 	DeleteSnapshot(context.Context, string, string) error
+	ListEnvVars(context.Context, string) ([]controlplane.EnvVar, error)
+	SetEnvVar(context.Context, controlplane.SetEnvVarInput) (controlplane.EnvVar, error)
+	DeleteEnvVar(context.Context, string, string) error
 }
 
 type diagnosticsManager interface {
@@ -159,6 +163,81 @@ func New(cfg config.Config, store *database.Store, runtime runtimeChecker, machi
 		}
 	})
 
+	mux.HandleFunc("/v1/env-vars", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+			defer cancel()
+
+			ownerEmail, err := requiredOwnerEmail(strings.TrimSpace(r.URL.Query().Get("owner_email")))
+			if err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
+			envVars, err := machines.ListEnvVars(ctx, ownerEmail)
+			if err != nil {
+				writeServiceError(w, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"env_vars": envVars})
+		case http.MethodPut:
+			var body struct {
+				OwnerEmail string `json:"owner_email"`
+				Key        string `json:"key"`
+				Value      string `json:"value"`
+			}
+			if err := decodeJSON(r, &body); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
+			ownerEmail, err := requiredOwnerEmail(body.OwnerEmail)
+			if err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
+			ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+			defer cancel()
+
+			envVar, err := machines.SetEnvVar(ctx, controlplane.SetEnvVarInput{
+				OwnerEmail: ownerEmail,
+				Key:        body.Key,
+				Value:      body.Value,
+			})
+			if err != nil {
+				writeServiceError(w, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, envVar)
+		default:
+			writeMethodNotAllowed(w, http.MethodGet, http.MethodPut)
+		}
+	})
+
+	mux.HandleFunc("/v1/env-vars/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete {
+			writeMethodNotAllowed(w, http.MethodDelete)
+			return
+		}
+		key := strings.Trim(strings.TrimPrefix(r.URL.Path, "/v1/env-vars/"), "/")
+		if key == "" {
+			http.NotFound(w, r)
+			return
+		}
+		ownerEmail, err := requiredOwnerEmail(strings.TrimSpace(r.URL.Query().Get("owner_email")))
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+		defer cancel()
+
+		if err := machines.DeleteEnvVar(ctx, ownerEmail, key); err != nil {
+			writeServiceError(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+
 	mux.HandleFunc("/v1/machines/", func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimPrefix(r.URL.Path, "/v1/machines/")
 		path = strings.Trim(path, "/")
@@ -242,6 +321,28 @@ func New(cfg config.Config, store *database.Store, runtime runtimeChecker, machi
 			}
 
 			writeJSON(w, http.StatusCreated, machine)
+			return
+		}
+
+		if len(parts) == 2 && parts[1] == "env" {
+			if r.Method != http.MethodGet {
+				writeMethodNotAllowed(w, http.MethodGet)
+				return
+			}
+			ownerEmail, err := requiredOwnerEmail(strings.TrimSpace(r.URL.Query().Get("owner_email")))
+			if err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
+			ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+			defer cancel()
+
+			env, err := machines.GetMachineEnv(ctx, name, ownerEmail)
+			if err != nil {
+				writeServiceError(w, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, env)
 			return
 		}
 
