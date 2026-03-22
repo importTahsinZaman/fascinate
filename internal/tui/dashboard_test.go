@@ -19,8 +19,8 @@ type fakeMachines struct {
 	listErr             error
 	createInput         controlplane.CreateMachineInput
 	createErr           error
-	cloneInput          controlplane.CloneMachineInput
-	cloneErr            error
+	forkInput          controlplane.ForkMachineInput
+	forkErr            error
 	deleteName          string
 	deleteOwner         string
 	deleteErr           error
@@ -72,10 +72,10 @@ func (f *fakeMachines) DeleteMachine(_ context.Context, name, ownerEmail string)
 	return f.deleteErr
 }
 
-func (f *fakeMachines) CloneMachine(_ context.Context, input controlplane.CloneMachineInput) (controlplane.Machine, error) {
-	f.cloneInput = input
-	if f.cloneErr != nil {
-		return controlplane.Machine{}, f.cloneErr
+func (f *fakeMachines) ForkMachine(_ context.Context, input controlplane.ForkMachineInput) (controlplane.Machine, error) {
+	f.forkInput = input
+	if f.forkErr != nil {
+		return controlplane.Machine{}, f.forkErr
 	}
 	return controlplane.Machine{Name: input.TargetName}, nil
 }
@@ -221,30 +221,30 @@ func TestModelDeleteConfirmationMismatch(t *testing.T) {
 	}
 }
 
-func TestModelCloneMachineError(t *testing.T) {
+func TestModelForkMachineError(t *testing.T) {
 	t.Parallel()
 
 	manager := &fakeMachines{
 		listResult: []controlplane.Machine{{Name: "habits", State: "RUNNING"}},
-		cloneErr:   errors.New("boom"),
+		forkErr:   errors.New("boom"),
 	}
 	model := NewDashboard("dev@example.com", manager, 80, 24)
 
 	updated, _ := model.Update(loadMachinesMsg{machines: manager.listResult})
 	withItems := updated.(Model)
 	updated, _ = withItems.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'c'}})
-	cloneMode := updated.(Model)
-	cloneMode.input.SetValue("habits-v2")
+	forkMode := updated.(Model)
+	forkMode.input.SetValue("habits-v2")
 
-	updated, cmd := cloneMode.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, cmd := forkMode.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	resultMsg := cmd()
 	updated, _ = updated.(Model).Update(resultMsg)
 	got := updated.(Model)
 	if got.errMsg == "" {
-		t.Fatalf("expected clone error")
+		t.Fatalf("expected fork error")
 	}
-	if manager.cloneInput.TargetName != "habits-v2" {
-		t.Fatalf("unexpected clone input: %+v", manager.cloneInput)
+	if manager.forkInput.TargetName != "habits-v2" {
+		t.Fatalf("unexpected fork input: %+v", manager.forkInput)
 	}
 }
 

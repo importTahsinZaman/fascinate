@@ -746,6 +746,8 @@ func persistentGuestShellCommand(tmuxSession, shellCommand string) string {
 		`if ! tmux has-session -t "$session" 2>/dev/null; then`,
 		`  tmux new-session -d -s "$session" "$start_command"`,
 		"fi",
+		`tmux set-option -t "$session" status off >/dev/null 2>&1 || true`,
+		`tmux set-option -t "$session" mouse on >/dev/null 2>&1 || true`,
 		`exec tmux attach-session -t "$session"`,
 	}, "\n")
 }

@@ -68,7 +68,7 @@ type CreateMachineInput struct {
 	SnapshotName string
 }
 
-type CloneMachineInput struct {
+type ForkMachineInput struct {
 	SourceName string
 	TargetName string
 	OwnerEmail string
@@ -370,7 +370,7 @@ func (s *Service) DeleteMachine(ctx context.Context, name, ownerEmail string) er
 	return nil
 }
 
-func (s *Service) CloneMachine(ctx context.Context, input CloneMachineInput) (Machine, error) {
+func (s *Service) ForkMachine(ctx context.Context, input ForkMachineInput) (Machine, error) {
 	sourceName, err := validateMachineName(input.SourceName)
 	if err != nil {
 		return Machine{}, err
@@ -424,23 +424,23 @@ func (s *Service) CloneMachine(ctx context.Context, input CloneMachineInput) (Ma
 		return Machine{}, err
 	}
 	targetID := uuid.NewString()
-	s.recordEventBestEffort(&user.ID, &sourceRecord.ID, "machine.clone.started", map[string]any{
-		"stage":          "runtime_clone",
+	s.recordEventBestEffort(&user.ID, &sourceRecord.ID, "machine.fork.started", map[string]any{
+		"stage":          "runtime_fork",
 		"source_name":    sourceName,
 		"source_id":      sourceRecord.ID,
 		"target_name":    targetName,
 		"source_runtime": runtimeNameForRecord(sourceRecord),
 	})
 
-	liveMachine, err := executor.CloneMachine(ctx, machineruntime.CloneMachineRequest{
+	liveMachine, err := executor.ForkMachine(ctx, machineruntime.ForkMachineRequest{
 		MachineID:    targetID,
 		SourceName:   runtimeNameForRecord(sourceRecord),
 		TargetName:   targetName,
 		RootDiskSize: rootDiskSize,
 	})
 	if err != nil {
-		s.recordEventBestEffort(&user.ID, &sourceRecord.ID, "machine.clone.failed", map[string]any{
-			"stage":       "runtime_clone",
+		s.recordEventBestEffort(&user.ID, &sourceRecord.ID, "machine.fork.failed", map[string]any{
+			"stage":       "runtime_fork",
 			"source_name": sourceName,
 			"target_name": targetName,
 			"error":       err.Error(),
@@ -473,7 +473,7 @@ func (s *Service) CloneMachine(ctx context.Context, input CloneMachineInput) (Ma
 		deleteCtx, deleteCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer deleteCancel()
 		_ = s.store.MarkMachineDeleted(deleteCtx, record.ID)
-		s.recordEventBestEffort(&user.ID, &record.ID, "machine.clone.failed", map[string]any{
+		s.recordEventBestEffort(&user.ID, &record.ID, "machine.fork.failed", map[string]any{
 			"stage":       "env_sync",
 			"source_name": sourceName,
 			"target_name": targetName,
@@ -481,7 +481,7 @@ func (s *Service) CloneMachine(ctx context.Context, input CloneMachineInput) (Ma
 		})
 		return Machine{}, err
 	}
-	s.recordEventBestEffort(&user.ID, &record.ID, "machine.clone.succeeded", map[string]any{
+	s.recordEventBestEffort(&user.ID, &record.ID, "machine.fork.succeeded", map[string]any{
 		"stage":        "complete",
 		"source_name":  sourceName,
 		"target_name":  targetName,

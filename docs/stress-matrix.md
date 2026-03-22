@@ -16,8 +16,8 @@ This document defines the current Fascinate product expectations and maps each e
 | Service restart | Restarting `fascinate` does not kill running VMs or break routing/forwarders | `ops/host/smoke.sh`, `ops/host/stress.sh` |
 | Snapshot save | Saving a snapshot from a running VM succeeds and records snapshot artifacts durably | `ops/host/smoke-snapshots.sh`, `ops/host/stress.sh` |
 | Create from snapshot | A VM created from a saved snapshot restores the captured machine state instead of booting from source files alone | `ops/host/smoke-snapshots.sh`, `ops/host/stress.sh` |
-| True clone | Cloning a running VM produces a live independent copy with the captured app/process/container state already running | `ops/host/smoke-snapshots.sh`, `ops/host/stress.sh` |
-| Clone independence | After clone completes, source and clone can diverge independently without shared runtime side effects | `ops/host/smoke-snapshots.sh`, `ops/host/stress.sh` |
+| True fork | Forking a running VM produces a live independent copy with the captured app/process/container state already running | `ops/host/smoke-snapshots.sh`, `ops/host/stress.sh` |
+| Fork independence | After fork completes, source and fork can diverge independently without shared runtime side effects | `ops/host/smoke-snapshots.sh`, `ops/host/stress.sh` |
 | Cleanup | Deleting machines and snapshots removes runtime dirs, forwarders, netns/veth artifacts, and snapshot artifact dirs | `ops/host/smoke-snapshots.sh`, `ops/host/stress.sh` |
 | Tool auth persistence | Supported tool auth persists across later VMs for the same user and is not silently clobbered by opportunistic empty syncs | `internal/toolauth/manager_test.go`, `internal/controlplane/service_test.go`, targeted `ops/host/smoke-tool-auth.sh` runs |
 | Tool auth diagnostics | Capture/restore failures for Claude, Codex, or GitHub auth are visible to operators | `internal/httpapi/server_test.go`, `ops/host/diagnostics.sh` |
@@ -28,7 +28,7 @@ This document defines the current Fascinate product expectations and maps each e
 ## Live Validation Entry Points
 
 - Basic lifecycle smoke: `sudo ./ops/host/smoke.sh`
-- Snapshot and clone smoke: `sudo ./ops/host/smoke-snapshots.sh`
+- Snapshot and fork smoke: `sudo ./ops/host/smoke-snapshots.sh`
 - Tool-auth persistence harness: `sudo ./ops/host/smoke-tool-auth.sh`
 - Full workload stress pass: `sudo ./ops/host/stress.sh`
 - Timing benchmark: `sudo ./ops/host/benchmark.sh`
@@ -42,5 +42,5 @@ This document defines the current Fascinate product expectations and maps each e
 ## Interpreting Failures
 
 - If a machine is `RUNNING` but the app URL is wrong, inspect machine diagnostics first to distinguish forwarder failure from guest workload failure.
-- If a snapshot or clone fails, inspect both snapshot diagnostics and owner events; failure stage and error details should be recorded there.
+- If a snapshot or fork fails, inspect both snapshot diagnostics and owner events; failure stage and error details should be recorded there.
 - If tool auth does not persist, inspect tool-auth diagnostics and owner events before touching guest files directly.

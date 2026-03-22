@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Fascinate is a browser-first command center for persistent Cloud Hypervisor developer VMs, including full-VM snapshots, true cloning, managed env vars, and low-latency browser terminals.
+Fascinate is a browser-first command center for persistent Cloud Hypervisor developer VMs, including full-VM snapshots, true forking, managed env vars, and low-latency browser terminals.
 
 This repo uses Go modules at the root and a dedicated `web/` package that uses `pnpm`.
 
@@ -35,7 +35,7 @@ This repo uses Go modules at the root and a dedicated `web/` package that uses `
 - `internal/browserterm/` — browser terminal session issuance, host-local PTY gateway, and diagnostics
 - `internal/config/` — environment config and env-file loading
 - `internal/controlplane/` — machine/snapshot orchestration, env vars, host placement, and state transitions
-- `internal/runtime/cloudhypervisor/` — VM runtime, network namespaces, snapshots, restore/clone
+- `internal/runtime/cloudhypervisor/` — VM runtime, network namespaces, snapshots, restore/fork
 - `internal/httpapi/` — REST API, SPA/static serving, browser auth endpoints, terminal APIs
 - `internal/toolauth/` — persisted auth adapters for Claude, Codex, and GitHub CLI
 - `web/` — React/Vite browser command center, workspace canvas, and xterm-based terminal windows

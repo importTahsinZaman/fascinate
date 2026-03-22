@@ -173,7 +173,7 @@ func TestHostLifecycleAndOwnershipAssignment(t *testing.T) {
 		Role:             "combined",
 		Status:           "ACTIVE",
 		LabelsJSON:       `{"provider":"ovh"}`,
-		CapabilitiesJSON: `["vm","snapshot","clone"]`,
+		CapabilitiesJSON: `["vm","snapshot","fork"]`,
 		RuntimeVersion:   "cloud-hypervisor 45.0",
 	})
 	if err != nil {

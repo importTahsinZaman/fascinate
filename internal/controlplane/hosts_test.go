@@ -213,7 +213,7 @@ func ptrString(value string) *string {
 	return &value
 }
 
-func TestServiceClonePersistsSourceHostOwnership(t *testing.T) {
+func TestServiceForkPersistsSourceHostOwnership(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -244,7 +244,7 @@ func TestServiceClonePersistsSourceHostOwnership(t *testing.T) {
 		Disk:   "20GiB",
 	}
 
-	clone, err := service.CloneMachine(ctx, CloneMachineInput{
+	fork, err := service.ForkMachine(ctx, ForkMachineInput{
 		SourceName: "habits",
 		TargetName: "habits-v2",
 		OwnerEmail: user.Email,
@@ -252,8 +252,8 @@ func TestServiceClonePersistsSourceHostOwnership(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if clone.HostID != "local-host" {
-		t.Fatalf("unexpected clone host id in response: %q", clone.HostID)
+	if fork.HostID != "local-host" {
+		t.Fatalf("unexpected fork host id in response: %q", fork.HostID)
 	}
 
 	record, err := store.GetMachineByName(ctx, "habits-v2")
@@ -261,6 +261,6 @@ func TestServiceClonePersistsSourceHostOwnership(t *testing.T) {
 		t.Fatal(err)
 	}
 	if record.HostID == nil || *record.HostID != "local-host" {
-		t.Fatalf("unexpected stored clone host id: %+v", record.HostID)
+		t.Fatalf("unexpected stored fork host id: %+v", record.HostID)
 	}
 }

@@ -51,8 +51,8 @@ describe("workspace store", () => {
 
     expect(useWorkspaceStore.getState().windows).toHaveLength(1);
     expect(useWorkspaceStore.getState().windows[0].sessionId).toBe("term-1");
-    expect(useWorkspaceStore.getState().windows[0].width).toBe(1040);
-    expect(useWorkspaceStore.getState().windows[0].height).toBe(640);
+    expect(useWorkspaceStore.getState().windows[0].width).toBe(1144);
+    expect(useWorkspaceStore.getState().windows[0].height).toBe(736);
     expect(useWorkspaceStore.getState().viewport).toEqual({ x: 120, y: 96, scale: 1 });
   });
 

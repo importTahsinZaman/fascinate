@@ -14,7 +14,7 @@ This repo now contains:
 - a Cloud Hypervisor runtime wrapper and health endpoints
 - browser auth with emailed verification codes and DB-backed web sessions
 - a browser terminal gateway with PTY-backed WebSocket shells
-- first-class full-VM snapshots and snapshot-backed cloning
+- first-class full-VM snapshots and snapshot-backed forking
 
 ## Current Product Surface
 
@@ -30,8 +30,8 @@ Fascinate currently gives us:
   - talk to the local `cloud-hypervisor` runtime through a host executor boundary
   - provision persistent VMs asynchronously
   - save full-VM snapshots and restore new VMs from them
-  - perform true snapshot-backed cloning
-  - persist per-user Fascinate env vars and rewrite machine-specific built-ins on create, restore, and clone
+  - perform true snapshot-backed forking
+  - persist per-user Fascinate env vars and rewrite machine-specific built-ins on create, restore, and fork
   - persist supported tool auth across later VMs for the same user
   - serve the browser command center on the primary Fascinate origin
   - authenticate browser users through emailed verification codes and DB-backed sessions
@@ -52,7 +52,7 @@ Current browser HTTP API:
 - `GET /v1/machines/{name}`
 - `GET /v1/machines/{name}/env`
 - `DELETE /v1/machines/{name}`
-- `POST /v1/machines/{name}/clone`
+- `POST /v1/machines/{name}/fork`
 - `GET /v1/env-vars`
 - `PUT /v1/env-vars`
 - `DELETE /v1/env-vars/{key}`
@@ -78,11 +78,11 @@ Legacy/secondary admin surfaces still exist in the repo:
 - [`ops/host/write-caddyfile.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/write-caddyfile.sh): writes the host Caddy config for Fascinate
 - [`ops/host/install-control-plane.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/install-control-plane.sh): builds and installs the Fascinate service and web bundle on a host
 - [`ops/host/smoke.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/smoke.sh): validates the basic create, route, restart, and delete lifecycle
-- [`ops/host/benchmark.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/benchmark.sh): prints structured timing metrics for create, snapshot, restore, and clone
-- [`ops/host/stress.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/stress.sh): validates realistic app, local DB, Docker, restart, snapshot, restore, clone, divergence, and cleanup behavior
+- [`ops/host/benchmark.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/benchmark.sh): prints structured timing metrics for create, snapshot, restore, and fork
+- [`ops/host/stress.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/stress.sh): validates realistic app, local DB, Docker, restart, snapshot, restore, fork, divergence, and cleanup behavior
 - [`ops/host/diagnostics.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/diagnostics.sh): queries host, machine, snapshot, tool-auth, terminal-session, and event diagnostics from a configured host
 - [`ops/host/smoke-tool-auth.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/smoke-tool-auth.sh): targeted persistence harness for Claude, Codex, and GitHub auth across later VMs
-- [`ops/host/smoke-snapshots.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/smoke-snapshots.sh): validates saved snapshots, create-from-snapshot, and true clone flows
+- [`ops/host/smoke-snapshots.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/smoke-snapshots.sh): validates saved snapshots, create-from-snapshot, and true fork flows
 - [`docs/stress-matrix.md`](/Users/tahsin/Desktop/vmcloud/docs/stress-matrix.md): expectation matrix and operator guidance for live validation
 - [`ops/cloudhypervisor/build-base-image.sh`](/Users/tahsin/Desktop/vmcloud/ops/cloudhypervisor/build-base-image.sh): builds an agent-ready qcow2 guest image
 - [`ops/systemd/fascinate.service`](/Users/tahsin/Desktop/vmcloud/ops/systemd/fascinate.service): example systemd unit
@@ -116,13 +116,13 @@ Run the host smoke path after deploys or major runtime changes:
 sudo ./ops/host/smoke.sh
 ```
 
-Run the workload stress path when validating app, local DB, Docker, restart, snapshot, restore, clone, and cleanup behavior together:
+Run the workload stress path when validating app, local DB, Docker, restart, snapshot, restore, fork, and cleanup behavior together:
 
 ```bash
 sudo ./ops/host/stress.sh
 ```
 
-Run the benchmark path when you want structured timing metrics for bare create, snapshot, restore, and clone:
+Run the benchmark path when you want structured timing metrics for bare create, snapshot, restore, and fork:
 
 ```bash
 sudo ./ops/host/benchmark.sh
@@ -134,7 +134,7 @@ Run the automated tool-auth persistence harness when you are changing tool-auth 
 sudo ./ops/host/smoke-tool-auth.sh
 ```
 
-Run the snapshot smoke path when validating saved snapshots and true clone semantics:
+Run the snapshot smoke path when validating saved snapshots and true fork semantics:
 
 ```bash
 sudo ./ops/host/smoke-snapshots.sh
@@ -282,7 +282,7 @@ export FASCINATE_STRESS_EMAIL=stress@example.com
 export FASCINATE_STRESS_SOURCE_NAME=stress-source-$(date +%s)
 export FASCINATE_STRESS_SNAPSHOT_NAME=stress-snapshot-$(date +%s)
 export FASCINATE_STRESS_RESTORE_NAME=stress-restore-$(date +%s)
-export FASCINATE_STRESS_CLONE_NAME=stress-clone-$(date +%s)
+export FASCINATE_STRESS_FORK_NAME=stress-fork-$(date +%s)
 ```
 
 Seed an SSH key into the local SQLite DB:
@@ -347,7 +347,7 @@ User-defined env vars:
 - are stored centrally per user
 - cannot override the reserved `FASCINATE_` prefix
 - support `${NAME}` interpolation across built-ins and other user vars
-- are rewritten into restored and cloned VMs before those machines are surfaced as ready
+- are rewritten into restored and forked VMs before those machines are surfaced as ready
 
 Inside each VM, Fascinate writes:
 - `/etc/fascinate/env`
@@ -355,7 +355,7 @@ Inside each VM, Fascinate writes:
 - `/etc/fascinate/env.json`
 - `/etc/profile.d/fascinate-env.sh`
 
-Use these for clone-safe app config. For example:
+Use these for fork-safe app config. For example:
 
 ```env
 FRONTEND_URL=${FASCINATE_PUBLIC_URL}
@@ -396,7 +396,7 @@ Fascinate now has a first-class host model even in the current one-box deploymen
 Today that still dispatches to the local host executor, but it means the control plane is already shaped for:
 
 - adding more VM worker boxes later
-- keeping snapshot and clone operations host-local at first
+- keeping snapshot and fork operations host-local at first
 - eventually moving the control plane and DB onto a smaller dedicated machine
 
 Available exec-style SSH commands:
@@ -406,7 +406,7 @@ machines
 snapshots
 create habits
 create habits-v2 --from-snapshot habits-snap
-clone habits habits-v2
+fork habits habits-v2
 snapshot save habits habits-snap
 snapshot delete habits-snap
 delete habits --confirm habits
@@ -424,8 +424,8 @@ Fascinate snapshots are immutable per-user full-VM artifacts.
 Current behavior:
 - `snapshot save <machine> <name>` captures disk, memory, and device state
 - `create <name> --from-snapshot <snapshot>` restores a new VM directly from a saved snapshot
-- `clone <source> <target>` performs a true clone by taking an implicit snapshot and restoring it into the target VM
-- snapshot-created and cloned VMs keep restored state authoritative; Fascinate does not layer fresh tool-auth restore on top afterward
+- `fork <source> <target>` performs a true fork by taking an implicit snapshot and restoring it into the target VM
+- snapshot-created and forked VMs keep restored state authoritative; Fascinate does not layer fresh tool-auth restore on top afterward
 
 Runtime notes:
 - each VM runs in its own Linux network namespace
@@ -436,5 +436,5 @@ Runtime notes:
 
 1. Add recovery and “attach another SSH key” flows for existing accounts.
 2. Add signup and email-code abuse guardrails such as rate limits and quotas around account creation.
-3. Improve snapshot and clone UX in the dashboard, including clearer retention and cleanup flows.
+3. Improve snapshot and fork UX in the dashboard, including clearer retention and cleanup flows.
 4. Add more persistent tool-auth adapters beyond the current Claude, Codex, and GitHub session-state set.

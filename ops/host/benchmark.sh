@@ -17,7 +17,7 @@ Output:
   - idle restore
   - loaded snapshot
   - loaded restore
-  - clone
+  - fork
 EOF
 }
 
@@ -208,7 +208,7 @@ cleanup_bench_user() {
 }
 
 cleanup() {
-  delete_machine "${CLONE_NAME}"
+  delete_machine "${FORK_NAME}"
   delete_machine "${LOADED_RESTORE_NAME}"
   delete_machine "${IDLE_RESTORE_NAME}"
   delete_machine "${SOURCE_NAME}"
@@ -247,15 +247,15 @@ main() {
   IDLE_RESTORE_NAME="${BENCH_PREFIX}-idle-restore-${stamp}"
   LOADED_SNAPSHOT_NAME="${BENCH_PREFIX}-loaded-${stamp}"
   LOADED_RESTORE_NAME="${BENCH_PREFIX}-loaded-restore-${stamp}"
-  CLONE_NAME="${BENCH_PREFIX}-clone-${stamp}"
+  FORK_NAME="${BENCH_PREFIX}-fork-${stamp}"
 
   trap cleanup EXIT
   cleanup
 
-  local start_ms bare_create_ms idle_snapshot_ms idle_restore_ms loaded_snapshot_ms loaded_restore_ms clone_ms
-  local loaded_restore_route_ms clone_route_ms
+  local start_ms bare_create_ms idle_snapshot_ms idle_restore_ms loaded_snapshot_ms loaded_restore_ms fork_ms
+  local loaded_restore_route_ms fork_route_ms
   local idle_disk_bytes idle_memory_bytes loaded_disk_bytes loaded_memory_bytes
-  local loaded_rows loaded_restore_checks clone_checks
+  local loaded_rows loaded_restore_checks fork_checks
   local tmpdir setup_script
 
   tmpdir="$(mktemp -d)"
@@ -361,15 +361,15 @@ EOF
   curl -fsS \
     -X POST \
     -H 'Content-Type: application/json' \
-    -d "{\"target_name\":\"${CLONE_NAME}\",\"owner_email\":\"${BENCH_EMAIL}\"}" \
-    "$(api_url "/v1/machines/${SOURCE_NAME}/clone")" >/dev/null
-  wait_for_machine_ready "${CLONE_NAME}" >/dev/null
-  clone_ms="$(( $(date +%s%3N) - start_ms ))"
+    -d "{\"target_name\":\"${FORK_NAME}\",\"owner_email\":\"${BENCH_EMAIL}\"}" \
+    "$(api_url "/v1/machines/${SOURCE_NAME}/fork")" >/dev/null
+  wait_for_machine_ready "${FORK_NAME}" >/dev/null
+  fork_ms="$(( $(date +%s%3N) - start_ms ))"
 
   start_ms="$(date +%s%3N)"
-  wait_for_route_body "${CLONE_NAME}" "benchmark-loaded-ok"
-  clone_route_ms="$(( $(date +%s%3N) - start_ms ))"
-  clone_checks="$(run_guest_command "${CLONE_NAME}" "sqlite3 /home/ubuntu/benchmark.db 'select count(*) from blobs;' && echo --- && sudo docker ps --format '{{.Names}}'")"
+  wait_for_route_body "${FORK_NAME}" "benchmark-loaded-ok"
+  fork_route_ms="$(( $(date +%s%3N) - start_ms ))"
+  fork_checks="$(run_guest_command "${FORK_NAME}" "sqlite3 /home/ubuntu/benchmark.db 'select count(*) from blobs;' && echo --- && sudo docker ps --format '{{.Names}}'")"
 
   jq -n \
     --arg benchmark_owner_email "${BENCH_EMAIL}" \
@@ -379,10 +379,10 @@ EOF
     --arg idle_restore "${IDLE_RESTORE_NAME}" \
     --arg loaded_snapshot "${LOADED_SNAPSHOT_NAME}" \
     --arg loaded_restore "${LOADED_RESTORE_NAME}" \
-    --arg clone_machine "${CLONE_NAME}" \
+    --arg fork_machine "${FORK_NAME}" \
     --arg workload "public app on port 3000 + local sqlite payload + docker sidecar" \
     --arg loaded_restore_checks "${loaded_restore_checks}" \
-    --arg clone_checks "${clone_checks}" \
+    --arg fork_checks "${fork_checks}" \
     --argjson bare_create_ms "${bare_create_ms}" \
     --argjson idle_snapshot_ms "${idle_snapshot_ms}" \
     --argjson idle_snapshot_disk_bytes "${idle_disk_bytes}" \
@@ -394,8 +394,8 @@ EOF
     --argjson loaded_snapshot_memory_bytes "${loaded_memory_bytes}" \
     --argjson loaded_restore_create_ms "${loaded_restore_ms}" \
     --argjson loaded_restore_route_after_running_ms "${loaded_restore_route_ms}" \
-    --argjson clone_create_ms "${clone_ms}" \
-    --argjson clone_route_after_running_ms "${clone_route_ms}" \
+    --argjson fork_create_ms "${fork_ms}" \
+    --argjson fork_route_after_running_ms "${fork_route_ms}" \
     '{
       benchmark_owner_email: $benchmark_owner_email,
       benchmark_prefix: $benchmark_prefix,
@@ -408,8 +408,8 @@ EOF
         loaded_snapshot: $loaded_snapshot_ms,
         loaded_restore_create: $loaded_restore_create_ms,
         loaded_restore_route_after_running: $loaded_restore_route_after_running_ms,
-        clone_create: $clone_create_ms,
-        clone_route_after_running: $clone_route_after_running_ms
+        fork_create: $fork_create_ms,
+        fork_route_after_running: $fork_route_after_running_ms
       },
       snapshot_sizes_bytes: {
         idle: {
@@ -424,14 +424,14 @@ EOF
       loaded_workload: {
         sqlite_rows: $loaded_workload_rows,
         loaded_restore_checks: $loaded_restore_checks,
-        clone_checks: $clone_checks
+        fork_checks: $fork_checks
       },
       artifacts: {
         idle_snapshot: $idle_snapshot,
         idle_restore: $idle_restore,
         loaded_snapshot: $loaded_snapshot,
         loaded_restore: $loaded_restore,
-        clone_machine: $clone_machine
+        fork_machine: $fork_machine
       }
     }'
 

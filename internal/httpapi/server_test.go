@@ -57,9 +57,9 @@ type fakeMachineManager struct {
 	deleteName          string
 	deleteOwner         string
 	deleteErr           error
-	cloneInput          controlplane.CloneMachineInput
-	cloneResult         controlplane.Machine
-	cloneErr            error
+	forkInput          controlplane.ForkMachineInput
+	forkResult         controlplane.Machine
+	forkErr            error
 	listSnapshotsOwner  string
 	listSnapshotsResult []controlplane.Snapshot
 	listSnapshotsErr    error
@@ -229,12 +229,12 @@ func (f *fakeMachineManager) DeleteMachine(_ context.Context, name, ownerEmail s
 	return f.deleteErr
 }
 
-func (f *fakeMachineManager) CloneMachine(_ context.Context, input controlplane.CloneMachineInput) (controlplane.Machine, error) {
-	f.cloneInput = input
-	if f.cloneErr != nil {
-		return controlplane.Machine{}, f.cloneErr
+func (f *fakeMachineManager) ForkMachine(_ context.Context, input controlplane.ForkMachineInput) (controlplane.Machine, error) {
+	f.forkInput = input
+	if f.forkErr != nil {
+		return controlplane.Machine{}, f.forkErr
 	}
-	return f.cloneResult, nil
+	return f.forkResult, nil
 }
 
 func (f *fakeMachineManager) ListSnapshots(_ context.Context, ownerEmail string) ([]controlplane.Snapshot, error) {
@@ -418,12 +418,12 @@ func TestCreateMachineEndpointRejectsUnknownFields(t *testing.T) {
 	}
 }
 
-func TestCloneMachineEndpointReturnsNotFound(t *testing.T) {
+func TestForkMachineEndpointReturnsNotFound(t *testing.T) {
 	t.Parallel()
 
-	handler := newTestHandler(t, &fakeRuntime{}, &fakeMachineManager{cloneErr: database.ErrNotFound})
+	handler := newTestHandler(t, &fakeRuntime{}, &fakeMachineManager{forkErr: database.ErrNotFound})
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/machines/habits/clone", bytes.NewBufferString(`{"target_name":"habits-v2","owner_email":"dev@example.com"}`))
+	req := httptest.NewRequest(http.MethodPost, "/v1/machines/habits/fork", bytes.NewBufferString(`{"target_name":"habits-v2","owner_email":"dev@example.com"}`))
 	req.Header.Set("Content-Type", "application/json")
 
 	rec := httptest.NewRecorder()

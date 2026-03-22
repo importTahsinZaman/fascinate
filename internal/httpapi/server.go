@@ -33,7 +33,7 @@ type machineManager interface {
 	GetMachineEnv(context.Context, string, string) (controlplane.MachineEnv, error)
 	CreateMachine(context.Context, controlplane.CreateMachineInput) (controlplane.Machine, error)
 	DeleteMachine(context.Context, string, string) error
-	CloneMachine(context.Context, controlplane.CloneMachineInput) (controlplane.Machine, error)
+	ForkMachine(context.Context, controlplane.ForkMachineInput) (controlplane.Machine, error)
 	ListSnapshots(context.Context, string) ([]controlplane.Snapshot, error)
 	CreateSnapshot(context.Context, controlplane.CreateSnapshotInput) (controlplane.Snapshot, error)
 	DeleteSnapshot(context.Context, string, string) error
@@ -525,7 +525,7 @@ func New(cfg config.Config, store *database.Store, runtime runtimeChecker, machi
 			return
 		}
 
-		if len(parts) == 2 && parts[1] == "clone" {
+		if len(parts) == 2 && parts[1] == "fork" {
 			if r.Method != http.MethodPost {
 				writeMethodNotAllowed(w, http.MethodPost)
 				return
@@ -548,7 +548,7 @@ func New(cfg config.Config, store *database.Store, runtime runtimeChecker, machi
 			ctx, cancel := context.WithTimeout(r.Context(), 15*time.Minute)
 			defer cancel()
 
-			machine, err := machines.CloneMachine(ctx, controlplane.CloneMachineInput{
+			machine, err := machines.ForkMachine(ctx, controlplane.ForkMachineInput{
 				SourceName: name,
 				TargetName: body.TargetName,
 				OwnerEmail: ownerEmail,

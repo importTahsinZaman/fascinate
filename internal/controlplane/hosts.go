@@ -30,7 +30,7 @@ type hostExecutor interface {
 	SyncManagedEnv(context.Context, string, machineruntime.ManagedEnvRequest) error
 	StartMachine(context.Context, string) (machineruntime.Machine, error)
 	DeleteMachine(context.Context, string) error
-	CloneMachine(context.Context, machineruntime.CloneMachineRequest) (machineruntime.Machine, error)
+	ForkMachine(context.Context, machineruntime.ForkMachineRequest) (machineruntime.Machine, error)
 	ListSnapshots(context.Context) ([]machineruntime.Snapshot, error)
 	GetSnapshot(context.Context, string) (machineruntime.Snapshot, error)
 	CreateSnapshot(context.Context, machineruntime.CreateSnapshotRequest) (machineruntime.Snapshot, error)
@@ -80,8 +80,8 @@ func (l *localHostExecutor) DeleteMachine(ctx context.Context, name string) erro
 	return l.runtime.DeleteMachine(ctx, name)
 }
 
-func (l *localHostExecutor) CloneMachine(ctx context.Context, req machineruntime.CloneMachineRequest) (machineruntime.Machine, error) {
-	return l.runtime.CloneMachine(ctx, req)
+func (l *localHostExecutor) ForkMachine(ctx context.Context, req machineruntime.ForkMachineRequest) (machineruntime.Machine, error) {
+	return l.runtime.ForkMachine(ctx, req)
 }
 
 func (l *localHostExecutor) ListSnapshots(ctx context.Context) ([]machineruntime.Snapshot, error) {
@@ -161,7 +161,7 @@ func (s *Service) EnsureLocalHost(ctx context.Context) (Host, error) {
 		Role:             s.cfg.HostRole,
 		Status:           hostStatusActive,
 		LabelsJSON:       "{}",
-		CapabilitiesJSON: `["vm","snapshot","clone","shell","route","combined"]`,
+		CapabilitiesJSON: `["vm","snapshot","fork","shell","route","combined"]`,
 		RuntimeVersion:   strings.TrimSpace(s.cfg.RuntimeBinary),
 	})
 	if err != nil {

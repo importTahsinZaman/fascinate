@@ -77,7 +77,7 @@ describe("App", () => {
     );
   });
 
-  it("renders the toolbelt workspace and opens terminal windows", async () => {
+  it("renders the sidebar workspace, modals, and opens terminal windows", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const path = String(input);
       if (path === "/v1/auth/session") {
@@ -127,25 +127,37 @@ describe("App", () => {
 
     renderApp();
 
-    expect(await screen.findByRole("button", { name: "Shells" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Machines" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Machines" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "New machine" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Manage env vars" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Snapshots" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Env Vars" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Log out" })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Reset view" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Sign out" })).toBeTruthy();
 
-    fireEvent.click(screen.getByRole("button", { name: "Shells" }));
-    expect(await screen.findByText("Open a shell")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Open shell" }));
+    fireEvent.click(screen.getByRole("button", { name: "New machine" }));
+    expect(await screen.findByRole("dialog", { name: "Create machine" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Close modal" }));
 
-    expect(await screen.findByTestId("terminal-m-1")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Fork m-1" }));
+    expect(await screen.findByRole("dialog", { name: "Fork machine" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Close modal" }));
+
+    fireEvent.click(screen.getByRole("button", { name: "Snapshot m-1" }));
+    expect(await screen.findByRole("dialog", { name: "Create snapshot" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Close modal" }));
+
+    fireEvent.click(screen.getByRole("button", { name: "Manage env vars" }));
+    expect(await screen.findByRole("dialog", { name: "Environment variables" })).toBeTruthy();
+    expect(screen.getByText("FRONTEND_URL")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Close modal" }));
 
     fireEvent.click(screen.getByRole("button", { name: "Snapshots" }));
-    expect(await screen.findByText("Saved snapshots")).toBeTruthy();
-    expect(screen.getAllByText("baseline").length).toBeGreaterThan(0);
+    expect(await screen.findByRole("dialog", { name: "Snapshots" })).toBeTruthy();
+    expect(screen.getByText("baseline")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Close modal" }));
 
-    fireEvent.click(screen.getByRole("button", { name: "Env Vars" }));
-    expect(await screen.findByText("FRONTEND_URL")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "New shell" }));
+
+    expect(await screen.findByTestId("terminal-m-1")).toBeTruthy();
 
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(
@@ -153,5 +165,116 @@ describe("App", () => {
         expect.objectContaining({ method: "PUT" }),
       );
     });
+  });
+
+  it("zooms the workspace on ctrl-wheel over shell content and shell header", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path === "/v1/auth/session") {
+        return jsonResponse({ user: { id: "user-1", email: "dev@example.com", is_admin: false } });
+      }
+      if (path === "/v1/machines") {
+        return jsonResponse({
+          machines: [
+            {
+              id: "machine-1",
+              name: "m-1",
+              state: "RUNNING",
+              primary_port: 3000,
+              created_at: "2026-03-22T00:00:00Z",
+              updated_at: "2026-03-22T00:00:00Z",
+            },
+          ],
+        });
+      }
+      if (path === "/v1/snapshots") {
+        return jsonResponse({ snapshots: [] });
+      }
+      if (path === "/v1/env-vars") {
+        return jsonResponse({ env_vars: [] });
+      }
+      if (path === "/v1/workspaces/default") {
+        if (init?.method === "PUT") {
+          const body = JSON.parse(String(init.body)) as { layout: unknown };
+          return jsonResponse({ name: "default", layout: body.layout });
+        }
+        return jsonResponse({ name: "default", layout: { version: 2, windows: [], viewport: { x: 120, y: 96, scale: 1 } } });
+      }
+      throw new Error(`unexpected request ${path}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderApp();
+
+    fireEvent.click(await screen.findByRole("button", { name: "New shell" }));
+
+    const terminal = await screen.findByTestId("terminal-m-1");
+    fireEvent.wheel(terminal, { ctrlKey: true, deltaY: -100, clientX: 120, clientY: 120 });
+    expect(useWorkspaceStore.getState().viewport.scale).toBeGreaterThan(1);
+
+    const zoomedScale = useWorkspaceStore.getState().viewport.scale;
+    fireEvent.wheel(screen.getAllByText("m-1 shell")[0], {
+      ctrlKey: true,
+      deltaY: -100,
+      clientX: 140,
+      clientY: 48,
+    });
+    expect(useWorkspaceStore.getState().viewport.scale).toBeGreaterThan(zoomedScale);
+  });
+
+  it("pans the workspace on shell header wheel gestures without stealing shell body scroll", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path === "/v1/auth/session") {
+        return jsonResponse({ user: { id: "user-1", email: "dev@example.com", is_admin: false } });
+      }
+      if (path === "/v1/machines") {
+        return jsonResponse({
+          machines: [
+            {
+              id: "machine-1",
+              name: "m-1",
+              state: "RUNNING",
+              primary_port: 3000,
+              created_at: "2026-03-22T00:00:00Z",
+              updated_at: "2026-03-22T00:00:00Z",
+            },
+          ],
+        });
+      }
+      if (path === "/v1/snapshots") {
+        return jsonResponse({ snapshots: [] });
+      }
+      if (path === "/v1/env-vars") {
+        return jsonResponse({ env_vars: [] });
+      }
+      if (path === "/v1/workspaces/default") {
+        if (init?.method === "PUT") {
+          const body = JSON.parse(String(init.body)) as { layout: unknown };
+          return jsonResponse({ name: "default", layout: body.layout });
+        }
+        return jsonResponse({ name: "default", layout: { version: 2, windows: [], viewport: { x: 120, y: 96, scale: 1 } } });
+      }
+      throw new Error(`unexpected request ${path}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderApp();
+
+    fireEvent.click(await screen.findByRole("button", { name: "New shell" }));
+
+    const terminal = await screen.findByTestId("terminal-m-1");
+    fireEvent.wheel(terminal, { deltaX: 20, deltaY: 32, clientX: 120, clientY: 120 });
+    expect(useWorkspaceStore.getState().viewport.x).toBe(120);
+    expect(useWorkspaceStore.getState().viewport.y).toBe(96);
+
+    fireEvent.wheel(screen.getAllByText("m-1 shell")[0], {
+      deltaX: 16,
+      deltaY: 24,
+      clientX: 140,
+      clientY: 48,
+    });
+    expect(useWorkspaceStore.getState().viewport.x).toBe(104);
+    expect(useWorkspaceStore.getState().viewport.y).toBe(72);
   });
 });

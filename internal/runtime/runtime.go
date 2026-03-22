@@ -16,7 +16,7 @@ type Manager interface {
 	SyncManagedEnv(context.Context, string, ManagedEnvRequest) error
 	StartMachine(context.Context, string) (Machine, error)
 	DeleteMachine(context.Context, string) error
-	CloneMachine(context.Context, CloneMachineRequest) (Machine, error)
+	ForkMachine(context.Context, ForkMachineRequest) (Machine, error)
 	ListSnapshots(context.Context) ([]Snapshot, error)
 	GetSnapshot(context.Context, string) (Snapshot, error)
 	CreateSnapshot(context.Context, CreateSnapshotRequest) (Snapshot, error)
@@ -50,7 +50,7 @@ type CreateMachineRequest struct {
 	PrimaryPort  int
 }
 
-type CloneMachineRequest struct {
+type ForkMachineRequest struct {
 	MachineID    string
 	SourceName   string
 	TargetName   string

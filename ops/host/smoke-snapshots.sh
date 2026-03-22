@@ -6,7 +6,7 @@ SMOKE_EMAIL="${FASCINATE_SMOKE_EMAIL:-smoke@example.com}"
 SOURCE_NAME="${FASCINATE_SNAPSHOT_SOURCE_NAME:-snapshot-source-$(date +%s)}"
 SNAPSHOT_NAME="${FASCINATE_SNAPSHOT_NAME:-snapshot-$(date +%s)}"
 RESTORE_NAME="${FASCINATE_SNAPSHOT_RESTORE_NAME:-snapshot-restore-$(date +%s)}"
-CLONE_NAME="${FASCINATE_SNAPSHOT_CLONE_NAME:-snapshot-clone-$(date +%s)}"
+FORK_NAME="${FASCINATE_SNAPSHOT_FORK_NAME:-snapshot-fork-$(date +%s)}"
 
 require_root() {
   if [[ "${EUID}" -ne 0 ]]; then
@@ -43,7 +43,7 @@ delete_snapshot() {
 }
 
 cleanup() {
-  delete_machine "${CLONE_NAME}"
+  delete_machine "${FORK_NAME}"
   delete_machine "${RESTORE_NAME}"
   delete_machine "${SOURCE_NAME}"
   delete_snapshot "${SNAPSHOT_NAME}"
@@ -284,41 +284,41 @@ main() {
   read -r restore_host restore_port <<<"$(wait_for_machine_ready "${RESTORE_NAME}")"
   wait_for_route_body "${RESTORE_NAME}" "snapshot-smoke-${SOURCE_NAME}"
 
-  echo "cloning ${SOURCE_NAME} to ${CLONE_NAME}"
+  echo "forking ${SOURCE_NAME} to ${FORK_NAME}"
   curl -fsS \
     -X POST \
     -H 'Content-Type: application/json' \
-    -d "{\"target_name\":\"${CLONE_NAME}\",\"owner_email\":\"${SMOKE_EMAIL}\"}" \
-    "$(api_url "/v1/machines/${SOURCE_NAME}/clone")" >/dev/null
-  local clone_host clone_port
-  read -r clone_host clone_port <<<"$(wait_for_machine_ready "${CLONE_NAME}")"
-  wait_for_route_body "${CLONE_NAME}" "snapshot-smoke-${SOURCE_NAME}"
+    -d "{\"target_name\":\"${FORK_NAME}\",\"owner_email\":\"${SMOKE_EMAIL}\"}" \
+    "$(api_url "/v1/machines/${SOURCE_NAME}/fork")" >/dev/null
+  local fork_host fork_port
+  read -r fork_host fork_port <<<"$(wait_for_machine_ready "${FORK_NAME}")"
+  wait_for_route_body "${FORK_NAME}" "snapshot-smoke-${SOURCE_NAME}"
 
   echo "verifying restored runtime identity"
-  local source_boot_id restore_boot_id clone_boot_id
+  local source_boot_id restore_boot_id fork_boot_id
   source_boot_id="$(guest_boot_id "${source_host}" "${source_port}")"
   restore_boot_id="$(guest_boot_id "${restore_host}" "${restore_port}")"
-  clone_boot_id="$(guest_boot_id "${clone_host}" "${clone_port}")"
-  if [[ "${source_boot_id}" != "${restore_boot_id}" || "${source_boot_id}" != "${clone_boot_id}" ]]; then
-    echo "snapshot boot IDs diverged: source=${source_boot_id} restore=${restore_boot_id} clone=${clone_boot_id}" >&2
+  fork_boot_id="$(guest_boot_id "${fork_host}" "${fork_port}")"
+  if [[ "${source_boot_id}" != "${restore_boot_id}" || "${source_boot_id}" != "${fork_boot_id}" ]]; then
+    echo "snapshot boot IDs diverged: source=${source_boot_id} restore=${restore_boot_id} fork=${fork_boot_id}" >&2
     exit 1
   fi
 
-  local source_sig restore_sig clone_sig
+  local source_sig restore_sig fork_sig
   source_sig="$(guest_http_server_signature "${source_host}" "${source_port}")"
   restore_sig="$(guest_http_server_signature "${restore_host}" "${restore_port}")"
-  clone_sig="$(guest_http_server_signature "${clone_host}" "${clone_port}")"
-  if [[ -z "${source_sig}" || "${source_sig}" != "${restore_sig}" || "${source_sig}" != "${clone_sig}" ]]; then
+  fork_sig="$(guest_http_server_signature "${fork_host}" "${fork_port}")"
+  if [[ -z "${source_sig}" || "${source_sig}" != "${restore_sig}" || "${source_sig}" != "${fork_sig}" ]]; then
     echo "snapshot process signatures diverged" >&2
-    printf 'source=%s\nrestore=%s\nclone=%s\n' "${source_sig}" "${restore_sig}" "${clone_sig}" >&2
+    printf 'source=%s\nrestore=%s\nfork=%s\n' "${source_sig}" "${restore_sig}" "${fork_sig}" >&2
     exit 1
   fi
 
-  echo "verifying clone independence after source mutation"
+  echo "verifying fork independence after source mutation"
   run_guest_command "${source_host}" "${source_port}" "printf 'snapshot-mutated-${SOURCE_NAME}\n' >/home/ubuntu/fascinate-snapshot-smoke/index.html"
   wait_for_route_body "${SOURCE_NAME}" "snapshot-mutated-${SOURCE_NAME}"
   wait_for_route_body "${RESTORE_NAME}" "snapshot-smoke-${SOURCE_NAME}"
-  wait_for_route_body "${CLONE_NAME}" "snapshot-smoke-${SOURCE_NAME}"
+  wait_for_route_body "${FORK_NAME}" "snapshot-smoke-${SOURCE_NAME}"
 
   echo "restarting fascinate"
   systemctl restart fascinate
@@ -326,18 +326,18 @@ main() {
   curl -fsS "http://${FASCINATE_HTTP_ADDR}/healthz" >/dev/null
   wait_for_route_body "${SOURCE_NAME}" "snapshot-mutated-${SOURCE_NAME}"
   wait_for_route_body "${RESTORE_NAME}" "snapshot-smoke-${SOURCE_NAME}"
-  wait_for_route_body "${CLONE_NAME}" "snapshot-smoke-${SOURCE_NAME}"
+  wait_for_route_body "${FORK_NAME}" "snapshot-smoke-${SOURCE_NAME}"
 
-  echo "verifying clone independence after source shutdown"
+  echo "verifying fork independence after source shutdown"
   run_guest_command "${source_host}" "${source_port}" "kill \$(cat /tmp/fascinate-snapshot-smoke.pid)"
   wait_for_route_body "${SOURCE_NAME}" "No services detected"
   wait_for_route_body "${RESTORE_NAME}" "snapshot-smoke-${SOURCE_NAME}"
-  wait_for_route_body "${CLONE_NAME}" "snapshot-smoke-${SOURCE_NAME}"
+  wait_for_route_body "${FORK_NAME}" "snapshot-smoke-${SOURCE_NAME}"
 
   echo "cleaning up snapshot smoke artifacts"
   cleanup
   trap - EXIT
-  wait_for_machine_deleted "${CLONE_NAME}"
+  wait_for_machine_deleted "${FORK_NAME}"
   wait_for_machine_deleted "${RESTORE_NAME}"
   wait_for_machine_deleted "${SOURCE_NAME}"
   wait_for_snapshot_deleted "${SNAPSHOT_NAME}"

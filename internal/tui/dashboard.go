@@ -20,7 +20,7 @@ type MachineManager interface {
 	ListEnvVars(context.Context, string) ([]controlplane.EnvVar, error)
 	CreateMachine(context.Context, controlplane.CreateMachineInput) (controlplane.Machine, error)
 	DeleteMachine(context.Context, string, string) error
-	CloneMachine(context.Context, controlplane.CloneMachineInput) (controlplane.Machine, error)
+	ForkMachine(context.Context, controlplane.ForkMachineInput) (controlplane.Machine, error)
 	CreateSnapshot(context.Context, controlplane.CreateSnapshotInput) (controlplane.Snapshot, error)
 	DeleteSnapshot(context.Context, string, string) error
 	SetEnvVar(context.Context, controlplane.SetEnvVarInput) (controlplane.EnvVar, error)
@@ -33,7 +33,7 @@ type mode int
 const (
 	modeBrowse mode = iota
 	modeCreate
-	modeClone
+	modeFork
 	modeDeleteConfirm
 	modeSnapshotCreate
 	modeSnapshotDeleteConfirm
@@ -138,7 +138,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.snapshots = msg.snapshots
 		if len(m.items) == 0 {
 			m.selected = 0
-			if m.mode == modeClone || m.mode == modeDeleteConfirm {
+			if m.mode == modeFork || m.mode == modeDeleteConfirm {
 				m.mode = modeBrowse
 			}
 		} else {
@@ -209,7 +209,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.autoRefreshCmd()
 	case tea.KeyMsg:
 		switch m.mode {
-		case modeCreate, modeClone, modeDeleteConfirm, modeSnapshotCreate, modeSnapshotDeleteConfirm, modeEnvSet, modeEnvDeleteConfirm:
+		case modeCreate, modeFork, modeDeleteConfirm, modeSnapshotCreate, modeSnapshotDeleteConfirm, modeEnvSet, modeEnvDeleteConfirm:
 			return m.updateInputMode(msg)
 		default:
 			return m.updateBrowseMode(msg)
@@ -243,13 +243,13 @@ func (m Model) View() string {
 			m.input.View()+"\n\n"+m.renderCreateSourceLine(),
 			footer,
 		))
-	case modeClone:
+	case modeFork:
 		sections = append(sections, m.renderInputPanel(
-			"Clone Machine",
+			"Fork Machine",
 			fmt.Sprintf("Create a copy of %s with a new public URL and shell target.", m.sourceName),
 			"new name",
 			m.input.View(),
-			"enter clone | esc cancel",
+			"enter fork | esc cancel",
 		))
 	case modeDeleteConfirm:
 		sections = append(sections, m.renderInputPanel(
@@ -383,10 +383,10 @@ func (m Model) updateBrowseMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		selected, ok := m.selectedMachine()
-		if !ok || !machineAllowsClone(selected) {
+		if !ok || !machineAllowsFork(selected) {
 			return m, nil
 		}
-		m.mode = modeClone
+		m.mode = modeFork
 		m.sourceName = selected.Name
 		m.input.Placeholder = selected.Name + "-v2"
 		m.input.SetValue("")
@@ -510,14 +510,14 @@ func (m Model) updateInputMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.errMsg = ""
 			m.input.Blur()
 			return m, m.createMachineCmd(value, m.selectedCreateSnapshot())
-		case modeClone:
+		case modeFork:
 			if value == "" {
-				m.errMsg = "clone target name is required"
+				m.errMsg = "fork target name is required"
 				return m, nil
 			}
 			m.busy = true
 			m.input.Blur()
-			return m, m.cloneMachineCmd(m.sourceName, value)
+			return m, m.forkMachineCmd(m.sourceName, value)
 		case modeDeleteConfirm:
 			if value != m.pendingName {
 				m.errMsg = "confirmation did not match machine name"
@@ -648,12 +648,12 @@ func (m Model) createMachineCmd(name, snapshotName string) tea.Cmd {
 	}
 }
 
-func (m Model) cloneMachineCmd(sourceName, targetName string) tea.Cmd {
+func (m Model) forkMachineCmd(sourceName, targetName string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 		defer cancel()
 
-		machine, err := m.machines.CloneMachine(ctx, controlplane.CloneMachineInput{
+		machine, err := m.machines.ForkMachine(ctx, controlplane.ForkMachineInput{
 			SourceName: sourceName,
 			TargetName: targetName,
 			OwnerEmail: m.userEmail,
@@ -662,7 +662,7 @@ func (m Model) cloneMachineCmd(sourceName, targetName string) tea.Cmd {
 			return operationDoneMsg{err: err}
 		}
 		return operationDoneMsg{
-			info:    fmt.Sprintf("cloned %s to %s", sourceName, machine.Name),
+			info:    fmt.Sprintf("forked %s to %s", sourceName, machine.Name),
 			machine: &machine,
 			reload:  true,
 		}
@@ -928,8 +928,8 @@ func (m Model) renderMachineCard(machine controlplane.Machine, selected bool, to
 		if machineAllowsTutorial(machine) {
 			actions = append(actions, "(t) tutorial")
 		}
-		if machineAllowsClone(machine) {
-			actions = append(actions, "(c) clone")
+		if machineAllowsFork(machine) {
+			actions = append(actions, "(c) fork")
 		}
 		if machineAllowsSnapshot(machine) {
 			actions = append(actions, "(p) snapshot")
@@ -1116,8 +1116,8 @@ func (m Model) modeLabel() string {
 	switch m.mode {
 	case modeCreate:
 		return "create"
-	case modeClone:
-		return "clone"
+	case modeFork:
+		return "fork"
 	case modeDeleteConfirm:
 		return "delete"
 	case modeEnvSet, modeEnvDeleteConfirm:
@@ -1265,7 +1265,7 @@ func machineAllowsShell(machine controlplane.Machine) bool {
 	return strings.EqualFold(machine.State, "RUNNING")
 }
 
-func machineAllowsClone(machine controlplane.Machine) bool {
+func machineAllowsFork(machine controlplane.Machine) bool {
 	return strings.EqualFold(machine.State, "RUNNING")
 }
 

@@ -1,7 +1,8 @@
-import { Suspense, forwardRef, lazy, startTransition, useEffect, useLayoutEffect, useRef, useState, type ButtonHTMLAttributes, type ReactNode } from "react";
+import { Suspense, lazy, startTransition, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Camera, GitFork, Trash, X } from "@phosphor-icons/react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  cloneMachine,
+  forkMachine,
   createMachine,
   createSnapshot,
   deleteEnvVar,
@@ -9,7 +10,6 @@ import {
   deleteSnapshot,
   deleteTerminalSession,
   getDefaultWorkspace,
-  getMachineEnv,
   getSession,
   listEnvVars,
   listMachines,
@@ -20,6 +20,7 @@ import {
   setEnvVar,
   verifyLogin,
   type Machine,
+  type Snapshot,
   type WorkspaceViewport,
   type WorkspaceWindow,
 } from "./api";
@@ -27,12 +28,19 @@ import { useWorkspaceStore } from "./store";
 
 const TerminalView = lazy(async () => import("./terminal").then((module) => ({ default: module.TerminalView })));
 
-type ToolbeltPopover = "shell" | "machine" | "snapshot" | "env";
-
 type WorkspaceBounds = {
   width: number;
   height: number;
 };
+
+type ModalState =
+  | { type: "new-machine" }
+  | { type: "fork-machine"; machine: Machine }
+  | { type: "snapshot-machine"; machine: Machine }
+  | { type: "restore-snapshot"; snapshot: Snapshot }
+  | { type: "snapshots" }
+  | { type: "env-vars" }
+  | null;
 
 const workspaceCanvasSize = { width: 9600, height: 6400 };
 const workspaceViewportPadding = 160;
@@ -62,7 +70,7 @@ export function App() {
     );
   }
 
-  return <CommandCenter email={sessionQuery.data.email} />;
+  return <CommandCenter />;
 }
 
 function LoginView({ onVerified }: { onVerified: () => void }) {
@@ -122,27 +130,20 @@ function LoginView({ onVerified }: { onVerified: () => void }) {
   );
 }
 
-function CommandCenter({ email }: { email: string }) {
+function CommandCenter() {
   const queryClient = useQueryClient();
-  const [activePopover, setActivePopover] = useState<ToolbeltPopover | null>(null);
+  const [modal, setModal] = useState<ModalState>(null);
   const [machineName, setMachineName] = useState("");
-  const [snapshotSource, setSnapshotSource] = useState("");
-  const [cloneSource, setCloneSource] = useState("");
-  const [cloneTarget, setCloneTarget] = useState("");
-  const [snapshotMachine, setSnapshotMachine] = useState("");
+  const [forkTarget, setForkTarget] = useState("");
   const [snapshotName, setSnapshotName] = useState("");
-  const [restoreSnapshot, setRestoreSnapshot] = useState("");
   const [restoreTarget, setRestoreTarget] = useState("");
   const [envForm, setEnvForm] = useState({ key: "", value: "" });
-  const [envPreview, setEnvPreview] = useState<Record<string, string> | null>(null);
-  const [envPreviewMachine, setEnvPreviewMachine] = useState("");
-  const [popoverAnchor, setPopoverAnchor] = useState<number | null>(null);
 
   const hydrate = useWorkspaceStore((state) => state.hydrate);
   const openTerminal = useWorkspaceStore((state) => state.openTerminal);
-
-  const toolbeltShellRef = useRef<HTMLDivElement | null>(null);
-  const toolbeltButtonRefs = useRef<Partial<Record<ToolbeltPopover, HTMLButtonElement | null>>>({});
+  const windows = useWorkspaceStore((state) => state.windows);
+  const closeWindow = useWorkspaceStore((state) => state.closeWindow);
+  const focusWindow = useWorkspaceStore((state) => state.focusWindow);
 
   const machinesQuery = useQuery({
     queryKey: ["machines"],
@@ -163,62 +164,30 @@ function CommandCenter({ email }: { email: string }) {
     }
   }, [hydrate, workspaceQuery.data]);
 
-  useLayoutEffect(() => {
-    if (!activePopover) {
-      setPopoverAnchor(null);
-      return;
-    }
-    const shell = toolbeltShellRef.current;
-    const button = toolbeltButtonRefs.current[activePopover];
-    if (!shell || !button) {
-      return;
-    }
-
-    const updateAnchor = () => {
-      const shellRect = shell.getBoundingClientRect();
-      const buttonRect = button.getBoundingClientRect();
-      setPopoverAnchor(buttonRect.left - shellRect.left + buttonRect.width / 2);
-    };
-
-    updateAnchor();
-    window.addEventListener("resize", updateAnchor);
-    return () => window.removeEventListener("resize", updateAnchor);
-  }, [activePopover]);
-
   useEffect(() => {
-    if (!activePopover) {
+    if (!modal) {
       return;
     }
-
-    const handlePointerDown = (event: PointerEvent) => {
-      if (toolbeltShellRef.current?.contains(event.target as Node)) {
-        return;
-      }
-      setActivePopover(null);
-    };
 
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
-        setActivePopover(null);
+        setModal(null);
       }
     };
 
-    document.addEventListener("pointerdown", handlePointerDown);
     window.addEventListener("keydown", handleKeyDown);
     return () => {
-      document.removeEventListener("pointerdown", handlePointerDown);
       window.removeEventListener("keydown", handleKeyDown);
     };
-  }, [activePopover]);
+  }, [modal]);
 
   const createMachineMutation = useMutation({
     mutationFn: ({ name, snapshotName }: { name: string; snapshotName?: string }) =>
       createMachine(name, snapshotName),
     onSuccess: () => {
       setMachineName("");
-      setSnapshotSource("");
       setRestoreTarget("");
-      setRestoreSnapshot("");
+      setModal(null);
       void queryClient.invalidateQueries({ queryKey: ["machines"] });
       void queryClient.invalidateQueries({ queryKey: ["snapshots"] });
     },
@@ -227,19 +196,19 @@ function CommandCenter({ email }: { email: string }) {
     mutationFn: deleteMachine,
     onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["machines"] }),
   });
-  const cloneMachineMutation = useMutation({
-    mutationFn: ({ source, target }: { source: string; target: string }) => cloneMachine(source, target),
+  const forkMachineMutation = useMutation({
+    mutationFn: ({ source, target }: { source: string; target: string }) => forkMachine(source, target),
     onSuccess: () => {
-      setCloneSource("");
-      setCloneTarget("");
+      setForkTarget("");
+      setModal(null);
       void queryClient.invalidateQueries({ queryKey: ["machines"] });
     },
   });
   const createSnapshotMutation = useMutation({
     mutationFn: ({ machine, name }: { machine: string; name: string }) => createSnapshot(machine, name),
     onSuccess: () => {
-      setSnapshotMachine("");
       setSnapshotName("");
+      setModal(null);
       void queryClient.invalidateQueries({ queryKey: ["snapshots"] });
     },
   });
@@ -258,10 +227,6 @@ function CommandCenter({ email }: { email: string }) {
     mutationFn: deleteEnvVar,
     onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["env-vars"] }),
   });
-  const envPreviewMutation = useMutation({
-    mutationFn: getMachineEnv,
-    onSuccess: (value) => setEnvPreview(value.entries),
-  });
   const logoutMutation = useMutation({
     mutationFn: logout,
     onSuccess: () => {
@@ -273,457 +238,471 @@ function CommandCenter({ email }: { email: string }) {
   const machineList = machinesQuery.data ?? [];
   const snapshotList = snapshotsQuery.data ?? [];
   const envList = envVarsQuery.data ?? [];
+  const windowsByMachine = useMemo(() => {
+    const grouped = new Map<string, WorkspaceWindow[]>();
+    for (const window of windows) {
+      const items = grouped.get(window.machineName) ?? [];
+      items.push(window);
+      grouped.set(window.machineName, items);
+    }
+    for (const items of grouped.values()) {
+      items.sort((left, right) => left.z - right.z);
+    }
+    return grouped;
+  }, [windows]);
 
-  const togglePopover = (popover: ToolbeltPopover) => {
-    setActivePopover((current) => (current === popover ? null : popover));
+  const openMachineShell = (machineName: string) => {
+    const shellCount = windowsByMachine.get(machineName)?.length ?? 0;
+    const nextShellNumber = shellCount + 1;
+    openTerminal(machineName, nextShellNumber === 1 ? `${machineName} shell` : `${machineName} shell ${nextShellNumber}`);
   };
 
-  const registerToolbeltButton = (popover: ToolbeltPopover) => (node: HTMLButtonElement | null) => {
-    toolbeltButtonRefs.current[popover] = node;
+  const closeShellWindow = (window: WorkspaceWindow) => {
+    closeWindow(window.id);
+    if (window.sessionId) {
+      void deleteTerminalSession(window.sessionId);
+    }
   };
 
-  const renderPopover = () => {
-    if (!activePopover) {
+  const renderModal = () => {
+    if (!modal) {
       return null;
     }
 
-    switch (activePopover) {
-      case "shell":
-        return (
-          <div className="toolbelt-popover-inner">
-            <section className="toolbelt-section">
-              <div>
-                <div className="eyebrow">Shells</div>
-                <h2>Open a shell</h2>
-              </div>
-              {machineList.length === 0 ? (
-                <p className="muted">Create a machine first, then open shells from here.</p>
-              ) : (
-                <div className="toolbelt-list">
-                  {machineList.map((machine) => (
-                    <article key={machine.id} className="toolbelt-item">
-                      <div>
-                        <strong>{machine.name}</strong>
-                        <div className="muted">{machine.state}</div>
-                      </div>
-                      <div className="actions">
-                        <button
-                          onClick={() => {
-                            openTerminal(machine.name, `${machine.name} shell`);
-                            setActivePopover(null);
-                          }}
-                        >
-                          Open shell
-                        </button>
-                        {machine.url ? (
-                          <a className="toolbelt-link" href={machine.url} target="_blank" rel="noreferrer">
-                            Open app
-                          </a>
-                        ) : null}
-                      </div>
-                    </article>
-                  ))}
-                </div>
-              )}
-            </section>
-          </div>
-        );
-      case "machine":
-        return (
-          <div className="toolbelt-popover-inner">
-            <section className="toolbelt-section">
-              <div>
-                <div className="eyebrow">Machines</div>
-                <h2>Create machine</h2>
-              </div>
-              <label className="field">
-                <span>Name</span>
-                <input value={machineName} onChange={(event) => setMachineName(event.target.value)} placeholder="m-1" />
-              </label>
-              <label className="field">
-                <span>From snapshot (optional)</span>
-                <select value={snapshotSource} onChange={(event) => setSnapshotSource(event.target.value)}>
-                  <option value="">Base image</option>
-                  {snapshotList.map((snapshot) => (
-                    <option key={snapshot.id} value={snapshot.name}>
-                      {snapshot.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <button
-                className="button-primary"
-                onClick={() => createMachineMutation.mutate({ name: machineName, snapshotName: snapshotSource || undefined })}
-                disabled={!machineName || createMachineMutation.isPending}
-              >
+    if (modal.type === "new-machine") {
+      return (
+        <AppModal
+          title="Create machine"
+          description="Provision a fresh VM from the base image."
+          onClose={() => setModal(null)}
+        >
+          <form
+            className="app-modal-body"
+            onSubmit={(event) => {
+              event.preventDefault();
+              createMachineMutation.mutate({ name: machineName });
+            }}
+          >
+            <label className="field">
+              <span>Name</span>
+              <input value={machineName} onChange={(event) => setMachineName(event.target.value)} placeholder="m-1" />
+            </label>
+            <StatusError mutationError={createMachineMutation.error} />
+            <div className="app-modal-actions">
+              <button type="button" onClick={() => setModal(null)}>
+                Cancel
+              </button>
+              <button className="button-primary" type="submit" disabled={!machineName || createMachineMutation.isPending}>
                 {createMachineMutation.isPending ? "Creating…" : "Create machine"}
               </button>
-              <StatusError mutationError={createMachineMutation.error} />
-            </section>
+            </div>
+          </form>
+        </AppModal>
+      );
+    }
 
-            <section className="toolbelt-section">
-              <h2>Clone machine</h2>
-              <label className="field">
-                <span>Source</span>
-                <select value={cloneSource} onChange={(event) => setCloneSource(event.target.value)}>
-                  <option value="">Select machine</option>
-                  {machineList.map((machine) => (
-                    <option key={machine.id} value={machine.name}>
-                      {machine.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="field">
-                <span>Target</span>
-                <input value={cloneTarget} onChange={(event) => setCloneTarget(event.target.value)} placeholder="m-1-v2" />
-              </label>
-              <button
-                className="button-primary"
-                onClick={() => cloneMachineMutation.mutate({ source: cloneSource, target: cloneTarget })}
-                disabled={!cloneSource || !cloneTarget || cloneMachineMutation.isPending}
-              >
-                {cloneMachineMutation.isPending ? "Cloning…" : "Clone machine"}
+    if (modal.type === "fork-machine") {
+      return (
+        <AppModal
+          title="Fork machine"
+          description={`Create a copy of ${modal.machine.name}.`}
+          onClose={() => setModal(null)}
+        >
+          <form
+            className="app-modal-body"
+            onSubmit={(event) => {
+              event.preventDefault();
+              forkMachineMutation.mutate({ source: modal.machine.name, target: forkTarget });
+            }}
+          >
+            <label className="field">
+              <span>Source</span>
+              <input value={modal.machine.name} disabled />
+            </label>
+            <label className="field">
+              <span>New machine name</span>
+              <input value={forkTarget} onChange={(event) => setForkTarget(event.target.value)} placeholder={`${modal.machine.name}-copy`} />
+            </label>
+            <StatusError mutationError={forkMachineMutation.error} />
+            <div className="app-modal-actions">
+              <button type="button" onClick={() => setModal(null)}>
+                Cancel
               </button>
-              <StatusError mutationError={cloneMachineMutation.error} />
-            </section>
+              <button className="button-primary" type="submit" disabled={!forkTarget || forkMachineMutation.isPending}>
+                {forkMachineMutation.isPending ? "Forking…" : "Fork machine"}
+              </button>
+            </div>
+          </form>
+        </AppModal>
+      );
+    }
 
-            <section className="toolbelt-section">
-              <h2>Active machines</h2>
-              {machineList.length === 0 ? (
-                <p className="muted">No machines yet.</p>
-              ) : (
-                <div className="toolbelt-list">
-                  {machineList.map((machine) => (
-                    <article key={machine.id} className="toolbelt-item">
-                      <div>
-                        <strong>{machine.name}</strong>
-                        <div className="muted">{machine.state}</div>
-                      </div>
-                      <div className="actions">
-                        <button onClick={() => openTerminal(machine.name, `${machine.name} shell`)}>Open shell</button>
-                        <button className="danger" onClick={() => deleteMachineMutation.mutate(machine.name)}>
-                          Delete
-                        </button>
-                      </div>
-                    </article>
-                  ))}
-                </div>
-              )}
-              <StatusError mutationError={deleteMachineMutation.error} />
-            </section>
-          </div>
-        );
-      case "snapshot":
-        return (
-          <div className="toolbelt-popover-inner">
-            <section className="toolbelt-section">
-              <div>
-                <div className="eyebrow">Snapshots</div>
-                <h2>Create snapshot</h2>
-              </div>
-              <label className="field">
-                <span>Machine</span>
-                <select value={snapshotMachine} onChange={(event) => setSnapshotMachine(event.target.value)}>
-                  <option value="">Select machine</option>
-                  {machineList.map((machine) => (
-                    <option key={machine.id} value={machine.name}>
-                      {machine.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="field">
-                <span>Snapshot name</span>
-                <input value={snapshotName} onChange={(event) => setSnapshotName(event.target.value)} placeholder="m-1-snapshot" />
-              </label>
-              <button
-                className="button-primary"
-                onClick={() => createSnapshotMutation.mutate({ machine: snapshotMachine, name: snapshotName })}
-                disabled={!snapshotMachine || !snapshotName || createSnapshotMutation.isPending}
-              >
+    if (modal.type === "snapshot-machine") {
+      return (
+        <AppModal
+          title="Create snapshot"
+          description={`Save a restorable snapshot of ${modal.machine.name}.`}
+          onClose={() => setModal(null)}
+        >
+          <form
+            className="app-modal-body"
+            onSubmit={(event) => {
+              event.preventDefault();
+              createSnapshotMutation.mutate({ machine: modal.machine.name, name: snapshotName });
+            }}
+          >
+            <label className="field">
+              <span>Machine</span>
+              <input value={modal.machine.name} disabled />
+            </label>
+            <label className="field">
+              <span>Snapshot name</span>
+              <input value={snapshotName} onChange={(event) => setSnapshotName(event.target.value)} placeholder={`${modal.machine.name}-snapshot`} />
+            </label>
+            <StatusError mutationError={createSnapshotMutation.error} />
+            <div className="app-modal-actions">
+              <button type="button" onClick={() => setModal(null)}>
+                Cancel
+              </button>
+              <button className="button-primary" type="submit" disabled={!snapshotName || createSnapshotMutation.isPending}>
                 {createSnapshotMutation.isPending ? "Saving…" : "Create snapshot"}
               </button>
-              <StatusError mutationError={createSnapshotMutation.error} />
-            </section>
+            </div>
+          </form>
+        </AppModal>
+      );
+    }
 
-            <section className="toolbelt-section">
-              <h2>Restore snapshot</h2>
-              <label className="field">
-                <span>Snapshot</span>
-                <select value={restoreSnapshot} onChange={(event) => setRestoreSnapshot(event.target.value)}>
-                  <option value="">Select snapshot</option>
-                  {snapshotList.map((snapshot) => (
-                    <option key={snapshot.id} value={snapshot.name}>
-                      {snapshot.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="field">
-                <span>New machine name</span>
-                <input value={restoreTarget} onChange={(event) => setRestoreTarget(event.target.value)} placeholder="snapshot-vm" />
-              </label>
-              <button
-                className="button-primary"
-                onClick={() => createMachineMutation.mutate({ name: restoreTarget, snapshotName: restoreSnapshot })}
-                disabled={!restoreSnapshot || !restoreTarget || createMachineMutation.isPending}
-              >
+    if (modal.type === "restore-snapshot") {
+      return (
+        <AppModal
+          title="Restore snapshot"
+          description={`Create a new machine from ${modal.snapshot.name}.`}
+          onClose={() => setModal(null)}
+        >
+          <form
+            className="app-modal-body"
+            onSubmit={(event) => {
+              event.preventDefault();
+              createMachineMutation.mutate({ name: restoreTarget, snapshotName: modal.snapshot.name });
+            }}
+          >
+            <label className="field">
+              <span>Snapshot</span>
+              <input value={modal.snapshot.name} disabled />
+            </label>
+            <label className="field">
+              <span>New machine name</span>
+              <input value={restoreTarget} onChange={(event) => setRestoreTarget(event.target.value)} placeholder={`${modal.snapshot.name}-vm`} />
+            </label>
+            <StatusError mutationError={createMachineMutation.error} />
+            <div className="app-modal-actions">
+              <button type="button" onClick={() => setModal(null)}>
+                Cancel
+              </button>
+              <button className="button-primary" type="submit" disabled={!restoreTarget || createMachineMutation.isPending}>
                 {createMachineMutation.isPending ? "Restoring…" : "Restore machine"}
               </button>
-              <StatusError mutationError={createMachineMutation.error} />
-            </section>
+            </div>
+          </form>
+        </AppModal>
+      );
+    }
 
-            <section className="toolbelt-section">
-              <h2>Saved snapshots</h2>
-              {snapshotList.length === 0 ? (
-                <p className="muted">No snapshots yet.</p>
-              ) : (
-                <div className="toolbelt-list">
-                  {snapshotList.map((snapshot) => (
-                    <article key={snapshot.id} className="toolbelt-item">
-                      <div>
+    if (modal.type === "snapshots") {
+      return (
+        <AppModal title="Snapshots" description="Restore or delete saved machine snapshots." onClose={() => setModal(null)} wide>
+          <div className="app-modal-body">
+            {snapshotList.length === 0 ? (
+              <p className="muted">No snapshots yet.</p>
+            ) : (
+              <div className="sidebar-record-list">
+                {snapshotList.map((snapshot) => (
+                  <article key={snapshot.id} className="sidebar-record">
+                    <div>
+                      <div className="sidebar-record-heading">
                         <strong>{snapshot.name}</strong>
-                        <div className="muted">{snapshot.source_machine_name ?? "snapshot"} · {snapshot.state}</div>
+                        <StateBadge state={snapshot.state} />
                       </div>
-                      <div className="actions">
-                        <button className="danger" onClick={() => deleteSnapshotMutation.mutate(snapshot.name)}>
-                          Delete
-                        </button>
-                      </div>
-                    </article>
-                  ))}
-                </div>
-              )}
-              <StatusError mutationError={deleteSnapshotMutation.error} />
-            </section>
-          </div>
-        );
-      case "env":
-        return (
-          <div className="toolbelt-popover-inner">
-            <section className="toolbelt-section">
-              <div>
-                <div className="eyebrow">Environment</div>
-                <h2>Manage env vars</h2>
+                      <div className="muted">{snapshot.source_machine_name ?? "snapshot"}</div>
+                    </div>
+                    <div className="actions">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setRestoreTarget(`${snapshot.name}-vm`);
+                          setModal({ type: "restore-snapshot", snapshot });
+                        }}
+                      >
+                        Restore
+                      </button>
+                      <button className="danger" type="button" onClick={() => deleteSnapshotMutation.mutate(snapshot.name)}>
+                        Delete
+                      </button>
+                    </div>
+                  </article>
+                ))}
               </div>
-              <label className="field">
-                <span>Key</span>
-                <input
-                  value={envForm.key}
-                  onChange={(event) => setEnvForm((current) => ({ ...current, key: event.target.value }))}
-                  placeholder="FRONTEND_URL"
-                />
-              </label>
-              <label className="field">
-                <span>Value</span>
-                <input
-                  value={envForm.value}
-                  onChange={(event) => setEnvForm((current) => ({ ...current, value: event.target.value }))}
-                  placeholder="${FASCINATE_PUBLIC_URL}"
-                />
-              </label>
+            )}
+            <StatusError mutationError={deleteSnapshotMutation.error} />
+          </div>
+        </AppModal>
+      );
+    }
+
+    return (
+      <AppModal
+        title="Environment variables"
+        description="Manage the user-defined variables Fascinate injects into every VM."
+        onClose={() => setModal(null)}
+        wide
+      >
+        <div className="app-modal-body">
+          <section className="app-modal-section">
+            <label className="field">
+              <span>Key</span>
+              <input
+                value={envForm.key}
+                onChange={(event) => setEnvForm((current) => ({ ...current, key: event.target.value }))}
+                placeholder="FRONTEND_URL"
+              />
+            </label>
+            <label className="field">
+              <span>Value</span>
+              <input
+                value={envForm.value}
+                onChange={(event) => setEnvForm((current) => ({ ...current, value: event.target.value }))}
+                placeholder="${FASCINATE_PUBLIC_URL}"
+              />
+            </label>
+            <div className="app-modal-actions">
+              <button
+                type="button"
+                onClick={() => setEnvForm({ key: "", value: "" })}
+                disabled={!envForm.key && !envForm.value}
+              >
+                Clear
+              </button>
               <button
                 className="button-primary"
+                type="button"
                 onClick={() => setEnvMutation.mutate(envForm)}
                 disabled={!envForm.key || !envForm.value || setEnvMutation.isPending}
               >
                 {setEnvMutation.isPending ? "Saving…" : "Save env var"}
               </button>
-              <StatusError mutationError={setEnvMutation.error} />
-            </section>
+            </div>
+            <StatusError mutationError={setEnvMutation.error} />
+          </section>
 
-            <section className="toolbelt-section">
-              <h2>Saved env vars</h2>
-              {envList.length === 0 ? (
-                <p className="muted">No env vars set yet.</p>
-              ) : (
-                <div className="toolbelt-list">
-                  {envList.map((entry) => (
-                    <article key={entry.key} className="toolbelt-item">
-                      <div>
+          <section className="app-modal-section">
+            {envList.length === 0 ? (
+              <p className="muted">No env vars set yet.</p>
+            ) : (
+              <div className="sidebar-record-list">
+                {envList.map((entry) => (
+                  <article key={entry.key} className="sidebar-record">
+                    <div>
+                      <div className="sidebar-record-heading">
                         <strong>{entry.key}</strong>
-                        <div className="muted">{entry.value}</div>
+                        <span className="inline-chip">env</span>
                       </div>
-                      <div className="actions">
-                        <button onClick={() => setEnvForm({ key: entry.key, value: entry.value })}>Edit</button>
-                        <button className="danger" onClick={() => deleteEnvMutation.mutate(entry.key)}>
-                          Delete
-                        </button>
-                      </div>
-                    </article>
-                  ))}
-                </div>
-              )}
-              <StatusError mutationError={deleteEnvMutation.error} />
-            </section>
-
-            <section className="toolbelt-section">
-              <h2>Preview machine env</h2>
-              <label className="field">
-                <span>Machine</span>
-                <select value={envPreviewMachine} onChange={(event) => setEnvPreviewMachine(event.target.value)}>
-                  <option value="">Select machine</option>
-                  {machineList.map((machine) => (
-                    <option key={machine.id} value={machine.name}>
-                      {machine.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <button
-                onClick={() => envPreviewMutation.mutate(envPreviewMachine)}
-                disabled={!envPreviewMachine || envPreviewMutation.isPending}
-              >
-                {envPreviewMutation.isPending ? "Loading…" : "Preview env"}
-              </button>
-              {envPreview ? <pre className="env-preview">{JSON.stringify(envPreview, null, 2)}</pre> : null}
-              {!envPreview ? <p className="muted">Preview the rendered values for a machine here.</p> : null}
-              <StatusError mutationError={envPreviewMutation.error} />
-            </section>
-          </div>
-        );
-    }
+                      <div className="muted">{entry.value}</div>
+                    </div>
+                    <div className="actions">
+                      <button type="button" onClick={() => setEnvForm({ key: entry.key, value: entry.value })}>
+                        Edit
+                      </button>
+                      <button className="danger" type="button" onClick={() => deleteEnvMutation.mutate(entry.key)}>
+                        Delete
+                      </button>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            )}
+            <StatusError mutationError={deleteEnvMutation.error} />
+          </section>
+        </div>
+      </AppModal>
+    );
   };
 
   return (
     <main className="command-center">
       <WorkspaceAutosave enabled={workspaceQuery.isSuccess} />
-      <WorkspaceCanvas />
-      <div ref={toolbeltShellRef} className="toolbelt-shell">
-        <div className="toolbelt">
-          <ToolbeltButton
-            ref={registerToolbeltButton("shell")}
-            active={activePopover === "shell"}
-            onClick={() => togglePopover("shell")}
-            aria-label="Shells"
-            title="Shells"
-          >
-            <ShellIcon />
-          </ToolbeltButton>
-          <ToolbeltButton
-            ref={registerToolbeltButton("machine")}
-            active={activePopover === "machine"}
-            onClick={() => togglePopover("machine")}
-            aria-label="Machines"
-            title="Machines"
-          >
-            <MachineIcon />
-          </ToolbeltButton>
-          <ToolbeltButton
-            ref={registerToolbeltButton("snapshot")}
-            active={activePopover === "snapshot"}
-            onClick={() => togglePopover("snapshot")}
-            aria-label="Snapshots"
-            title="Snapshots"
-          >
-            <SnapshotIcon />
-          </ToolbeltButton>
-          <ToolbeltButton
-            ref={registerToolbeltButton("env")}
-            active={activePopover === "env"}
-            onClick={() => togglePopover("env")}
-            aria-label="Env Vars"
-            title="Env Vars"
-          >
-            <EnvIcon />
-          </ToolbeltButton>
-          <div className="toolbelt-divider" />
-          <ToolbeltButton
-            danger
+      <div className="command-center-workspace">
+        <WorkspaceCanvas />
+      </div>
+      <aside className="control-sidebar" aria-label="Workspace controls">
+        <div className="control-sidebar-scroll">
+          <section className="sidebar-section">
+            <div className="sidebar-section-header">
+              <h2>Machines</h2>
+              <button
+                className="button-primary"
+                type="button"
+                onClick={() => {
+                  setMachineName("");
+                  setModal({ type: "new-machine" });
+                }}
+              >
+                New machine
+              </button>
+            </div>
+            {machineList.length === 0 ? (
+              <p className="muted">No machines yet. Create one to start running shells and agents.</p>
+            ) : (
+              <div className="sidebar-machine-list">
+                {machineList.map((machine) => {
+                  const machineWindows = windowsByMachine.get(machine.name) ?? [];
+                  return (
+                    <article key={machine.id} className="machine-card">
+                      <div className="machine-card-header">
+                        <div>
+                          <strong>{machine.name}</strong>
+                        </div>
+                        <div className="actions">
+                          <button
+                            className="icon-action-button"
+                            type="button"
+                            aria-label={`Fork ${machine.name}`}
+                            title={`Fork ${machine.name}`}
+                            onClick={() => {
+                              setForkTarget(`${machine.name}-copy`);
+                              setModal({ type: "fork-machine", machine });
+                            }}
+                          >
+                            <GitFork className="icon-svg" weight="regular" />
+                          </button>
+                          <button
+                            className="icon-action-button"
+                            type="button"
+                            aria-label={`Snapshot ${machine.name}`}
+                            title={`Snapshot ${machine.name}`}
+                            onClick={() => {
+                              setSnapshotName(`${machine.name}-snapshot`);
+                              setModal({ type: "snapshot-machine", machine });
+                            }}
+                          >
+                            <Camera className="icon-svg" weight="regular" />
+                          </button>
+                          <button
+                            className="icon-action-button danger"
+                            type="button"
+                            aria-label={`Delete ${machine.name}`}
+                            title={`Delete ${machine.name}`}
+                            onClick={() => deleteMachineMutation.mutate(machine.name)}
+                          >
+                            <Trash className="icon-svg" weight="regular" />
+                          </button>
+                        </div>
+                      </div>
+                      <div className="machine-card-shells">
+                        <div className="machine-card-shells-header">
+                          <span className="machine-card-shells-title">Shells</span>
+                          <button type="button" onClick={() => openMachineShell(machine.name)}>
+                            New shell
+                          </button>
+                        </div>
+                        {machineWindows.length === 0 ? (
+                          <p className="muted">No open shells.</p>
+                        ) : (
+                          <div className="machine-shell-list">
+                            {machineWindows.map((window) => (
+                              <div key={window.id} className="machine-shell-row">
+                                <button
+                                  type="button"
+                                  className="machine-shell-focus"
+                                  onClick={() => focusWindow(window.id)}
+                                >
+                                  {window.title}
+                                </button>
+                                <button
+                                  type="button"
+                                  className="icon-action-button danger"
+                                  aria-label={`Close ${window.title}`}
+                                  title={`Close ${window.title}`}
+                                  onClick={() => closeShellWindow(window)}
+                                >
+                                  <X className="icon-svg" weight="regular" />
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </article>
+                  );
+                })}
+              </div>
+            )}
+            <StatusError mutationError={deleteMachineMutation.error} />
+          </section>
+        </div>
+
+        <footer className="control-sidebar-footer">
+          <button type="button" onClick={() => setModal({ type: "env-vars" })}>
+            Manage env vars
+          </button>
+          <button type="button" onClick={() => setModal({ type: "snapshots" })}>
+            Snapshots
+          </button>
+          <button
+            className="sidebar-signout-button"
+            type="button"
             onClick={() => logoutMutation.mutate()}
             disabled={logoutMutation.isPending}
-            aria-label={logoutMutation.isPending ? "Logging out" : "Log out"}
-            title={email}
           >
-            <LogoutIcon />
-          </ToolbeltButton>
-        </div>
-        {activePopover ? (
-          <div
-            className="toolbelt-popover"
-            style={{ left: popoverAnchor ?? 0, visibility: popoverAnchor === null ? "hidden" : "visible" }}
-          >
-            {renderPopover()}
-          </div>
-        ) : null}
-      </div>
+            {logoutMutation.isPending ? "Signing out…" : "Sign out"}
+          </button>
+        </footer>
+      </aside>
+      {renderModal()}
     </main>
   );
 }
 
-const ToolbeltButton = forwardRef<HTMLButtonElement, {
-  active?: boolean;
+function AppModal({
+  title,
+  description,
+  onClose,
+  children,
+  wide,
+}: {
+  title: string;
+  description?: string;
+  onClose: () => void;
   children: ReactNode;
-  danger?: boolean;
-} & ButtonHTMLAttributes<HTMLButtonElement>>(function ToolbeltButton({ active, children, danger, ...props }, ref) {
+  wide?: boolean;
+}) {
   return (
-    <button
-      ref={ref}
-      className={`toolbelt-button${danger ? " danger" : ""}`}
-      data-active={active ? "true" : "false"}
-      type="button"
-      {...props}
-    >
-      {children}
-    </button>
-  );
-});
-
-function ShellIcon() {
-  return (
-    <svg className="icon-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
-      <path d="M4 6.75h16v10.5H4z" />
-      <path d="m7.5 10 2.5 2-2.5 2" />
-      <path d="M12.75 14h3.75" />
-    </svg>
-  );
-}
-
-function MachineIcon() {
-  return (
-    <svg className="icon-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
-      <rect x="4" y="5.5" width="16" height="6.5" rx="1.5" />
-      <rect x="4" y="12" width="16" height="6.5" rx="1.5" />
-      <path d="M7.5 8.75h.01M7.5 15.25h.01M10.5 8.75h5M10.5 15.25h5" />
-    </svg>
-  );
-}
-
-function SnapshotIcon() {
-  return (
-    <svg className="icon-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
-      <path d="M7.5 8.25H6A2.25 2.25 0 0 0 3.75 10.5v6A2.25 2.25 0 0 0 6 18.75h12a2.25 2.25 0 0 0 2.25-2.25v-6A2.25 2.25 0 0 0 18 8.25h-1.5" />
-      <path d="M9 8.25V6.75A3 3 0 0 1 12 3.75a3 3 0 0 1 3 3v1.5" />
-      <circle cx="12" cy="13.5" r="2.25" />
-    </svg>
-  );
-}
-
-function EnvIcon() {
-  return (
-    <svg className="icon-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
-      <path d="M8 7.75A2.75 2.75 0 1 0 8 13.25h8" />
-      <path d="M16 10.75A2.75 2.75 0 1 1 16 16.25H8" />
-    </svg>
-  );
-}
-
-function LogoutIcon() {
-  return (
-    <svg className="icon-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
-      <path d="M10.5 5.25H7.5A2.25 2.25 0 0 0 5.25 7.5v9A2.25 2.25 0 0 0 7.5 18.75h3" />
-      <path d="M13.5 8.25 18 12l-4.5 3.75" />
-      <path d="M10.5 12H18" />
-    </svg>
-  );
-}
-
-function CloseIcon() {
-  return (
-    <svg className="icon-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
-      <path d="m7 7 10 10M17 7 7 17" />
-    </svg>
+    <div className="app-modal-backdrop" onPointerDown={onClose}>
+      <section
+        className={`app-modal${wide ? " app-modal-wide" : ""}`}
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
+        onPointerDown={(event) => event.stopPropagation()}
+      >
+        <header className="app-modal-header">
+          <div>
+            <h2>{title}</h2>
+            {description ? <p>{description}</p> : null}
+          </div>
+          <button
+            className="icon-action-button"
+            type="button"
+            aria-label="Close modal"
+            title="Close modal"
+            onClick={onClose}
+          >
+            <X className="icon-svg" weight="regular" />
+          </button>
+        </header>
+        {children}
+      </section>
+    </div>
   );
 }
 
@@ -771,6 +750,10 @@ function WorkspaceCanvas() {
     startClientY: number;
     viewport: WorkspaceViewport;
   } | null>(null);
+  const gestureZoomRef = useRef<{
+    viewport: WorkspaceViewport;
+    scale: number;
+  } | null>(null);
   const [workspaceBounds, setWorkspaceBounds] = useState<WorkspaceBounds>({ width: 0, height: 0 });
   const [isPanning, setIsPanning] = useState(false);
 
@@ -814,34 +797,35 @@ function WorkspaceCanvas() {
       return;
     }
 
-    const handleWheel = (event: WheelEvent) => {
-      const target = event.target as HTMLElement | null;
-      if (target?.closest(".window-frame") || target?.closest(".toolbelt-popover")) {
-        return;
-      }
+    const isWindowTarget = (target: EventTarget | null) => {
+      return target instanceof HTMLElement ? Boolean(target.closest(".window-frame")) : false;
+    };
 
-      event.preventDefault();
-      const currentViewport = viewportRef.current;
+    const isWindowHeaderTarget = (target: EventTarget | null) => {
+      return target instanceof HTMLElement ? Boolean(target.closest(".window-header")) : false;
+    };
+
+    const applyZoomFromClientPoint = (
+      baseViewport: WorkspaceViewport,
+      nextScale: number,
+      clientX: number,
+      clientY: number,
+    ) => {
       const currentBounds = boundsRef.current;
       const rect = node.getBoundingClientRect();
+      setViewport(
+        zoomViewportFromScreenPoint(
+          baseViewport,
+          nextScale,
+          { x: clientX - rect.left, y: clientY - rect.top },
+          currentBounds,
+        ),
+      );
+    };
 
-      if (event.ctrlKey || event.metaKey) {
-        const nextScale = clamp(
-          currentViewport.scale * Math.exp(-event.deltaY * workspaceZoomWheelFactor),
-          minWorkspaceScale,
-          maxWorkspaceScale,
-        );
-        setViewport(
-          zoomViewportFromScreenPoint(
-            currentViewport,
-            nextScale,
-            { x: event.clientX - rect.left, y: event.clientY - rect.top },
-            currentBounds,
-          ),
-        );
-        return;
-      }
-
+    const panViewportFromWheel = (event: WheelEvent, currentViewport: WorkspaceViewport) => {
+      event.preventDefault();
+      event.stopPropagation();
       setViewport(
         clampViewport(
           {
@@ -849,25 +833,82 @@ function WorkspaceCanvas() {
             x: currentViewport.x - event.deltaX,
             y: currentViewport.y - event.deltaY,
           },
-          currentBounds,
+          boundsRef.current,
         ),
       );
     };
 
-    const preventGesture = (event: Event) => {
-      event.preventDefault();
+    const handleWheel = (event: WheelEvent) => {
+      const currentViewport = viewportRef.current;
+
+      if (event.ctrlKey || event.metaKey) {
+        event.preventDefault();
+        event.stopPropagation();
+        const nextScale = clamp(
+          currentViewport.scale * Math.exp(-event.deltaY * workspaceZoomWheelFactor),
+          minWorkspaceScale,
+          maxWorkspaceScale,
+        );
+        applyZoomFromClientPoint(currentViewport, nextScale, event.clientX, event.clientY);
+        return;
+      }
+
+      if (isWindowHeaderTarget(event.target)) {
+        panViewportFromWheel(event, currentViewport);
+        return;
+      }
+
+      if (isWindowTarget(event.target)) {
+        return;
+      }
+
+      panViewportFromWheel(event, currentViewport);
     };
 
-    node.addEventListener("wheel", handleWheel, { passive: false });
-    node.addEventListener("gesturestart", preventGesture as EventListener, { passive: false });
-    node.addEventListener("gesturechange", preventGesture as EventListener, { passive: false });
-    node.addEventListener("gestureend", preventGesture as EventListener, { passive: false });
+    const handleGestureStart = (event: Event) => {
+      gestureZoomRef.current = {
+        viewport: viewportRef.current,
+        scale: viewportRef.current.scale,
+      };
+      event.preventDefault();
+      event.stopPropagation();
+    };
+
+    const handleGestureChange = (event: Event) => {
+      const gesture = event as Event & { scale?: number; clientX?: number; clientY?: number };
+      const state = gestureZoomRef.current;
+      if (!state) {
+        return;
+      }
+      const rect = node.getBoundingClientRect();
+      const clientX = typeof gesture.clientX === "number" ? gesture.clientX : rect.left + rect.width / 2;
+      const clientY = typeof gesture.clientY === "number" ? gesture.clientY : rect.top + rect.height / 2;
+      const nextScale = clamp(
+        state.scale * (typeof gesture.scale === "number" ? gesture.scale : 1),
+        minWorkspaceScale,
+        maxWorkspaceScale,
+      );
+      applyZoomFromClientPoint(state.viewport, nextScale, clientX, clientY);
+      event.preventDefault();
+      event.stopPropagation();
+    };
+
+    const handleGestureEnd = (event: Event) => {
+      gestureZoomRef.current = null;
+      event.preventDefault();
+      event.stopPropagation();
+    };
+
+    node.addEventListener("wheel", handleWheel, { passive: false, capture: true });
+    node.addEventListener("gesturestart", handleGestureStart as EventListener, { passive: false, capture: true });
+    node.addEventListener("gesturechange", handleGestureChange as EventListener, { passive: false, capture: true });
+    node.addEventListener("gestureend", handleGestureEnd as EventListener, { passive: false, capture: true });
 
     return () => {
-      node.removeEventListener("wheel", handleWheel);
-      node.removeEventListener("gesturestart", preventGesture as EventListener);
-      node.removeEventListener("gesturechange", preventGesture as EventListener);
-      node.removeEventListener("gestureend", preventGesture as EventListener);
+      node.removeEventListener("wheel", handleWheel, true);
+      node.removeEventListener("gesturestart", handleGestureStart as EventListener, true);
+      node.removeEventListener("gesturechange", handleGestureChange as EventListener, true);
+      node.removeEventListener("gestureend", handleGestureEnd as EventListener, true);
     };
   }, [setViewport]);
 
@@ -890,7 +931,7 @@ function WorkspaceCanvas() {
             return;
           }
           const target = event.target as HTMLElement;
-          if (target.closest(".window-frame") || target.closest(".toolbelt-shell")) {
+          if (target.closest(".window-frame")) {
             return;
           }
           panStateRef.current = {
@@ -1033,13 +1074,27 @@ function WindowFrame({
             onPointerDown={(event) => event.stopPropagation()}
             onClick={onClose}
           >
-            <CloseIcon />
+            <X className="icon-svg" weight="regular" />
           </button>
         </div>
       </header>
       <div className="window-body">{children}</div>
     </div>
   );
+}
+
+function StateBadge({ state }: { state: string }) {
+  const normalized = state.toLowerCase();
+  const tone =
+    normalized === "running" || normalized === "ready"
+      ? "success"
+      : normalized === "failed" || normalized === "error"
+        ? "danger"
+        : normalized === "creating" || normalized === "starting" || normalized === "saving"
+          ? "warning"
+          : "neutral";
+
+  return <span className={`state-badge state-badge-${tone}`}>{state.toLowerCase()}</span>;
 }
 
 function StatusError({ mutationError }: { mutationError: unknown }) {

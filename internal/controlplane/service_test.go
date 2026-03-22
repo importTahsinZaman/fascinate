@@ -22,7 +22,7 @@ type fakeRuntime struct {
 	envSyncErr    error
 	startErr      error
 	deleteErr     error
-	cloneErr      error
+	forkErr      error
 	getErr        error
 	listErr       error
 	createStarted chan struct{}
@@ -31,7 +31,7 @@ type fakeRuntime struct {
 	createdReq    []machineruntime.CreateMachineRequest
 	envSyncReq    map[string]machineruntime.ManagedEnvRequest
 	started       []string
-	clonedReq     []machineruntime.CloneMachineRequest
+	forkedReq     []machineruntime.ForkMachineRequest
 }
 
 type fakeToolAuth struct {
@@ -156,21 +156,21 @@ func (f *fakeRuntime) DeleteMachine(_ context.Context, name string) error {
 	return nil
 }
 
-func (f *fakeRuntime) CloneMachine(_ context.Context, req machineruntime.CloneMachineRequest) (machineruntime.Machine, error) {
-	if f.cloneErr != nil {
-		return machineruntime.Machine{}, f.cloneErr
+func (f *fakeRuntime) ForkMachine(_ context.Context, req machineruntime.ForkMachineRequest) (machineruntime.Machine, error) {
+	if f.forkErr != nil {
+		return machineruntime.Machine{}, f.forkErr
 	}
 
-	f.clonedReq = append(f.clonedReq, req)
+	f.forkedReq = append(f.forkedReq, req)
 	source, ok := f.machines[req.SourceName]
 	if !ok {
 		return machineruntime.Machine{}, machineruntime.ErrMachineNotFound
 	}
 
-	clone := source
-	clone.Name = req.TargetName
-	f.machines[req.TargetName] = clone
-	return clone, nil
+	fork := source
+	fork.Name = req.TargetName
+	f.machines[req.TargetName] = fork
+	return fork, nil
 }
 
 func (f *fakeRuntime) ListSnapshots(context.Context) ([]machineruntime.Snapshot, error) {
@@ -277,7 +277,7 @@ func (f *fakeToolAuth) ListProfiles(_ context.Context, userID string) ([]toolaut
 	return profiles, nil
 }
 
-func TestServiceCreateCloneAndDeleteMachine(t *testing.T) {
+func TestServiceCreateForkAndDeleteMachine(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -327,7 +327,7 @@ func TestServiceCreateCloneAndDeleteMachine(t *testing.T) {
 		return err == nil && strings.EqualFold(record.State, machineStateRunning)
 	})
 
-	cloned, err := service.CloneMachine(ctx, CloneMachineInput{
+	forked, err := service.ForkMachine(ctx, ForkMachineInput{
 		SourceName: "habits",
 		TargetName: "habits-v2",
 		OwnerEmail: "admin@example.com",
@@ -335,11 +335,11 @@ func TestServiceCreateCloneAndDeleteMachine(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cloned.Name != "habits-v2" {
-		t.Fatalf("unexpected clone name: %q", cloned.Name)
+	if forked.Name != "habits-v2" {
+		t.Fatalf("unexpected fork name: %q", forked.Name)
 	}
-	if len(runtime.clonedReq) != 1 || runtime.clonedReq[0].RootDiskSize != "20GiB" {
-		t.Fatalf("expected clone request disk size 20GiB, got %+v", runtime.clonedReq)
+	if len(runtime.forkedReq) != 1 || runtime.forkedReq[0].RootDiskSize != "20GiB" {
+		t.Fatalf("expected fork request disk size 20GiB, got %+v", runtime.forkedReq)
 	}
 
 	list, err := service.ListMachines(ctx, "admin@example.com")
@@ -613,7 +613,7 @@ func TestServiceDeleteMachineCapturesToolAuthBestEffort(t *testing.T) {
 	}
 }
 
-func TestServiceCloneMachineDoesNotRestoreToolAuth(t *testing.T) {
+func TestServiceForkMachineDoesNotRestoreToolAuth(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -652,7 +652,7 @@ func TestServiceCloneMachineDoesNotRestoreToolAuth(t *testing.T) {
 		GuestSSHUser:       "ubuntu",
 	}, store, runtime, auth)
 
-	cloned, err := service.CloneMachine(ctx, CloneMachineInput{
+	forked, err := service.ForkMachine(ctx, ForkMachineInput{
 		SourceName: "tic-tac-toe",
 		TargetName: "space-shooter",
 		OwnerEmail: "dev@example.com",
@@ -660,11 +660,11 @@ func TestServiceCloneMachineDoesNotRestoreToolAuth(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cloned.Name != "space-shooter" {
-		t.Fatalf("unexpected clone name %q", cloned.Name)
+	if forked.Name != "space-shooter" {
+		t.Fatalf("unexpected fork name %q", forked.Name)
 	}
 	if len(auth.restoreCalls) != 0 {
-		t.Fatalf("expected clone to skip tool-auth restore, got %+v", auth.restoreCalls)
+		t.Fatalf("expected fork to skip tool-auth restore, got %+v", auth.restoreCalls)
 	}
 }
 
@@ -837,7 +837,7 @@ func TestServiceCreateMachineRollsBackRuntimeOnDBConflict(t *testing.T) {
 	}
 }
 
-func TestServiceCloneMachineRollsBackRuntimeOnDBConflict(t *testing.T) {
+func TestServiceForkMachineRollsBackRuntimeOnDBConflict(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -873,7 +873,7 @@ func TestServiceCloneMachineRollsBackRuntimeOnDBConflict(t *testing.T) {
 	runtime.machines["habits"] = machineruntime.Machine{Name: "habits", Type: "vm", State: "RUNNING", CPU: "1", Memory: "2GiB", Disk: "20GiB"}
 	service := newTestService(store, runtime)
 
-	_, err = service.CloneMachine(ctx, CloneMachineInput{
+	_, err = service.ForkMachine(ctx, ForkMachineInput{
 		SourceName: "habits",
 		TargetName: "habits-v2",
 		OwnerEmail: "dev@example.com",
@@ -1170,15 +1170,15 @@ func TestServiceRejectsWrongOwnerForSensitiveOperations(t *testing.T) {
 		t.Fatalf("expected no runtime deletes, got %+v", runtime.deleted)
 	}
 
-	if _, err := service.CloneMachine(ctx, CloneMachineInput{
+	if _, err := service.ForkMachine(ctx, ForkMachineInput{
 		SourceName: "habits",
 		TargetName: "habits-v2",
 		OwnerEmail: "other@example.com",
 	}); !errors.Is(err, database.ErrNotFound) {
-		t.Fatalf("expected not found for clone, got %v", err)
+		t.Fatalf("expected not found for fork, got %v", err)
 	}
 	if _, ok := runtime.machines["habits-v2"]; ok {
-		t.Fatalf("expected no clone to be created")
+		t.Fatalf("expected no fork to be created")
 	}
 }
 
@@ -1265,7 +1265,7 @@ func TestServiceRejectsOversizedMachineResources(t *testing.T) {
 	}
 }
 
-func TestServiceRejectsCloneWhenSourceExceedsSizeLimit(t *testing.T) {
+func TestServiceRejectsForkWhenSourceExceedsSizeLimit(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -1290,16 +1290,16 @@ func TestServiceRejectsCloneWhenSourceExceedsSizeLimit(t *testing.T) {
 	runtime.machines["habits"] = machineruntime.Machine{Name: "habits", Type: "vm", State: "RUNNING", CPU: "4", Memory: "2GiB", Disk: "20GiB"}
 	service := newTestService(store, runtime)
 
-	_, err = service.CloneMachine(ctx, CloneMachineInput{
+	_, err = service.ForkMachine(ctx, ForkMachineInput{
 		SourceName: "habits",
 		TargetName: "habits-v2",
 		OwnerEmail: "dev@example.com",
 	})
 	if err == nil || !strings.Contains(err.Error(), "cpu 4 > 2") {
-		t.Fatalf("expected clone size error, got %v", err)
+		t.Fatalf("expected fork size error, got %v", err)
 	}
-	if len(runtime.clonedReq) != 0 {
-		t.Fatalf("expected no runtime clone, got %+v", runtime.clonedReq)
+	if len(runtime.forkedReq) != 0 {
+		t.Fatalf("expected no runtime fork, got %+v", runtime.forkedReq)
 	}
 }
 
@@ -1334,7 +1334,7 @@ func TestServiceRejectsOversizedMachineDisk(t *testing.T) {
 	}
 }
 
-func TestServiceRejectsCloneWhenSourceDiskExceedsSizeLimit(t *testing.T) {
+func TestServiceRejectsForkWhenSourceDiskExceedsSizeLimit(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -1359,16 +1359,16 @@ func TestServiceRejectsCloneWhenSourceDiskExceedsSizeLimit(t *testing.T) {
 	runtime.machines["habits"] = machineruntime.Machine{Name: "habits", Type: "vm", State: "RUNNING", CPU: "1", Memory: "2GiB", Disk: "25GiB"}
 	service := newTestService(store, runtime)
 
-	_, err = service.CloneMachine(ctx, CloneMachineInput{
+	_, err = service.ForkMachine(ctx, ForkMachineInput{
 		SourceName: "habits",
 		TargetName: "habits-v2",
 		OwnerEmail: "dev@example.com",
 	})
 	if err == nil || !strings.Contains(err.Error(), "disk 25GiB > 20GiB") {
-		t.Fatalf("expected clone disk size error, got %v", err)
+		t.Fatalf("expected fork disk size error, got %v", err)
 	}
-	if len(runtime.clonedReq) != 0 {
-		t.Fatalf("expected no runtime clone, got %+v", runtime.clonedReq)
+	if len(runtime.forkedReq) != 0 {
+		t.Fatalf("expected no runtime fork, got %+v", runtime.forkedReq)
 	}
 }
 
@@ -1513,7 +1513,7 @@ func TestServiceCreateMachineMarksTutorialCompletedAfterSecondMachine(t *testing
 	}
 }
 
-func TestServiceCloneMachineMarksTutorialCompleted(t *testing.T) {
+func TestServiceForkMachineMarksTutorialCompleted(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -1537,7 +1537,7 @@ func TestServiceCloneMachineMarksTutorialCompleted(t *testing.T) {
 	runtime.machines["habits"] = machineruntime.Machine{Name: "habits", Type: "vm", State: "RUNNING", CPU: "1", Memory: "2GiB", Disk: "20GiB"}
 
 	service := newTestService(store, runtime)
-	if _, err := service.CloneMachine(ctx, CloneMachineInput{
+	if _, err := service.ForkMachine(ctx, ForkMachineInput{
 		SourceName: "habits",
 		TargetName: "habits-v2",
 		OwnerEmail: "dev@example.com",
@@ -1550,7 +1550,7 @@ func TestServiceCloneMachineMarksTutorialCompleted(t *testing.T) {
 		t.Fatal(err)
 	}
 	if updatedUser.TutorialCompletedAt == nil {
-		t.Fatalf("expected tutorial to be marked complete after clone")
+		t.Fatalf("expected tutorial to be marked complete after fork")
 	}
 }
 

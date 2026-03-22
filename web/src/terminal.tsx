@@ -56,7 +56,7 @@ export function TerminalView({ machineName, title, sessionId, onSessionId }: Pro
     const terminal = new Terminal({
       cursorBlink: true,
       scrollback: 3000,
-      fontSize: 13,
+      fontSize: 15,
       fontFamily: '"SF Mono", "SFMono-Regular", ui-monospace, Menlo, Consolas, monospace',
       theme: {
         background: "#121212",
@@ -269,11 +269,15 @@ export function TerminalView({ machineName, title, sessionId, onSessionId }: Pro
   return (
     <div className="terminal-shell">
       <div className="terminal-meta">
-        <span>{stats.status}</span>
-        {stats.attachMs !== null ? <span>{stats.attachMs}ms attach</span> : null}
-        {stats.rttMs !== null ? <span>{stats.rttMs}ms rtt</span> : null}
-        {stats.note ? <span>{stats.note}</span> : null}
-        {stats.error ? <span className="terminal-error">{stats.error}</span> : null}
+        <div className="terminal-meta-group">
+          <span className={`terminal-pill terminal-pill-${stats.status}`}>{stats.status}</span>
+          {stats.note ? <span className="terminal-pill terminal-pill-note">{stats.note}</span> : null}
+          {stats.error ? <span className="terminal-pill terminal-pill-error">{stats.error}</span> : null}
+        </div>
+        <div className="terminal-meta-group terminal-meta-group-end">
+          {stats.attachMs !== null ? <span className="terminal-pill terminal-pill-metric">{stats.attachMs}ms attach</span> : null}
+          {stats.rttMs !== null ? <span className="terminal-pill terminal-pill-metric">{stats.rttMs}ms rtt</span> : null}
+        </div>
       </div>
       <div className="terminal-host" ref={hostRef} />
     </div>

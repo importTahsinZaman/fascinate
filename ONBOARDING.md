@@ -24,7 +24,7 @@ In practical terms, it gives a user:
 - shell access to that VM through an SSH "front door"
 - a hosted app URL for the VM's main application port
 - full-VM snapshots
-- true clones created from snapshots
+- true forks created from snapshots
 - persisted tool login state for supported tools like Claude, Codex, and GitHub CLI
 
 The codebase is not a generic cloud platform. It is a focused product with a clear shape:
@@ -82,7 +82,7 @@ Fascinate uses Cloud Hypervisor, not Docker, not Incus, and not a container runt
 - containers share the host kernel
 - VMs get their own kernel and boot like full machines
 
-That is why snapshots and clones in this repo are "real VM" operations, not just filesystem copies.
+That is why snapshots and forks in this repo are "real VM" operations, not just filesystem copies.
 
 ### Control Plane
 
@@ -93,7 +93,7 @@ Examples:
 - "create machine"
 - "delete machine"
 - "create snapshot"
-- "clone machine"
+- "fork machine"
 
 In Fascinate, the control plane mostly lives in `internal/controlplane/service.go`.
 
@@ -167,18 +167,18 @@ In this repo a saved snapshot includes:
 
 That means a restored VM can resume from where the original machine was, not just reboot from disk.
 
-### Clone
+### Fork
 
-In many systems "clone" means "copy the disk and boot a new instance."
+In many systems "fork" means "copy the disk and boot a new instance."
 
 Not here.
 
-In Fascinate, clone means:
+In Fascinate, fork means:
 
 1. take an implicit snapshot of the source VM
 2. restore that snapshot into a new VM
 
-So clone preserves live environment state, not just files on disk.
+So fork preserves live environment state, not just files on disk.
 
 ## The Product From A User's Point Of View
 
@@ -189,7 +189,7 @@ Before reading the internals, understand the user experience.
 1. A user connects to Fascinate over SSH.
 2. Their public key is checked against SQLite.
 3. If the key is known, they enter the dashboard or run an exec-style SSH command.
-4. They can create, delete, clone, snapshot, or enter a shell in a VM.
+4. They can create, delete, fork, snapshot, or enter a shell in a VM.
 5. When they exit the guest shell, Fascinate captures supported tool auth from the guest.
 6. When they later create a fresh VM, Fascinate restores that stored auth before marking the machine ready.
 
@@ -406,7 +406,7 @@ That interface is intentionally small:
 - list/get/create/delete machines
 - start machines
 - list/get/create/delete snapshots
-- clone machines
+- fork machines
 - health check
 
 This is an important design seam. If you ever need to change the VM implementation, this interface is the boundary you would preserve first.
@@ -423,7 +423,7 @@ It handles:
 - per-VM network namespace setup
 - Cloud Hypervisor start and restore
 - snapshot artifact creation
-- clone-via-snapshot
+- fork-via-snapshot
 - host-side forwarders into the namespace
 - guest SSH probing
 - tool-auth capture and restore transport
@@ -723,9 +723,9 @@ Why? Because the restored snapshot state is treated as authoritative. The system
 
 That is both a product decision and a correctness invariant.
 
-## Clone Flow
+## Fork Flow
 
-Clone is not implemented as "copy a machine record and disk."
+Fork is not implemented as "copy a machine record and disk."
 
 It is implemented as:
 
@@ -735,14 +735,14 @@ It is implemented as:
 4. persist the new machine record
 5. remove the temporary snapshot artifact
 
-This is why clone preserves live environment state.
+This is why fork preserves live environment state.
 
-It is also why clone behaves differently from ordinary create:
+It is also why fork behaves differently from ordinary create:
 
 - ordinary create persists first, then provisions
-- clone provisions first, then persists
+- fork provisions first, then persists
 
-That asymmetry matters for failure handling. On clone, if DB persistence fails after runtime success, the control plane cleans up the runtime machine.
+That asymmetry matters for failure handling. On fork, if DB persistence fails after runtime success, the control plane cleans up the runtime machine.
 
 ## Snapshot Flow
 
@@ -820,7 +820,7 @@ Fascinate wants:
 - each VM isolated from others
 - guest traffic to reach the internet
 - users to reach the guest's SSH and app ports
-- snapshot restores and clones to preserve guest network identity
+- snapshot restores and forks to preserve guest network identity
 
 Those goals are slightly in tension, so the design matters.
 
@@ -844,7 +844,7 @@ Outside, on the host:
 
 Because snapshot restore can preserve guest IP and MAC state.
 
-If every guest had to be globally unique in the root namespace, restore and clone would be messier. By isolating each VM inside its own namespace, Fascinate can keep guest identity stable while still routing to each VM safely from the host.
+If every guest had to be globally unique in the root namespace, restore and fork would be messier. By isolating each VM inside its own namespace, Fascinate can keep guest identity stable while still routing to each VM safely from the host.
 
 ### What the forwarders do
 
@@ -931,7 +931,7 @@ Users can run commands like:
 - `snapshots`
 - `create <name>`
 - `create <name> --from-snapshot <snapshot>`
-- `clone <source> <target>`
+- `fork <source> <target>`
 - `snapshot save <machine> <name>`
 - `snapshot delete <name>`
 - `delete <name> --confirm <name>`
@@ -946,7 +946,7 @@ Interactive sessions show the Bubble Tea dashboard. From there users can:
 - browse snapshots
 - create machines
 - create from a selected snapshot
-- clone a running machine
+- fork a running machine
 - save snapshots
 - delete machines or snapshots
 - enter a guest shell
@@ -1028,14 +1028,14 @@ By reading `internal/tui/dashboard.go`, you learn what actions the product wants
 - new machine
 - enter shell
 - tutorial
-- clone
+- fork
 - snapshot
 - delete
 
 You also learn the intended state gating:
 
 - only `RUNNING` machines can be shelled into
-- only `RUNNING` machines can be cloned
+- only `RUNNING` machines can be forked
 - only `RUNNING` machines can be snapshotted
 - `CREATING` resources auto-refresh in the UI
 
@@ -1105,14 +1105,14 @@ Machines and snapshots now have explicit host ownership.
 That means:
 
 - restore from snapshot should run on the snapshot's host
-- clone should stay on the source machine's host
+- fork should stay on the source machine's host
 - shell, routing, and diagnostics should resolve through the owning host
 
 Even if only one host exists today, this invariant is now part of the architecture.
 
 ### Restore-authority invariant
 
-Snapshot-created and cloned machines treat restored state as authoritative.
+Snapshot-created and forked machines treat restored state as authoritative.
 
 Do not add fresh-boot-only behavior on top of restored machines unless the product explicitly wants it.
 
@@ -1143,9 +1143,9 @@ The runtime only knows if a VM process is alive or not.
 
 Because it needs durable host-side state that exists independently of SQLite and directly supports runtime operations like restart, cleanup, forwarder recovery, snapshot creation, and restore.
 
-### "Why is clone not async like create?"
+### "Why is fork not async like create?"
 
-Because the implementation currently creates the runtime clone first and persists the DB record second. That is a deliberate trade-off, but it means clone and create have different failure shapes.
+Because the implementation currently creates the runtime fork first and persists the DB record second. That is a deliberate trade-off, but it means fork and create have different failure shapes.
 
 ### "Why is guest readiness so strict?"
 
@@ -1410,7 +1410,7 @@ These are worth approaching carefully.
 - anything touching snapshot restore config rewriting
 - anything touching network namespace setup and teardown
 - changes to state transition rules
-- changes to create vs clone semantics
+- changes to create vs fork semantics
 - changes to tool-auth capture/restore timing
 - schema or persisted-format changes
 - host bootstrap or deploy changes
@@ -1419,7 +1419,7 @@ These are worth approaching carefully.
 
 1. Which layer should own this behavior: transport, control plane, runtime, or storage?
 2. Is the source of truth SQLite, runtime metadata, or both?
-3. Does this affect fresh create, snapshot create, clone, delete, or reconcile?
+3. Does this affect fresh create, snapshot create, fork, delete, or reconcile?
 4. Does this affect shell access, HTTP reachability, or both?
 5. Does this affect tool-auth timing?
 6. What test should fail before I change the code?
@@ -1515,7 +1515,7 @@ After finishing this guide, the best next step is not reading more random files.
 
 1. Fresh create: SSH command or dashboard action all the way to `RUNNING`.
 2. Snapshot create: user action all the way to saved artifact directory.
-3. Clone: source machine to implicit snapshot to restored target.
+3. Fork: source machine to implicit snapshot to restored target.
 4. Shell session: front door auth to guest shell to tool-auth capture.
 5. Crash recovery: partial create to startup reconciliation.
 

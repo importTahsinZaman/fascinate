@@ -46,9 +46,9 @@ type fakeMachines struct {
 	deleteName           string
 	deleteOwner          string
 	deleteErr            error
-	cloneInput           controlplane.CloneMachineInput
-	cloneResult          controlplane.Machine
-	cloneErr             error
+	forkInput           controlplane.ForkMachineInput
+	forkResult          controlplane.Machine
+	forkErr             error
 	listSnapshotsResult  []controlplane.Snapshot
 	listSnapshotsErr     error
 	createSnapshotInput  controlplane.CreateSnapshotInput
@@ -125,12 +125,12 @@ func (f *fakeMachines) DeleteMachine(_ context.Context, name, ownerEmail string)
 	return f.deleteErr
 }
 
-func (f *fakeMachines) CloneMachine(_ context.Context, input controlplane.CloneMachineInput) (controlplane.Machine, error) {
-	f.cloneInput = input
-	if f.cloneErr != nil {
-		return controlplane.Machine{}, f.cloneErr
+func (f *fakeMachines) ForkMachine(_ context.Context, input controlplane.ForkMachineInput) (controlplane.Machine, error) {
+	f.forkInput = input
+	if f.forkErr != nil {
+		return controlplane.Machine{}, f.forkErr
 	}
-	return f.cloneResult, nil
+	return f.forkResult, nil
 }
 
 func (f *fakeMachines) ListSnapshots(context.Context, string) ([]controlplane.Snapshot, error) {
@@ -315,21 +315,21 @@ func TestRunCommandCreateMachine(t *testing.T) {
 	}
 }
 
-func TestRunCommandCloneMachine(t *testing.T) {
+func TestRunCommandForkMachine(t *testing.T) {
 	t.Parallel()
 
 	machines := &fakeMachines{
-		cloneResult: controlplane.Machine{Name: "habits-v2", URL: "https://habits-v2.fascinate.dev"},
+		forkResult: controlplane.Machine{Name: "habits-v2", URL: "https://habits-v2.fascinate.dev"},
 	}
 	server := newTestServer(t, &fakeKeyLookup{}, machines)
 
 	channel := &stubChannel{}
-	status := server.runCommand(channel, nil, sessionAuth{userEmail: "dev@example.com"}, "clone habits habits-v2", sessionPTY{size: windowSize{width: 80, height: 24}, term: "xterm-256color"})
+	status := server.runCommand(channel, nil, sessionAuth{userEmail: "dev@example.com"}, "fork habits habits-v2", sessionPTY{size: windowSize{width: 80, height: 24}, term: "xterm-256color"})
 	if status != 0 {
 		t.Fatalf("expected zero status, got %d", status)
 	}
-	if machines.cloneInput.SourceName != "habits" || machines.cloneInput.TargetName != "habits-v2" {
-		t.Fatalf("unexpected clone input: %+v", machines.cloneInput)
+	if machines.forkInput.SourceName != "habits" || machines.forkInput.TargetName != "habits-v2" {
+		t.Fatalf("unexpected fork input: %+v", machines.forkInput)
 	}
 }
 

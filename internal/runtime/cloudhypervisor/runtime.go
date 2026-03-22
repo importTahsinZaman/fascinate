@@ -402,8 +402,8 @@ func (m *Manager) DeleteMachine(ctx context.Context, name string) error {
 	return m.cleanupMachine(ctx, meta)
 }
 
-func (m *Manager) CloneMachine(ctx context.Context, req machineruntime.CloneMachineRequest) (machineruntime.Machine, error) {
-	return m.cloneMachineViaSnapshot(ctx, req)
+func (m *Manager) ForkMachine(ctx context.Context, req machineruntime.ForkMachineRequest) (machineruntime.Machine, error) {
+	return m.forkMachineViaSnapshot(ctx, req)
 }
 
 func (m *Manager) prepareMetadata(name string, req machineruntime.CreateMachineRequest) (metadata, error) {

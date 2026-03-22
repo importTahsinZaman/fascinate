@@ -115,13 +115,11 @@ install_binary() {
 }
 
 build_web_dist() {
-  if [[ -f "${WEB_DIST_SOURCE_DIR}/index.html" ]]; then
-    return 0
-  fi
   local pnpm_cmd
   pnpm_cmd="$(resolve_pnpm)"
   (
     cd "${WEB_SOURCE_DIR}"
+    rm -rf "${WEB_DIST_SOURCE_DIR}"
     eval "${pnpm_cmd} install --frozen-lockfile"
     eval "${pnpm_cmd} build"
   )

@@ -97,14 +97,14 @@ func (m *Manager) DeleteSnapshot(_ context.Context, name string) error {
 	return os.RemoveAll(dir)
 }
 
-func (m *Manager) cloneMachineViaSnapshot(ctx context.Context, req machineruntime.CloneMachineRequest) (machineruntime.Machine, error) {
+func (m *Manager) forkMachineViaSnapshot(ctx context.Context, req machineruntime.ForkMachineRequest) (machineruntime.Machine, error) {
 	sourceName := strings.TrimSpace(req.SourceName)
 	targetName := strings.TrimSpace(req.TargetName)
 	if sourceName == "" || targetName == "" {
 		return machineruntime.Machine{}, fmt.Errorf("source and target names are required")
 	}
 
-	tempName := fmt.Sprintf(".clone-%s-%d", targetName, time.Now().UnixNano())
+	tempName := fmt.Sprintf(".fork-%s-%d", targetName, time.Now().UnixNano())
 	tempDir := m.snapshotDirPath(tempName)
 	snapshotMeta, err := m.CreateSnapshot(ctx, machineruntime.CreateSnapshotRequest{
 		MachineName:  sourceName,

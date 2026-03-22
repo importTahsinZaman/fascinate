@@ -6,7 +6,7 @@ STRESS_EMAIL="${FASCINATE_STRESS_EMAIL:-stress@example.com}"
 SOURCE_NAME="${FASCINATE_STRESS_SOURCE_NAME:-stress-source-$(date +%s)}"
 SNAPSHOT_NAME="${FASCINATE_STRESS_SNAPSHOT_NAME:-stress-snapshot-$(date +%s)}"
 RESTORE_NAME="${FASCINATE_STRESS_RESTORE_NAME:-stress-restore-$(date +%s)}"
-CLONE_NAME="${FASCINATE_STRESS_CLONE_NAME:-stress-clone-$(date +%s)}"
+FORK_NAME="${FASCINATE_STRESS_FORK_NAME:-stress-fork-$(date +%s)}"
 
 declare -A MACHINE_NAMESPACE=()
 declare -A MACHINE_HOST_VETH=()
@@ -295,7 +295,7 @@ record_snapshot_artifacts() {
 }
 
 cleanup() {
-  delete_machine "${CLONE_NAME}"
+  delete_machine "${FORK_NAME}"
   delete_machine "${RESTORE_NAME}"
   delete_machine "${SOURCE_NAME}"
   delete_snapshot "${SNAPSHOT_NAME}"
@@ -306,7 +306,7 @@ debug_dump() {
   owner_events | jq . >&2 || true
   echo "--- tool auth diagnostics ---" >&2
   tool_auth_diag | jq . >&2 || true
-  for name in "${SOURCE_NAME}" "${RESTORE_NAME}" "${CLONE_NAME}"; do
+  for name in "${SOURCE_NAME}" "${RESTORE_NAME}" "${FORK_NAME}"; do
     if curl -fsS "$(api_url "/v1/machines/${name}?owner_email=${STRESS_EMAIL}")" >/dev/null 2>&1; then
       echo "--- machine diagnostics: ${name} ---" >&2
       machine_diag "${name}" | jq . >&2 || true
@@ -447,51 +447,51 @@ main() {
   record_machine_artifacts "${RESTORE_NAME}"
   assert_running_workloads "${RESTORE_NAME}" "${restore_host}" "${restore_port}" "stress-app-${SOURCE_NAME}" "redis-${SOURCE_NAME}"
 
-  echo "cloning ${SOURCE_NAME} to ${CLONE_NAME}"
+  echo "forking ${SOURCE_NAME} to ${FORK_NAME}"
   curl -fsS \
     -X POST \
     -H 'Content-Type: application/json' \
-    -d "{\"target_name\":\"${CLONE_NAME}\",\"owner_email\":\"${STRESS_EMAIL}\"}" \
-    "$(api_url "/v1/machines/${SOURCE_NAME}/clone")" >/dev/null
-  local clone_host clone_port
-  read -r clone_host clone_port <<<"$(wait_for_machine_ready "${CLONE_NAME}")"
-  record_machine_artifacts "${CLONE_NAME}"
-  assert_running_workloads "${CLONE_NAME}" "${clone_host}" "${clone_port}" "stress-app-${SOURCE_NAME}" "redis-${SOURCE_NAME}"
+    -d "{\"target_name\":\"${FORK_NAME}\",\"owner_email\":\"${STRESS_EMAIL}\"}" \
+    "$(api_url "/v1/machines/${SOURCE_NAME}/fork")" >/dev/null
+  local fork_host fork_port
+  read -r fork_host fork_port <<<"$(wait_for_machine_ready "${FORK_NAME}")"
+  record_machine_artifacts "${FORK_NAME}"
+  assert_running_workloads "${FORK_NAME}" "${fork_host}" "${fork_port}" "stress-app-${SOURCE_NAME}" "redis-${SOURCE_NAME}"
 
   echo "verifying snapshot-backed identity"
-  local source_boot restore_boot clone_boot
+  local source_boot restore_boot fork_boot
   source_boot="$(boot_id "${source_host}" "${source_port}")"
   restore_boot="$(boot_id "${restore_host}" "${restore_port}")"
-  clone_boot="$(boot_id "${clone_host}" "${clone_port}")"
-  if [[ "${source_boot}" != "${restore_boot}" || "${source_boot}" != "${clone_boot}" ]]; then
+  fork_boot="$(boot_id "${fork_host}" "${fork_port}")"
+  if [[ "${source_boot}" != "${restore_boot}" || "${source_boot}" != "${fork_boot}" ]]; then
     echo "boot IDs diverged" >&2
     exit 1
   fi
 
-  local source_app restore_app clone_app
+  local source_app restore_app fork_app
   source_app="$(app_signature "${source_host}" "${source_port}")"
   restore_app="$(app_signature "${restore_host}" "${restore_port}")"
-  clone_app="$(app_signature "${clone_host}" "${clone_port}")"
-  if [[ -z "${source_app}" || "${source_app}" != "${restore_app}" || "${source_app}" != "${clone_app}" ]]; then
+  fork_app="$(app_signature "${fork_host}" "${fork_port}")"
+  if [[ -z "${source_app}" || "${source_app}" != "${restore_app}" || "${source_app}" != "${fork_app}" ]]; then
     echo "application process signatures diverged" >&2
     exit 1
   fi
 
-  local source_docker restore_docker clone_docker
+  local source_docker restore_docker fork_docker
   source_docker="$(docker_signature "${source_host}" "${source_port}")"
   restore_docker="$(docker_signature "${restore_host}" "${restore_port}")"
-  clone_docker="$(docker_signature "${clone_host}" "${clone_port}")"
-  if [[ -z "${source_docker}" || "${source_docker}" != "${restore_docker}" || "${source_docker}" != "${clone_docker}" ]]; then
+  fork_docker="$(docker_signature "${fork_host}" "${fork_port}")"
+  if [[ -z "${source_docker}" || "${source_docker}" != "${restore_docker}" || "${source_docker}" != "${fork_docker}" ]]; then
     echo "docker container signatures diverged" >&2
     exit 1
   fi
 
-  echo "restarting fascinate with source, restore, and clone alive"
+  echo "restarting fascinate with source, restore, and fork alive"
   systemctl restart fascinate
   wait_for_health
   assert_running_workloads "${SOURCE_NAME}" "${source_host}" "${source_port}" "stress-app-${SOURCE_NAME}" "redis-${SOURCE_NAME}"
   assert_running_workloads "${RESTORE_NAME}" "${restore_host}" "${restore_port}" "stress-app-${SOURCE_NAME}" "redis-${SOURCE_NAME}"
-  assert_running_workloads "${CLONE_NAME}" "${clone_host}" "${clone_port}" "stress-app-${SOURCE_NAME}" "redis-${SOURCE_NAME}"
+  assert_running_workloads "${FORK_NAME}" "${fork_host}" "${fork_port}" "stress-app-${SOURCE_NAME}" "redis-${SOURCE_NAME}"
 
   echo "mutating source app, redis, and docker workloads"
   run_guest_command "${source_host}" "${source_port}" "printf 'stress-app-mutated-${SOURCE_NAME}\n' >/home/ubuntu/fascinate-stress-app/index.html"
@@ -501,7 +501,7 @@ main() {
 
   wait_for_route_body "${SOURCE_NAME}" "No services detected"
   wait_for_route_body "${RESTORE_NAME}" "stress-app-${SOURCE_NAME}"
-  wait_for_route_body "${CLONE_NAME}" "stress-app-${SOURCE_NAME}"
+  wait_for_route_body "${FORK_NAME}" "stress-app-${SOURCE_NAME}"
 
   if [[ "$(redis_value "${source_host}" "${source_port}")" != "redis-mutated-${SOURCE_NAME}" ]]; then
     echo "source redis mutation did not apply" >&2
@@ -511,8 +511,8 @@ main() {
     echo "restore redis value changed unexpectedly" >&2
     exit 1
   fi
-  if [[ "$(redis_value "${clone_host}" "${clone_port}")" != "redis-${SOURCE_NAME}" ]]; then
-    echo "clone redis value changed unexpectedly" >&2
+  if [[ "$(redis_value "${fork_host}" "${fork_port}")" != "redis-${SOURCE_NAME}" ]]; then
+    echo "fork redis value changed unexpectedly" >&2
     exit 1
   fi
 
@@ -521,14 +521,14 @@ main() {
     exit 1
   fi
   run_guest_command "${restore_host}" "${restore_port}" "docker ps --format '{{.Names}}' | grep -x fascinate-stress-nginx >/dev/null"
-  run_guest_command "${clone_host}" "${clone_port}" "docker ps --format '{{.Names}}' | grep -x fascinate-stress-nginx >/dev/null"
+  run_guest_command "${fork_host}" "${fork_port}" "docker ps --format '{{.Names}}' | grep -x fascinate-stress-nginx >/dev/null"
 
   echo "cleaning up stress artifacts"
-  delete_machine "${CLONE_NAME}"
+  delete_machine "${FORK_NAME}"
   delete_machine "${RESTORE_NAME}"
   delete_machine "${SOURCE_NAME}"
   delete_snapshot "${SNAPSHOT_NAME}"
-  wait_for_machine_deleted "${CLONE_NAME}"
+  wait_for_machine_deleted "${FORK_NAME}"
   wait_for_machine_deleted "${RESTORE_NAME}"
   wait_for_machine_deleted "${SOURCE_NAME}"
   wait_for_snapshot_deleted "${SNAPSHOT_NAME}"

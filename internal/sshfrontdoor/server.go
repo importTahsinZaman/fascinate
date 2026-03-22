@@ -38,7 +38,7 @@ type machineManager interface {
 	GetMachineEnv(context.Context, string, string) (controlplane.MachineEnv, error)
 	CreateMachine(context.Context, controlplane.CreateMachineInput) (controlplane.Machine, error)
 	DeleteMachine(context.Context, string, string) error
-	CloneMachine(context.Context, controlplane.CloneMachineInput) (controlplane.Machine, error)
+	ForkMachine(context.Context, controlplane.ForkMachineInput) (controlplane.Machine, error)
 	ListSnapshots(context.Context, string) ([]controlplane.Snapshot, error)
 	CreateSnapshot(context.Context, controlplane.CreateSnapshotInput) (controlplane.Snapshot, error)
 	DeleteSnapshot(context.Context, string, string) error
@@ -271,8 +271,8 @@ func (s *Server) runCommand(channel ssh.Channel, requests <-chan *ssh.Request, a
 		return s.envCommand(channel, auth.userEmail, fields)
 	case "create":
 		return s.createMachine(channel, auth.userEmail, fields)
-	case "clone":
-		return s.cloneMachine(channel, auth.userEmail, fields)
+	case "fork":
+		return s.forkMachine(channel, auth.userEmail, fields)
 	case "delete":
 		return s.deleteMachine(channel, auth.userEmail, fields)
 	case "snapshot":
@@ -283,7 +283,7 @@ func (s *Server) runCommand(channel ssh.Channel, requests <-chan *ssh.Request, a
 		return s.tutorialMachine(channel, requests, auth.userEmail, fields, ptyState)
 	default:
 		fmt.Fprintf(channel, "unknown command: %s\n", fields[0])
-		fmt.Fprintln(channel, "available commands: help, dashboard, whoami, machines, snapshots, env, create, clone, delete, snapshot, shell, tutorial, exit")
+		fmt.Fprintln(channel, "available commands: help, dashboard, whoami, machines, snapshots, env, create, fork, delete, snapshot, shell, tutorial, exit")
 		return 127
 	}
 }
@@ -431,7 +431,7 @@ func (s *Server) renderDashboard(channel ssh.Channel, userEmail string) {
 	if err := s.renderMachines(channel, userEmail); err != nil {
 		fmt.Fprintf(channel, "error loading machines: %v\n", err)
 	}
-	fmt.Fprintln(channel, "\ncommands: machines, snapshots, env, create <name> [--from-snapshot <snapshot>], clone <source> <target>, snapshot save <machine> <name>, snapshot delete <name>, delete <name> --confirm <name>, shell <name>, tutorial <name>, whoami, help, exit")
+	fmt.Fprintln(channel, "\ncommands: machines, snapshots, env, create <name> [--from-snapshot <snapshot>], fork <source> <target>, snapshot save <machine> <name>, snapshot delete <name>, delete <name> --confirm <name>, shell <name>, tutorial <name>, whoami, help, exit")
 }
 
 func (s *Server) renderMachines(channel ssh.Channel, userEmail string) error {
@@ -630,16 +630,16 @@ func (s *Server) snapshotCommand(channel ssh.Channel, userEmail string, fields [
 	}
 }
 
-func (s *Server) cloneMachine(channel ssh.Channel, userEmail string, fields []string) uint32 {
+func (s *Server) forkMachine(channel ssh.Channel, userEmail string, fields []string) uint32 {
 	if len(fields) != 3 {
-		fmt.Fprintln(channel, "usage: clone <source> <target>")
+		fmt.Fprintln(channel, "usage: fork <source> <target>")
 		return 2
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()
 
-	machine, err := s.machines.CloneMachine(ctx, controlplane.CloneMachineInput{
+	machine, err := s.machines.ForkMachine(ctx, controlplane.ForkMachineInput{
 		SourceName: fields[1],
 		TargetName: fields[2],
 		OwnerEmail: userEmail,
@@ -649,7 +649,7 @@ func (s *Server) cloneMachine(channel ssh.Channel, userEmail string, fields []st
 		return 1
 	}
 
-	fmt.Fprintf(channel, "cloned %s -> %s\t%s\n", fields[1], machine.Name, machine.URL)
+	fmt.Fprintf(channel, "forked %s -> %s\t%s\n", fields[1], machine.Name, machine.URL)
 	return 0
 }
 

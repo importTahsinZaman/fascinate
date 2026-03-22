@@ -212,7 +212,7 @@ func TestServiceCreateMachineFailsWhenManagedEnvSyncFails(t *testing.T) {
 	})
 }
 
-func TestServiceCloneMachineSyncsManagedEnv(t *testing.T) {
+func TestServiceForkMachineSyncsManagedEnv(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -249,7 +249,7 @@ func TestServiceCloneMachineSyncsManagedEnv(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cloned, err := service.CloneMachine(ctx, CloneMachineInput{
+	forked, err := service.ForkMachine(ctx, ForkMachineInput{
 		SourceName: "tic-tac-toe",
 		TargetName: "tic-tac-toe-v2",
 		OwnerEmail: "dev@example.com",
@@ -260,16 +260,16 @@ func TestServiceCloneMachineSyncsManagedEnv(t *testing.T) {
 
 	req, ok := runtime.envSyncReq["tic-tac-toe-v2"]
 	if !ok {
-		t.Fatalf("expected managed env sync for clone")
+		t.Fatalf("expected managed env sync for fork")
 	}
 	if req.Entries["FASCINATE_MACHINE_NAME"] != "tic-tac-toe-v2" {
-		t.Fatalf("unexpected clone env %+v", req.Entries)
+		t.Fatalf("unexpected fork env %+v", req.Entries)
 	}
-	record, err := store.GetMachineByName(ctx, cloned.Name)
+	record, err := store.GetMachineByName(ctx, forked.Name)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if req.Entries["FASCINATE_MACHINE_ID"] != record.ID {
-		t.Fatalf("expected clone env to use target machine id, got %+v", req.Entries)
+		t.Fatalf("expected fork env to use target machine id, got %+v", req.Entries)
 	}
 }

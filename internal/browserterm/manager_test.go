@@ -139,6 +139,18 @@ func TestCloseSessionRemovesSession(t *testing.T) {
 	}
 }
 
+func TestPersistentGuestShellCommandDisablesTmuxStatusBar(t *testing.T) {
+	t.Parallel()
+
+	command := persistentGuestShellCommand("fascinate-test", "exec bash -l")
+	if !strings.Contains(command, `tmux set-option -t "$session" status off`) {
+		t.Fatalf("expected tmux status bar to be disabled, command was %q", command)
+	}
+	if !strings.Contains(command, `tmux set-option -t "$session" mouse on`) {
+		t.Fatalf("expected tmux mouse mode to be enabled, command was %q", command)
+	}
+}
+
 func TestExpectedSessionEndErrorTreatsNormalWebsocketCloseAsClean(t *testing.T) {
 	t.Parallel()
 

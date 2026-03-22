@@ -153,8 +153,8 @@ export async function deleteMachine(name: string) {
   });
 }
 
-export async function cloneMachine(sourceName: string, targetName: string) {
-  return request<Machine>(`/v1/machines/${encodeURIComponent(sourceName)}/clone`, {
+export async function forkMachine(sourceName: string, targetName: string) {
+  return request<Machine>(`/v1/machines/${encodeURIComponent(sourceName)}/fork`, {
     method: "POST",
     body: JSON.stringify({ target_name: targetName }),
   });

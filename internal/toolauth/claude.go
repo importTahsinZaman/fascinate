@@ -80,7 +80,7 @@ Rules:
 - For Next.js development, add %s to allowedDevOrigins.
 - Fascinate injects machine env vars at /etc/fascinate/env, /etc/fascinate/env.sh, /etc/fascinate/env.json, and /etc/profile.d/fascinate-env.sh.
 - Prefer Fascinate env vars like FASCINATE_PUBLIC_URL, FASCINATE_MACHINE_NAME, and FASCINATE_PRIMARY_PORT over hardcoded machine hostnames in app config.
-- For clone-safe config, prefer values like FRONTEND_URL=${FASCINATE_PUBLIC_URL} instead of literal https://%s URLs.
+- For fork-safe config, prefer values like FRONTEND_URL=${FASCINATE_PUBLIC_URL} instead of literal https://%s URLs.
 - Docker is available.
 - Data on disk persists across restarts.
 - Claude Code is preinstalled as 'claude'.
