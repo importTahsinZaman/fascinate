@@ -30,6 +30,7 @@ This document defines the current Fascinate product expectations and maps each e
 - Snapshot and clone smoke: `sudo ./ops/host/smoke-snapshots.sh`
 - Tool-auth smoke: `sudo ./ops/host/smoke-tool-auth.sh`
 - Full workload stress pass: `sudo ./ops/host/stress.sh`
+- Timing benchmark: `sudo ./ops/host/benchmark.sh`
 - Diagnostics helper:
   - `sudo ./ops/host/diagnostics.sh machine <owner_email> <machine_name>`
   - `sudo ./ops/host/diagnostics.sh snapshot <owner_email> <snapshot_name>`

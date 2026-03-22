@@ -61,6 +61,7 @@ Current SSH/frontdoor surface:
 - [`ops/host/write-caddyfile.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/write-caddyfile.sh): writes the host Caddy config for Fascinate
 - [`ops/host/install-control-plane.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/install-control-plane.sh): builds and installs the Fascinate service on a host
 - [`ops/host/smoke.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/smoke.sh): validates the basic create, route, restart, and delete lifecycle
+- [`ops/host/benchmark.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/benchmark.sh): prints structured timing metrics for create, snapshot, restore, and clone
 - [`ops/host/stress.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/stress.sh): validates realistic app, local DB, Docker, restart, snapshot, restore, clone, divergence, and cleanup behavior
 - [`ops/host/diagnostics.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/diagnostics.sh): queries machine, snapshot, tool-auth, and event diagnostics from a configured host
 - [`ops/host/smoke-tool-auth.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/smoke-tool-auth.sh): validates persisted tool auth across later VMs
@@ -101,6 +102,12 @@ Run the workload stress path when validating app, local DB, Docker, restart, sna
 
 ```bash
 sudo ./ops/host/stress.sh
+```
+
+Run the benchmark path when you want structured timing metrics for bare create, snapshot, restore, and clone:
+
+```bash
+sudo ./ops/host/benchmark.sh
 ```
 
 Run the automated tool-auth smoke path when validating Claude, Codex, and GitHub auth persistence across VMs:

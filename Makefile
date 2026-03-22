@@ -1,7 +1,7 @@
 GO ?= go
 BINARY ?= fascinate
 
-.PHONY: fmt test build run verify-ops smoke-host smoke-snapshots smoke-tool-auth stress-host
+.PHONY: fmt test build run verify-ops smoke-host smoke-snapshots smoke-tool-auth stress-host benchmark-host
 
 fmt:
 	gofmt -w cmd internal
@@ -21,6 +21,7 @@ verify-ops:
 	bash -n ops/host/configure-admin-ssh.sh
 	bash -n ops/host/diagnostics.sh
 	bash -n ops/host/smoke.sh
+	bash -n ops/host/benchmark.sh
 	bash -n ops/host/stress.sh
 	bash -n ops/host/smoke-snapshots.sh
 	bash -n ops/host/smoke-tool-auth.sh
@@ -40,3 +41,6 @@ smoke-tool-auth:
 
 stress-host:
 	bash ops/host/stress.sh
+
+benchmark-host:
+	bash ops/host/benchmark.sh
