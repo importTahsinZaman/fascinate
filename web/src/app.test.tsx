@@ -1,5 +1,5 @@
-import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter } from "react-router-dom";
 import { App } from "./app";
@@ -36,10 +36,15 @@ function jsonResponse(body: unknown, status = 200) {
 
 describe("App", () => {
   beforeEach(() => {
-    useWorkspaceStore.setState({ windows: [], hydrated: false });
+    useWorkspaceStore.setState({
+      windows: [],
+      viewport: { x: 120, y: 96, scale: 1 },
+      hydrated: false,
+    });
   });
 
   afterEach(() => {
+    cleanup();
     vi.restoreAllMocks();
   });
 
@@ -72,7 +77,7 @@ describe("App", () => {
     );
   });
 
-  it("renders browser management views and opens terminal windows", async () => {
+  it("renders the toolbelt workspace and opens terminal windows", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const path = String(input);
       if (path === "/v1/auth/session") {
@@ -111,9 +116,10 @@ describe("App", () => {
       }
       if (path === "/v1/workspaces/default") {
         if (init?.method === "PUT") {
-          return jsonResponse({ name: "default", layout: JSON.parse(String(init.body).replace(/^\{"layout":/, "").replace(/}$/, "")) });
+          const body = JSON.parse(String(init.body)) as { layout: unknown };
+          return jsonResponse({ name: "default", layout: body.layout });
         }
-        return jsonResponse({ name: "default", layout: { version: 1, windows: [] } });
+        return jsonResponse({ name: "default", layout: { version: 2, windows: [], viewport: { x: 120, y: 96, scale: 1 } } });
       }
       throw new Error(`unexpected request ${path}`);
     });
@@ -121,14 +127,22 @@ describe("App", () => {
 
     renderApp();
 
-    expect(await screen.findByText("m-1")).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Shells" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Machines" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Snapshots" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Env Vars" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Log out" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Reset view" })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Shells" }));
+    expect(await screen.findByText("Open a shell")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Open shell" }));
 
     expect(await screen.findByTestId("terminal-m-1")).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Minimize" })).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "Snapshots" }));
-    expect(await screen.findByText("baseline")).toBeTruthy();
+    expect(await screen.findByText("Saved snapshots")).toBeTruthy();
+    expect(screen.getAllByText("baseline").length).toBeGreaterThan(0);
 
     fireEvent.click(screen.getByRole("button", { name: "Env Vars" }));
     expect(await screen.findByText("FRONTEND_URL")).toBeTruthy();

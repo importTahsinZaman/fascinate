@@ -16,7 +16,7 @@ type WorkspaceState = {
 };
 
 const defaultViewport: WorkspaceViewport = { x: 120, y: 96, scale: 1 };
-const defaultWindowSize = { width: 520, height: 320 };
+const defaultWindowSize = { width: 1040, height: 640 };
 const windowMargin = 36;
 
 export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
