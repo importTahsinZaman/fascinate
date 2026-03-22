@@ -66,8 +66,8 @@ Current SSH/frontdoor surface:
 - [`ops/host/smoke.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/smoke.sh): validates the basic create, route, restart, and delete lifecycle
 - [`ops/host/benchmark.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/benchmark.sh): prints structured timing metrics for create, snapshot, restore, and clone
 - [`ops/host/stress.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/stress.sh): validates realistic app, local DB, Docker, restart, snapshot, restore, clone, divergence, and cleanup behavior
-- [`ops/host/diagnostics.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/diagnostics.sh): queries machine, snapshot, tool-auth, and event diagnostics from a configured host
-- [`ops/host/smoke-tool-auth.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/smoke-tool-auth.sh): validates persisted tool auth across later VMs
+- [`ops/host/diagnostics.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/diagnostics.sh): queries host, machine, snapshot, tool-auth, and event diagnostics from a configured host
+- [`ops/host/smoke-tool-auth.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/smoke-tool-auth.sh): targeted persistence harness for Claude, Codex, and GitHub auth across later VMs
 - [`ops/host/smoke-snapshots.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/smoke-snapshots.sh): validates saved snapshots, create-from-snapshot, and true clone flows
 - [`docs/stress-matrix.md`](/Users/tahsin/Desktop/vmcloud/docs/stress-matrix.md): expectation matrix and operator guidance for live validation
 - [`ops/cloudhypervisor/build-base-image.sh`](/Users/tahsin/Desktop/vmcloud/ops/cloudhypervisor/build-base-image.sh): builds an agent-ready qcow2 guest image
@@ -114,7 +114,7 @@ Run the benchmark path when you want structured timing metrics for bare create, 
 sudo ./ops/host/benchmark.sh
 ```
 
-Run the automated tool-auth smoke path when validating Claude, Codex, and GitHub auth persistence across VMs:
+Run the automated tool-auth persistence harness when you are changing tool-auth behavior or debugging auth restore/capture issues:
 
 ```bash
 sudo ./ops/host/smoke-tool-auth.sh
@@ -135,6 +135,8 @@ sudo ./ops/host/diagnostics.sh snapshot you@example.com snapshot-name
 sudo ./ops/host/diagnostics.sh tool-auth you@example.com
 sudo ./ops/host/diagnostics.sh events you@example.com 100
 ```
+
+The `hosts` diagnostics output includes `placement_eligible`, which currently means the host is active, has a fresh heartbeat, and can fit a default-size Fascinate machine right now.
 
 Notes:
 - the bootstrap script assumes a fresh host or a host you are willing to standardize

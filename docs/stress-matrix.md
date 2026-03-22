@@ -19,19 +19,21 @@ This document defines the current Fascinate product expectations and maps each e
 | True clone | Cloning a running VM produces a live independent copy with the captured app/process/container state already running | `ops/host/smoke-snapshots.sh`, `ops/host/stress.sh` |
 | Clone independence | After clone completes, source and clone can diverge independently without shared runtime side effects | `ops/host/smoke-snapshots.sh`, `ops/host/stress.sh` |
 | Cleanup | Deleting machines and snapshots removes runtime dirs, forwarders, netns/veth artifacts, and snapshot artifact dirs | `ops/host/smoke-snapshots.sh`, `ops/host/stress.sh` |
-| Tool auth persistence | Supported tool auth persists across later VMs for the same user and is not silently clobbered by opportunistic empty syncs | `internal/toolauth/manager_test.go`, `internal/controlplane/service_test.go`, `ops/host/smoke-tool-auth.sh` |
+| Tool auth persistence | Supported tool auth persists across later VMs for the same user and is not silently clobbered by opportunistic empty syncs | `internal/toolauth/manager_test.go`, `internal/controlplane/service_test.go`, targeted `ops/host/smoke-tool-auth.sh` runs |
 | Tool auth diagnostics | Capture/restore failures for Claude, Codex, or GitHub auth are visible to operators | `internal/httpapi/server_test.go`, `ops/host/diagnostics.sh` |
 | Lifecycle diagnostics | Operators can inspect machine/snapshot runtime handles, lifecycle failures, forwarder state, and recent events without manual host forensics | `internal/httpapi/server_test.go`, `ops/host/diagnostics.sh` |
+| Host diagnostics | Operators can inspect registered hosts, heartbeat freshness, and current default-machine placement eligibility | `internal/controlplane/hosts_test.go`, `internal/httpapi/server_test.go`, `ops/host/diagnostics.sh hosts` |
 | Host reboot survival | After a full host reboot, the control plane restarts, stopped VMs are recovered, and guest workloads configured for guest boot come back without manual host repair | `internal/controlplane/service_test.go`, manual live reboot validation |
 
 ## Live Validation Entry Points
 
 - Basic lifecycle smoke: `sudo ./ops/host/smoke.sh`
 - Snapshot and clone smoke: `sudo ./ops/host/smoke-snapshots.sh`
-- Tool-auth smoke: `sudo ./ops/host/smoke-tool-auth.sh`
+- Tool-auth persistence harness: `sudo ./ops/host/smoke-tool-auth.sh`
 - Full workload stress pass: `sudo ./ops/host/stress.sh`
 - Timing benchmark: `sudo ./ops/host/benchmark.sh`
 - Diagnostics helper:
+  - `sudo ./ops/host/diagnostics.sh hosts`
   - `sudo ./ops/host/diagnostics.sh machine <owner_email> <machine_name>`
   - `sudo ./ops/host/diagnostics.sh snapshot <owner_email> <snapshot_name>`
   - `sudo ./ops/host/diagnostics.sh tool-auth <owner_email>`

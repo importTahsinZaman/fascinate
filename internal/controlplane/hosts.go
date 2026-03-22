@@ -295,7 +295,7 @@ func (s *Service) hostFromRecord(record database.HostRecord) Host {
 		RuntimeVersion:       record.RuntimeVersion,
 		HeartbeatAt:          record.HeartbeatAt,
 		HeartbeatFresh:       s.hostHeartbeatFresh(record),
-		PlacementEligible:    s.hostPlacementEligible(record),
+		PlacementEligible:    s.hostPlacementEligible(record, s.cfg.DefaultMachineCPU, s.cfg.DefaultMachineRAM, s.cfg.DefaultMachineDisk),
 		TotalCPU:             record.TotalCPU,
 		AllocatedCPU:         record.AllocatedCPU,
 		TotalMemoryBytes:     record.TotalMemoryBytes,
@@ -329,8 +329,42 @@ func (s *Service) hostHeartbeatFresh(record database.HostRecord) bool {
 	return time.Since(heartbeatAt) <= grace
 }
 
-func (s *Service) hostPlacementEligible(record database.HostRecord) bool {
-	return strings.EqualFold(strings.TrimSpace(record.Status), hostStatusActive) && s.hostHeartbeatFresh(record)
+func (s *Service) hostPlacementEligible(record database.HostRecord, cpu, memory, disk string) bool {
+	if !strings.EqualFold(strings.TrimSpace(record.Status), hostStatusActive) || !s.hostHeartbeatFresh(record) {
+		return false
+	}
+	return s.hostHasCapacity(record, cpu, memory, disk)
+}
+
+func (s *Service) hostHasCapacity(record database.HostRecord, cpu, memory, disk string) bool {
+	requestedCPU, err := parseCPUCount(cpu)
+	if err != nil || requestedCPU <= 0 {
+		return false
+	}
+	if record.TotalCPU > 0 && record.AllocatedCPU+int(requestedCPU) > record.TotalCPU {
+		return false
+	}
+
+	requestedMemoryBytes, err := parseByteSize(memory)
+	if err != nil || requestedMemoryBytes <= 0 {
+		return false
+	}
+	if record.TotalMemoryBytes > 0 && record.AllocatedMemoryBytes+requestedMemoryBytes > record.TotalMemoryBytes {
+		return false
+	}
+
+	requestedDiskBytes, err := parseByteSize(disk)
+	if err != nil || requestedDiskBytes <= 0 {
+		return false
+	}
+	if record.TotalDiskBytes > 0 && record.AllocatedDiskBytes+requestedDiskBytes > record.TotalDiskBytes {
+		return false
+	}
+	if record.AvailableDiskBytes > 0 && requestedDiskBytes > record.AvailableDiskBytes {
+		return false
+	}
+
+	return true
 }
 
 func parseLabels(value string) map[string]string {
@@ -422,13 +456,13 @@ func (s *Service) executorForHostID(hostID string) (hostExecutor, error) {
 	return executor, nil
 }
 
-func (s *Service) getPlacementHost(ctx context.Context) (database.HostRecord, error) {
+func (s *Service) getPlacementHost(ctx context.Context, cpu, memory, disk string) (database.HostRecord, error) {
 	hosts, err := s.store.ListHosts(ctx)
 	if err != nil {
 		return database.HostRecord{}, err
 	}
 	for _, host := range hosts {
-		if s.hostPlacementEligible(host) {
+		if s.hostPlacementEligible(host, cpu, memory, disk) {
 			return host, nil
 		}
 	}

@@ -14,13 +14,14 @@ This repo uses Go modules and Make; there is no root JavaScript package manager.
 - Host workload stress (configured host only): `bash ops/host/stress.sh`
 - Host benchmark (configured host only): `bash ops/host/benchmark.sh`
 - Snapshot smoke (configured host only): `bash ops/host/smoke-snapshots.sh`
-- Tool-auth smoke (configured host only): `bash ops/host/smoke-tool-auth.sh`
+- Tool-auth persistence harness (configured host only): `bash ops/host/smoke-tool-auth.sh`
 - Host diagnostics helper: `bash ops/host/diagnostics.sh <hosts|machine|snapshot|tool-auth|events> ...`
 
 ## Testing
 - Prefer package-scoped tests first, then `go test ./...` when changes cross packages.
 - Any change under `ops/` or VM/runtime/deploy flows should also run `make verify-ops`.
 - Only run the host smoke and benchmark scripts on a machine that is already bootstrapped for Fascinate, and only when the task calls for live validation.
+- Treat `ops/host/smoke-tool-auth.sh` as a targeted harness for tool-auth changes, not as the default always-run host acceptance smoke.
 - Add or update tests for behavioral changes, especially around control-plane state transitions, snapshots/cloning, shell entry, and tool-auth persistence.
 
 ## Project Structure

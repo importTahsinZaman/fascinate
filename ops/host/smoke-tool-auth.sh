@@ -37,6 +37,33 @@ cleanup() {
   delete_machine "${SMOKE_THIRD_NAME}"
 }
 
+debug_dump() {
+  echo "tool-auth smoke failed; dumping diagnostics" >&2
+  curl -fsS "$(api_url "/v1/diagnostics/tool-auth?owner_email=${SMOKE_EMAIL}")" 2>/dev/null | jq . >&2 || true
+  curl -fsS "$(api_url "/v1/diagnostics/events?owner_email=${SMOKE_EMAIL}&limit=50")" 2>/dev/null | jq . >&2 || true
+
+  for name in "${SMOKE_FIRST_NAME}" "${SMOKE_SECOND_NAME}" "${SMOKE_THIRD_NAME}"; do
+    if curl -fsS "$(api_url "/v1/machines/${name}?owner_email=${SMOKE_EMAIL}")" >/dev/null 2>&1; then
+      echo "--- machine diagnostics: ${name} ---" >&2
+      curl -fsS "$(api_url "/v1/diagnostics/machines/${name}?owner_email=${SMOKE_EMAIL}")" 2>/dev/null | jq . >&2 || true
+      echo "--- guest auth state: ${name} ---" >&2
+      run_guest_command "${name}" "bash -lc '
+        set +e
+        ls -la /home/ubuntu
+        echo
+        ls -la /home/ubuntu/.claude /home/ubuntu/.codex /home/ubuntu/.config /home/ubuntu/.config/gh 2>/dev/null
+        echo
+        test -f /home/ubuntu/.claude.json && { echo \"--- .claude.json ---\"; cat /home/ubuntu/.claude.json; }
+        test -f /home/ubuntu/.claude/session.json && { echo \"--- .claude/session.json ---\"; cat /home/ubuntu/.claude/session.json; }
+        test -f /home/ubuntu/.codex/auth.json && { echo \"--- .codex/auth.json ---\"; cat /home/ubuntu/.codex/auth.json; }
+        test -f /home/ubuntu/.config/gh/hosts.yml && { echo \"--- .config/gh/hosts.yml ---\"; cat /home/ubuntu/.config/gh/hosts.yml; }
+        test -f /home/ubuntu/.gitconfig && { echo \"--- .gitconfig ---\"; cat /home/ubuntu/.gitconfig; }
+        test -f /home/ubuntu/.git-credentials && { echo \"--- .git-credentials ---\"; cat /home/ubuntu/.git-credentials; }
+      '" >&2 || true
+    fi
+  done
+}
+
 wait_for_machine_state() {
   local name="$1"
   local want_state="$2"
@@ -153,15 +180,16 @@ verify_tool_auth_state_present() {
   local name="$1"
   run_guest_command "${name}" "bash -lc '
     set -euo pipefail
-    test -f /home/ubuntu/.claude.json
-    grep -q claude-seeded /home/ubuntu/.claude.json
-    test -f /home/ubuntu/.claude/session.json
-    grep -q codex-token /home/ubuntu/.codex/auth.json
-    test -f /home/ubuntu/.config/gh/hosts.yml
-    grep -q octocat /home/ubuntu/.config/gh/hosts.yml
-    test -f /home/ubuntu/.gitconfig
-    grep -q gh\\ auth\\ git-credential /home/ubuntu/.gitconfig
-    test -f /home/ubuntu/.git-credentials
+    test -f /home/ubuntu/.claude.json || { echo \"missing /home/ubuntu/.claude.json\" >&2; exit 1; }
+    grep -q claude-seeded /home/ubuntu/.claude.json || { echo \"missing claude seed marker\" >&2; exit 1; }
+    test -f /home/ubuntu/.claude/session.json || { echo \"missing /home/ubuntu/.claude/session.json\" >&2; exit 1; }
+    test -f /home/ubuntu/.codex/auth.json || { echo \"missing /home/ubuntu/.codex/auth.json\" >&2; exit 1; }
+    grep -q codex-token /home/ubuntu/.codex/auth.json || { echo \"missing codex token marker\" >&2; exit 1; }
+    test -f /home/ubuntu/.config/gh/hosts.yml || { echo \"missing /home/ubuntu/.config/gh/hosts.yml\" >&2; exit 1; }
+    grep -q octocat /home/ubuntu/.config/gh/hosts.yml || { echo \"missing GitHub seed marker\" >&2; exit 1; }
+    test -f /home/ubuntu/.gitconfig || { echo \"missing /home/ubuntu/.gitconfig\" >&2; exit 1; }
+    grep -q gh\\ auth\\ git-credential /home/ubuntu/.gitconfig || { echo \"missing gh auth git-credential helper\" >&2; exit 1; }
+    test -f /home/ubuntu/.git-credentials || { echo \"missing /home/ubuntu/.git-credentials\" >&2; exit 1; }
   '"
 }
 
@@ -185,11 +213,11 @@ verify_tool_auth_state_absent() {
   local name="$1"
   run_guest_command "${name}" "bash -lc '
     set -euo pipefail
-    test ! -f /home/ubuntu/.claude.json
-    test ! -f /home/ubuntu/.claude/session.json
-    test ! -f /home/ubuntu/.codex/auth.json
-    test ! -f /home/ubuntu/.config/gh/hosts.yml
-    test ! -f /home/ubuntu/.git-credentials
+    test ! -f /home/ubuntu/.claude.json || { echo \"unexpected /home/ubuntu/.claude.json\" >&2; exit 1; }
+    test ! -f /home/ubuntu/.claude/session.json || { echo \"unexpected /home/ubuntu/.claude/session.json\" >&2; exit 1; }
+    test ! -f /home/ubuntu/.codex/auth.json || { echo \"unexpected /home/ubuntu/.codex/auth.json\" >&2; exit 1; }
+    test ! -f /home/ubuntu/.config/gh/hosts.yml || { echo \"unexpected /home/ubuntu/.config/gh/hosts.yml\" >&2; exit 1; }
+    test ! -f /home/ubuntu/.git-credentials || { echo \"unexpected /home/ubuntu/.git-credentials\" >&2; exit 1; }
   '"
 }
 
@@ -229,7 +257,7 @@ main() {
 
   require_command "${FASCINATE_SSH_CLIENT_BINARY}"
 
-  trap cleanup EXIT
+  trap 'debug_dump; cleanup' EXIT
   cleanup
 
   create_machine "${SMOKE_FIRST_NAME}"

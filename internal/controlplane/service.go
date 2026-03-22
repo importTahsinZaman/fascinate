@@ -277,7 +277,7 @@ func (s *Service) CreateMachine(ctx context.Context, input CreateMachineInput) (
 		}
 		sourceSnapshotID = &snapshotRecord.ID
 	} else {
-		host, err := s.getPlacementHost(ctx)
+		host, err := s.getPlacementHost(ctx, s.cfg.DefaultMachineCPU, s.cfg.DefaultMachineRAM, s.cfg.DefaultMachineDisk)
 		if err != nil {
 			return Machine{}, err
 		}

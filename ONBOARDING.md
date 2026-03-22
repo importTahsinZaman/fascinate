@@ -31,6 +31,7 @@ The codebase is not a generic cloud platform. It is a focused product with a cle
 
 - one Go binary, `fascinate`
 - SQLite for product state
+- a first-class host registry, even in one-box deployments
 - Cloud Hypervisor as the VM runtime
 - Linux network namespaces for per-VM isolation
 - an HTTP API
@@ -40,7 +41,8 @@ The codebase is not a generic cloud platform. It is a focused product with a cle
 The shortest mental model is:
 
 - `internal/controlplane` decides what should exist
-- `internal/runtime/cloudhypervisor` makes it exist
+- `internal/controlplane/hosts.go` decides which host should do the work
+- `internal/runtime/cloudhypervisor` makes it exist on the owning host
 - `internal/database` remembers product state
 - `internal/httpapi` and `internal/sshfrontdoor` let users interact with it
 
@@ -210,6 +212,7 @@ The HTTP API is mainly for integration and operator-style use. It exposes:
 - runtime machine listing
 - machine CRUD-ish operations
 - snapshot listing/creation/deletion
+- diagnostics for hosts, machines, snapshots, tool auth, and events
 
 It also provides wildcard proxying for machine subdomains.
 
@@ -237,11 +240,12 @@ And here is the operational picture:
 User
   -> SSH front door / HTTP API
   -> control plane
-  -> database + runtime
+  -> database + host registry
+  -> host-aware executor boundary
   -> Cloud Hypervisor VM + network namespace + forwarders
 ```
 
-The cleanest way to think about this system is as two layers of truth.
+The cleanest way to think about this system is as two layers of truth plus one placement layer.
 
 ### Layer 1: Product truth in SQLite
 
@@ -254,6 +258,21 @@ SQLite stores things the product cares about:
 - email codes
 
 This is where user ownership, quotas, names, and product state live.
+
+### Placement layer: Host truth in SQLite
+
+The control plane now also tracks hosts as first-class resources.
+
+That layer stores things like:
+
+- host identity
+- host role and region
+- host health and heartbeat freshness
+- host capacity and current allocation
+- whether a host is currently eligible for new placement
+- which host owns each machine and snapshot
+
+Even in a single-host deployment, the code now behaves as if there is a host registry. That is intentional. It keeps one-box behavior working while preparing the architecture for multi-host execution later.
 
 ### Layer 2: Infrastructure truth on disk and in processes
 
@@ -302,11 +321,15 @@ It:
 - creates the Cloud Hypervisor runtime manager
 - creates the tool-auth store and manager
 - creates the control-plane service
+- ensures the local host exists in the host registry
+- heartbeats the local host once during startup
 - reconciles runtime state on startup
 - creates the HTTP server
 - creates the signup service
 - creates the SSH front door
 - runs the background tool-auth sync loop
+- runs the periodic runtime reconcile loop
+- runs the periodic local-host heartbeat loop
 
 If you understand `app.New`, you understand how the whole service boots.
 
@@ -319,6 +342,9 @@ Important defaults:
 - HTTP listens on `127.0.0.1:8080`
 - SSH listens on `127.0.0.1:2222`
 - data lives under `./data`
+- the default host ID is `local-host`
+- the default host role is `combined`
+- the default host region is `local`
 - runtime machine state lives under `./data/machines`
 - snapshots live under `./data/snapshots`
 - tool auth lives under `./data/tool-auth`
@@ -327,6 +353,7 @@ Important behavior:
 
 - an env file is loaded first
 - already-set environment variables win over values in that file
+- host configuration is env-backed too: ID, name, region, role, and heartbeat interval
 
 ### `internal/database`
 
@@ -342,6 +369,7 @@ Important tables:
 
 - `users`
 - `ssh_keys`
+- `hosts`
 - `machines`
 - `snapshots`
 - `email_codes`
@@ -359,6 +387,8 @@ It enforces:
 - per-user locking
 - machine quotas
 - machine size limits
+- host-aware placement
+- host ownership for machines and snapshots
 - ownership checks
 - async creation flow
 - snapshot lifecycle
@@ -374,6 +404,7 @@ This package defines the interface between the control plane and the actual VM i
 That interface is intentionally small:
 
 - list/get/create/delete machines
+- start machines
 - list/get/create/delete snapshots
 - clone machines
 - health check
@@ -406,6 +437,14 @@ This package exposes product and runtime behavior over HTTP.
 It is intentionally thin. It mostly validates input, calls the control plane or runtime, and writes JSON.
 
 It also does wildcard machine proxying when `FASCINATE_BASE_DOMAIN` is set.
+
+The newer diagnostics endpoints are especially helpful when learning the system because they expose operator-facing views of:
+
+- hosts
+- per-machine runtime handles and forwarders
+- snapshot artifacts
+- stored tool-auth profile state
+- recent lifecycle events
 
 ### `internal/sshfrontdoor`
 
@@ -462,11 +501,13 @@ When you run `fascinate serve`, the flow is:
 6. `toolauth.NewStore` prepares encrypted auth storage.
 7. `toolauth.NewManager` registers adapters.
 8. `controlplane.New` constructs the service.
-9. `controlPlane.ReconcileRuntimeState` aligns DB state with runtime state.
-10. `httpapi.New` builds the HTTP handler.
-11. `signup.New` builds the signup service.
-12. `sshfrontdoor.New` builds the SSH server.
-13. `App.Run` starts HTTP, SSH, and the periodic tool-auth sync loop.
+9. `controlPlane.EnsureLocalHost` makes sure the current box exists in the host registry.
+10. `controlPlane.HeartbeatLocalHost` publishes initial host health and capacity.
+11. `controlPlane.ReconcileRuntimeState` aligns DB state with runtime state.
+12. `httpapi.New` builds the HTTP handler.
+13. `signup.New` builds the signup service.
+14. `sshfrontdoor.New` builds the SSH server.
+15. `App.Run` starts HTTP, SSH, the periodic tool-auth sync loop, the periodic runtime reconcile loop, and the periodic local-host heartbeat loop.
 
 This matters because if startup is broken, the issue is often in one of those boundaries:
 
@@ -504,6 +545,7 @@ Important fields:
 
 - `name`: the user-facing machine name
 - `owner_user_id`
+- `host_id`: which registered host owns the machine
 - `runtime_name`: the name used by the runtime
 - `source_snapshot_id`: optional source snapshot for snapshot-based machine creation
 - `state`
@@ -519,6 +561,7 @@ Important nuance: the initial schema used `incus_name`, but a later migration re
 Important fields:
 
 - `name`: user-facing snapshot name
+- `host_id`: which registered host owns the snapshot
 - `runtime_name`: runtime-facing snapshot identifier
 - `source_machine_id`
 - `state`
@@ -536,6 +579,35 @@ Critical nuance:
 In current behavior, `runtime_name` is a generated UUID-like value, while `name` is the friendly per-user name.
 
 That difference is one of the most important details in the whole repo.
+
+### Hosts
+
+`hosts` holds the operator-visible registry of VM-capable Fascinate hosts.
+
+Important fields:
+
+- `id`
+- `name`
+- `region`
+- `role`
+- `status`
+- `heartbeat_at`
+- `total_*` and `allocated_*` capacity fields
+- `available_disk_bytes`
+- `machine_count`
+- `snapshot_count`
+- `last_error`
+
+Important nuance:
+
+- a host can be registered but not placement-eligible
+- `placement_eligible` is a derived operator-facing concept, not a raw DB column
+
+At the moment, host placement eligibility effectively means:
+
+- host status is active
+- heartbeat is fresh
+- the host can fit a default-size Fascinate machine right now
 
 ## Machine States And What They Mean
 
@@ -580,11 +652,14 @@ This is the most important control-plane flow to understand.
 3. Lock per-user mutations.
 4. Enforce quota and size policy.
 5. Ensure the user exists.
-6. Optionally sync tool auth from the user's other running machines.
-7. Insert a machine record with state `CREATING`.
-8. Launch async runtime creation in a goroutine.
-9. After the VM becomes reachable, restore tool auth into fresh machines.
-10. Mark the machine `RUNNING` or `FAILED`.
+6. Resolve an owning host.
+7. Optionally sync tool auth from the user's other running machines.
+8. Insert a machine record with state `CREATING`.
+9. Launch async runtime creation in a goroutine.
+10. After the VM becomes reachable, restore tool auth into fresh machines.
+11. Mark the machine `RUNNING` or `FAILED`.
+
+For fresh machines, host selection is now host-aware. In the current one-box setup that still resolves to the local host, but the control plane no longer assumes the local runtime is globally authoritative.
 
 ### Why creation is async
 
@@ -630,11 +705,13 @@ When a user creates from a snapshot, the flow changes.
 
 1. Resolve the user-facing snapshot name in SQLite.
 2. Confirm the snapshot is `READY`.
-3. Persist the new machine record with `source_snapshot_id`.
-4. Queue background creation.
-5. During queued creation, load the snapshot record and pass its `runtime_name` into the runtime request.
-6. The runtime restores from snapshot artifacts instead of booting from the base image.
-7. The machine becomes ready only after the restored guest is reachable again.
+3. Resolve the owning host from the snapshot record.
+4. Persist the new machine record with `source_snapshot_id`.
+5. Queue background creation.
+6. During queued creation, load the snapshot record and pass its `runtime_name` into the runtime request.
+7. Dispatch the restore through the owning host's executor.
+8. The runtime restores from snapshot artifacts instead of booting from the base image.
+9. The machine becomes ready only after the restored guest is reachable again.
 
 ### Critical behavior difference
 
@@ -653,9 +730,10 @@ Clone is not implemented as "copy a machine record and disk."
 It is implemented as:
 
 1. create a temporary implicit snapshot
-2. restore that snapshot into a new runtime machine
-3. persist the new machine record
-4. remove the temporary snapshot artifact
+2. keep the operation on the source machine's owning host
+3. restore that snapshot into a new runtime machine
+4. persist the new machine record
+5. remove the temporary snapshot artifact
 
 This is why clone preserves live environment state.
 
@@ -673,15 +751,17 @@ Snapshot creation is another async control-plane flow.
 ### High-level story
 
 1. Validate ownership and snapshot name.
-2. Generate a runtime snapshot name.
-3. Insert a DB record with state `CREATING` and an artifact directory path.
-4. Start background snapshot creation.
-5. The runtime pauses the VM.
-6. Cloud Hypervisor writes snapshot restore artifacts.
-7. Fascinate copies the VM disk and seed image into the snapshot artifact directory.
-8. Fascinate rewrites restore config paths so the snapshot artifact is self-contained.
-9. The VM is resumed.
-10. The control plane records artifact sizes and marks the snapshot `READY`.
+2. Resolve the source machine's owning host.
+3. Generate a runtime snapshot name.
+4. Insert a DB record with state `CREATING` and an artifact directory path.
+5. Start background snapshot creation.
+6. Dispatch snapshot creation through the owning host's executor.
+7. The runtime pauses the VM.
+8. Cloud Hypervisor writes snapshot restore artifacts.
+9. Fascinate copies the VM disk and seed image into the snapshot artifact directory.
+10. Fascinate rewrites restore config paths so the snapshot artifact is self-contained.
+11. The VM is resumed.
+12. The control plane records artifact sizes and marks the snapshot `READY`.
 
 ### Why the pause/resume matters
 
@@ -720,6 +800,8 @@ It runs on startup and does three jobs:
 This is crash recovery logic.
 
 Without it, the system would get stuck whenever the process died mid-create or mid-runtime mutation.
+
+There is now also a periodic reconcile loop in `app.Run`, so recovery is no longer just a startup concern.
 
 If you are debugging a mismatch between UI/API state and host reality, always ask:
 
@@ -791,7 +873,7 @@ The HTTP server uses the machine name from the incoming host, like:
 
 - `demo.fascinate.dev`
 
-It looks up the machine, finds its runtime app endpoint, and reverse proxies to the host-side forwarder.
+It looks up the machine, resolves its owning host, finds that host's runtime app endpoint, and reverse proxies to the host-side forwarder.
 
 That means public routing is based on machine identity, not on the guest having a unique host-visible IP.
 
@@ -959,6 +1041,8 @@ You also learn the intended state gating:
 
 This is a good place to look when you are unsure what behavior is product-correct versus merely technically possible.
 
+The TUI remains host-agnostic from the user's point of view. That is deliberate: host IDs are now important internally and in diagnostics, but normal user flows still treat the product as "machines and snapshots" rather than "hosts and placement."
+
 ## Reading Order For The Codebase
 
 If you want the fastest path to competence, read in this order.
@@ -969,20 +1053,22 @@ If you want the fastest path to competence, read in this order.
 4. `internal/app/app.go`
 5. `internal/config/config.go`
 6. `internal/runtime/runtime.go`
-7. `internal/controlplane/service.go`
-8. `internal/httpapi/server.go`
-9. `internal/sshfrontdoor/server.go`
-10. `internal/runtime/cloudhypervisor/runtime.go`
-11. `internal/runtime/cloudhypervisor/network.go`
-12. `internal/runtime/cloudhypervisor/snapshots.go`
-13. `internal/toolauth/manager.go`
-14. `internal/toolauth/store.go`
-15. `internal/tui/dashboard.go`
-16. `internal/signup/service.go`
-17. `internal/database/migrations/*.sql`
-18. `internal/controlplane/service_test.go`
-19. `internal/sshfrontdoor/server_test.go`
-20. `internal/httpapi/server_test.go`
+7. `internal/controlplane/hosts.go`
+8. `internal/controlplane/service.go`
+9. `internal/httpapi/server.go`
+10. `internal/sshfrontdoor/server.go`
+11. `internal/runtime/cloudhypervisor/runtime.go`
+12. `internal/runtime/cloudhypervisor/network.go`
+13. `internal/runtime/cloudhypervisor/snapshots.go`
+14. `internal/toolauth/manager.go`
+15. `internal/toolauth/store.go`
+16. `internal/tui/dashboard.go`
+17. `internal/signup/service.go`
+18. `internal/database/migrations/*.sql`
+19. `internal/controlplane/hosts_test.go`
+20. `internal/controlplane/service_test.go`
+21. `internal/sshfrontdoor/server_test.go`
+22. `internal/httpapi/server_test.go`
 
 That order intentionally alternates between product-facing code and systems-facing code.
 
@@ -1008,9 +1094,21 @@ That is why the control plane does not overwrite `CREATING` with a runtime-repor
 
 ### Ownership invariant
 
-Users can only act on their own machines and snapshots.
+Users can only act on their own machines and snapshots, and lifecycle operations must resolve through the owning host.
 
 Ownership checks live in the control plane and DB access patterns, not only in outer transport layers.
+
+### Host locality invariant
+
+Machines and snapshots now have explicit host ownership.
+
+That means:
+
+- restore from snapshot should run on the snapshot's host
+- clone should stay on the source machine's host
+- shell, routing, and diagnostics should resolve through the owning host
+
+Even if only one host exists today, this invariant is now part of the architecture.
 
 ### Restore-authority invariant
 
@@ -1069,9 +1167,10 @@ You do not need to memorize every test file, but you should know where truth liv
 
 ### Best tests for control-plane behavior
 
+- `internal/controlplane/hosts_test.go`
 - `internal/controlplane/service_test.go`
 
-This is the most important test file for lifecycle behavior, reconciliation, and tool-auth integration.
+These are the most important test files for host-aware placement, lifecycle behavior, reconciliation, and tool-auth integration.
 
 ### Best tests for SSH and UX behavior
 
@@ -1106,6 +1205,9 @@ Important scripts:
 - `ops/host/install-control-plane.sh`
 - `ops/host/verify.sh`
 - `ops/host/smoke.sh`
+- `ops/host/stress.sh`
+- `ops/host/benchmark.sh`
+- `ops/host/diagnostics.sh`
 - `ops/host/smoke-snapshots.sh`
 - `ops/host/smoke-tool-auth.sh`
 - `ops/cloudhypervisor/build-base-image.sh`
@@ -1115,6 +1217,8 @@ These scripts teach you:
 - what packages and kernel features the host needs
 - how the base guest image is prepared
 - what end-to-end behaviors are important enough to smoke-test
+
+One nuance worth knowing now: `ops/host/smoke-tool-auth.sh` has evolved into a more targeted persistence and diagnostics harness. It is especially useful when you are changing tool-auth behavior, but it is not the general-purpose first smoke to run after every unrelated runtime change.
 
 ## How To Contribute Intelligently
 
@@ -1168,6 +1272,16 @@ Start in:
 
 Specifically the reconciliation path.
 
+### If the change is about hosts, placement, heartbeats, or cross-host readiness
+
+Start in:
+
+- `internal/controlplane/hosts.go`
+- `internal/controlplane/service.go`
+- `internal/database/hosts.go`
+
+Then read the matching host and diagnostics tests.
+
 ### If the change is about networking, snapshots, restore, or host-level behavior
 
 Start in:
@@ -1184,12 +1298,14 @@ When behavior seems wrong, ask these questions in order.
 
 Check:
 
+- the host record
 - the machine row
 - the snapshot row
 - the user row
 
 Especially:
 
+- host ownership
 - state
 - owner
 - runtime name
@@ -1203,6 +1319,14 @@ Check:
 - snapshot metadata under `data/snapshots/<runtime-name>/snapshot.json`
 - whether the `cloud-hypervisor` process is alive
 - whether the forwarder PIDs are alive
+
+If you are debugging a host-aware issue, also check the diagnostics endpoints before dropping into manual host forensics:
+
+- `/v1/diagnostics/hosts`
+- `/v1/diagnostics/machines/{name}`
+- `/v1/diagnostics/snapshots/{name}`
+- `/v1/diagnostics/tool-auth`
+- `/v1/diagnostics/events`
 
 ### 3. Is the mismatch expected by design?
 
@@ -1321,6 +1445,26 @@ Ops validation:
 make verify-ops
 ```
 
+Operator-oriented helpers:
+
+```bash
+sudo ./ops/host/diagnostics.sh hosts
+sudo ./ops/host/diagnostics.sh machine you@example.com machine-name
+sudo ./ops/host/diagnostics.sh snapshot you@example.com snapshot-name
+sudo ./ops/host/diagnostics.sh tool-auth you@example.com
+sudo ./ops/host/diagnostics.sh events you@example.com 100
+```
+
+Live validation harnesses:
+
+```bash
+sudo ./ops/host/smoke.sh
+sudo ./ops/host/stress.sh
+sudo ./ops/host/benchmark.sh
+sudo ./ops/host/smoke-snapshots.sh
+sudo ./ops/host/smoke-tool-auth.sh
+```
+
 Local API smoke:
 
 ```bash
@@ -1351,6 +1495,8 @@ The product side says:
 - what should exist
 - what state a machine or snapshot should be in
 - when a user should be allowed to act
+- which host owns each machine and snapshot
+- whether a host is currently eligible for new default-size placement
 
 The infrastructure side says:
 
