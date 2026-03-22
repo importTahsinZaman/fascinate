@@ -12,6 +12,7 @@ This repo uses Go modules and Make; there is no root JavaScript package manager.
 - Verify ops scripts: `make verify-ops`
 - Host lifecycle smoke (configured host only): `bash ops/host/smoke.sh`
 - Host workload stress (configured host only): `bash ops/host/stress.sh`
+- Host benchmark (configured host only): `bash ops/host/benchmark.sh`
 - Snapshot smoke (configured host only): `bash ops/host/smoke-snapshots.sh`
 - Tool-auth smoke (configured host only): `bash ops/host/smoke-tool-auth.sh`
 - Host diagnostics helper: `bash ops/host/diagnostics.sh <machine|snapshot|tool-auth|events> ...`
@@ -19,7 +20,7 @@ This repo uses Go modules and Make; there is no root JavaScript package manager.
 ## Testing
 - Prefer package-scoped tests first, then `go test ./...` when changes cross packages.
 - Any change under `ops/` or VM/runtime/deploy flows should also run `make verify-ops`.
-- Only run the host smoke scripts on a machine that is already bootstrapped for Fascinate, and only when the task calls for live validation.
+- Only run the host smoke and benchmark scripts on a machine that is already bootstrapped for Fascinate, and only when the task calls for live validation.
 - Add or update tests for behavioral changes, especially around control-plane state transitions, snapshots/cloning, shell entry, and tool-auth persistence.
 
 ## Project Structure
