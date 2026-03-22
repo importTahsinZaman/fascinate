@@ -13,23 +13,29 @@ import (
 )
 
 type fakeMachines struct {
-	listResult    []controlplane.Machine
-	snapshotResult []controlplane.Snapshot
-	listErr       error
-	createInput   controlplane.CreateMachineInput
-	createErr     error
-	cloneInput    controlplane.CloneMachineInput
-	cloneErr      error
-	deleteName    string
-	deleteOwner   string
-	deleteErr     error
+	listResult          []controlplane.Machine
+	snapshotResult      []controlplane.Snapshot
+	envVarResult        []controlplane.EnvVar
+	listErr             error
+	createInput         controlplane.CreateMachineInput
+	createErr           error
+	cloneInput          controlplane.CloneMachineInput
+	cloneErr            error
+	deleteName          string
+	deleteOwner         string
+	deleteErr           error
 	createSnapshotInput controlplane.CreateSnapshotInput
-	createSnapshotErr error
-	deleteSnapshotName string
+	createSnapshotErr   error
+	deleteSnapshotName  string
 	deleteSnapshotOwner string
-	deleteSnapshotErr error
-	tutorialOwner string
-	tutorialErr   error
+	deleteSnapshotErr   error
+	setEnvInput         controlplane.SetEnvVarInput
+	setEnvErr           error
+	deleteEnvKey        string
+	deleteEnvOwner      string
+	deleteEnvErr        error
+	tutorialOwner       string
+	tutorialErr         error
 }
 
 func (f *fakeMachines) ListMachines(context.Context, string) ([]controlplane.Machine, error) {
@@ -41,6 +47,10 @@ func (f *fakeMachines) ListMachines(context.Context, string) ([]controlplane.Mac
 
 func (f *fakeMachines) ListSnapshots(context.Context, string) ([]controlplane.Snapshot, error) {
 	return f.snapshotResult, nil
+}
+
+func (f *fakeMachines) ListEnvVars(context.Context, string) ([]controlplane.EnvVar, error) {
+	return f.envVarResult, nil
 }
 
 func (f *fakeMachines) CreateMachine(_ context.Context, input controlplane.CreateMachineInput) (controlplane.Machine, error) {
@@ -88,6 +98,20 @@ func (f *fakeMachines) DeleteSnapshot(_ context.Context, name, ownerEmail string
 	return f.deleteSnapshotErr
 }
 
+func (f *fakeMachines) SetEnvVar(_ context.Context, input controlplane.SetEnvVarInput) (controlplane.EnvVar, error) {
+	f.setEnvInput = input
+	if f.setEnvErr != nil {
+		return controlplane.EnvVar{}, f.setEnvErr
+	}
+	return controlplane.EnvVar{Key: input.Key, RawValue: input.Value, UpdatedAt: "2026-03-22T00:00:00Z"}, nil
+}
+
+func (f *fakeMachines) DeleteEnvVar(_ context.Context, ownerEmail, key string) error {
+	f.deleteEnvOwner = ownerEmail
+	f.deleteEnvKey = key
+	return f.deleteEnvErr
+}
+
 func (f *fakeMachines) CompleteTutorial(_ context.Context, ownerEmail string) error {
 	f.tutorialOwner = ownerEmail
 	return f.tutorialErr
@@ -97,7 +121,8 @@ func TestModelLoadsMachinesOnInit(t *testing.T) {
 	t.Parallel()
 
 	manager := &fakeMachines{
-		listResult: []controlplane.Machine{{Name: "habits", State: "RUNNING"}},
+		listResult:   []controlplane.Machine{{Name: "habits", State: "RUNNING"}},
+		envVarResult: []controlplane.EnvVar{{Key: "APP_LABEL", RawValue: "demo"}},
 	}
 	model := NewDashboard("dev@example.com", manager, 80, 24)
 
@@ -106,6 +131,9 @@ func TestModelLoadsMachinesOnInit(t *testing.T) {
 	got := updated.(Model)
 	if len(got.items) != 1 || got.items[0].Name != "habits" {
 		t.Fatalf("unexpected items: %+v", got.items)
+	}
+	if len(got.envVars) != 1 || got.envVars[0].Key != "APP_LABEL" {
+		t.Fatalf("unexpected env vars: %+v", got.envVars)
 	}
 }
 
@@ -217,6 +245,88 @@ func TestModelCloneMachineError(t *testing.T) {
 	}
 	if manager.cloneInput.TargetName != "habits-v2" {
 		t.Fatalf("unexpected clone input: %+v", manager.cloneInput)
+	}
+}
+
+func TestModelAddEnvVarFlow(t *testing.T) {
+	t.Parallel()
+
+	manager := &fakeMachines{}
+	model := NewDashboard("dev@example.com", manager, 80, 24)
+
+	updated, _ := model.Update(loadMachinesMsg{})
+	browse := updated.(Model)
+	updated, _ = browse.Update(tea.KeyMsg{Type: tea.KeyTab})
+	updated, _ = updated.(Model).Update(tea.KeyMsg{Type: tea.KeyTab})
+	envFocus := updated.(Model)
+	updated, _ = envFocus.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	envMode := updated.(Model)
+	envMode.input.SetValue("FRONTEND_URL=${FASCINATE_PUBLIC_URL}")
+
+	updated, cmd := envMode.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	resultMsg := cmd()
+	updated, _ = updated.(Model).Update(resultMsg)
+	got := updated.(Model)
+
+	if manager.setEnvInput.OwnerEmail != "dev@example.com" || manager.setEnvInput.Key != "FRONTEND_URL" || manager.setEnvInput.Value != "${FASCINATE_PUBLIC_URL}" {
+		t.Fatalf("unexpected env input: %+v", manager.setEnvInput)
+	}
+	if len(got.envVars) != 1 || got.envVars[0].Key != "FRONTEND_URL" {
+		t.Fatalf("expected env var in model, got %+v", got.envVars)
+	}
+}
+
+func TestModelEditEnvVarPrefillsAssignment(t *testing.T) {
+	t.Parallel()
+
+	manager := &fakeMachines{
+		envVarResult: []controlplane.EnvVar{{Key: "APP_LABEL", RawValue: "old-value"}},
+	}
+	model := NewDashboard("dev@example.com", manager, 80, 24)
+
+	updated, _ := model.Update(loadMachinesMsg{envVars: manager.envVarResult})
+	browse := updated.(Model)
+	updated, _ = browse.Update(tea.KeyMsg{Type: tea.KeyTab})
+	updated, _ = updated.(Model).Update(tea.KeyMsg{Type: tea.KeyTab})
+	envFocus := updated.(Model)
+	updated, _ = envFocus.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'e'}})
+	got := updated.(Model)
+
+	if got.mode != modeEnvSet {
+		t.Fatalf("expected env set mode, got %v", got.mode)
+	}
+	if got.input.Value() != "APP_LABEL=old-value" {
+		t.Fatalf("unexpected input value: %q", got.input.Value())
+	}
+}
+
+func TestModelDeleteEnvVarFlow(t *testing.T) {
+	t.Parallel()
+
+	manager := &fakeMachines{
+		envVarResult: []controlplane.EnvVar{{Key: "APP_LABEL", RawValue: "old-value"}},
+	}
+	model := NewDashboard("dev@example.com", manager, 80, 24)
+
+	updated, _ := model.Update(loadMachinesMsg{envVars: manager.envVarResult})
+	browse := updated.(Model)
+	updated, _ = browse.Update(tea.KeyMsg{Type: tea.KeyTab})
+	updated, _ = updated.(Model).Update(tea.KeyMsg{Type: tea.KeyTab})
+	envFocus := updated.(Model)
+	updated, _ = envFocus.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	deleteMode := updated.(Model)
+	deleteMode.input.SetValue("APP_LABEL")
+
+	updated, cmd := deleteMode.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	resultMsg := cmd()
+	updated, _ = updated.(Model).Update(resultMsg)
+	got := updated.(Model)
+
+	if manager.deleteEnvOwner != "dev@example.com" || manager.deleteEnvKey != "APP_LABEL" {
+		t.Fatalf("unexpected env delete call: owner=%q key=%q", manager.deleteEnvOwner, manager.deleteEnvKey)
+	}
+	if len(got.envVars) != 0 {
+		t.Fatalf("expected env vars to be empty, got %+v", got.envVars)
 	}
 }
 
@@ -428,6 +538,9 @@ func TestViewRendersMachineCardsWithSelectedState(t *testing.T) {
 
 	if !containsAll(view, "Fascinate", "tic-tac-toe", "Port 3000:", "https://tic-tac-toe.fascinate.dev", "IPv4", "notes", "SNAPSHOTS", "tic-live", "(enter) shell", "(t) tutorial", "(q) quit") {
 		t.Fatalf("unexpected browse view: %q", view)
+	}
+	if !strings.Contains(view, "ENV VARS") {
+		t.Fatalf("expected env vars panel in browse view: %q", view)
 	}
 	if strings.Contains(view, "Selected machine") || strings.Contains(view, "Your machines") || strings.Contains(view, "SELECTED") || strings.Contains(view, "enter detail") {
 		t.Fatalf("unexpected legacy browse layout: %q", view)

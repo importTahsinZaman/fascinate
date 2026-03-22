@@ -17,11 +17,14 @@ import (
 type MachineManager interface {
 	ListMachines(context.Context, string) ([]controlplane.Machine, error)
 	ListSnapshots(context.Context, string) ([]controlplane.Snapshot, error)
+	ListEnvVars(context.Context, string) ([]controlplane.EnvVar, error)
 	CreateMachine(context.Context, controlplane.CreateMachineInput) (controlplane.Machine, error)
 	DeleteMachine(context.Context, string, string) error
 	CloneMachine(context.Context, controlplane.CloneMachineInput) (controlplane.Machine, error)
 	CreateSnapshot(context.Context, controlplane.CreateSnapshotInput) (controlplane.Snapshot, error)
 	DeleteSnapshot(context.Context, string, string) error
+	SetEnvVar(context.Context, controlplane.SetEnvVarInput) (controlplane.EnvVar, error)
+	DeleteEnvVar(context.Context, string, string) error
 	CompleteTutorial(context.Context, string) error
 }
 
@@ -34,20 +37,25 @@ const (
 	modeDeleteConfirm
 	modeSnapshotCreate
 	modeSnapshotDeleteConfirm
+	modeEnvSet
+	modeEnvDeleteConfirm
 )
 
 type loadMachinesMsg struct {
 	machines  []controlplane.Machine
 	snapshots []controlplane.Snapshot
+	envVars   []controlplane.EnvVar
 	err       error
 }
 
 type operationDoneMsg struct {
-	info     string
-	machine   *controlplane.Machine
-	snapshot  *controlplane.Snapshot
-	reload   bool
-	err      error
+	info          string
+	machine       *controlplane.Machine
+	snapshot      *controlplane.Snapshot
+	envVar        *controlplane.EnvVar
+	deletedEnvKey string
+	reload        bool
+	err           error
 }
 
 type refreshTickMsg struct{}
@@ -57,30 +65,34 @@ type browseFocus int
 const (
 	focusMachines browseFocus = iota
 	focusSnapshots
+	focusEnvVars
 )
 
 type Model struct {
 	userEmail string
 	machines  MachineManager
 
-	items          []controlplane.Machine
-	snapshots      []controlplane.Snapshot
-	selected       int
-	selectedSnapshot int
-	focus         browseFocus
-	width          int
-	height         int
-	mode           mode
-	input          textinput.Model
-	busy           bool
-	status         string
-	errMsg         string
-	sourceName     string
-	pendingName    string
+	items               []controlplane.Machine
+	snapshots           []controlplane.Snapshot
+	envVars             []controlplane.EnvVar
+	selected            int
+	selectedSnapshot    int
+	selectedEnvVar      int
+	focus               browseFocus
+	width               int
+	height              int
+	mode                mode
+	input               textinput.Model
+	busy                bool
+	status              string
+	errMsg              string
+	sourceName          string
+	pendingName         string
 	pendingSnapshotName string
-	shellTarget    string
-	tutorialTarget string
-	createSourceIndex int
+	pendingEnvKey       string
+	shellTarget         string
+	tutorialTarget      string
+	createSourceIndex   int
 }
 
 func NewDashboard(userEmail string, machines MachineManager, width, height int) Model {
@@ -150,6 +162,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.selectedSnapshot = 0
 			}
 		}
+		m.envVars = msg.envVars
+		if len(m.envVars) == 0 {
+			m.selectedEnvVar = 0
+		} else {
+			if m.selectedEnvVar >= len(m.envVars) {
+				m.selectedEnvVar = len(m.envVars) - 1
+			}
+			if m.selectedEnvVar < 0 {
+				m.selectedEnvVar = 0
+			}
+		}
 		return m, m.autoRefreshCmd()
 	case operationDoneMsg:
 		m.busy = false
@@ -165,12 +188,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.sourceName = ""
 		m.pendingName = ""
 		m.pendingSnapshotName = ""
+		m.pendingEnvKey = ""
 		m.input.SetValue("")
 		if msg.machine != nil {
 			m.upsertMachine(*msg.machine)
 		}
 		if msg.snapshot != nil {
 			m.upsertSnapshot(*msg.snapshot)
+		}
+		if msg.envVar != nil {
+			m.upsertEnvVar(*msg.envVar)
+		}
+		if msg.deletedEnvKey != "" {
+			m.removeEnvVar(msg.deletedEnvKey)
 		}
 		if msg.reload {
 			m.busy = true
@@ -179,7 +209,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.autoRefreshCmd()
 	case tea.KeyMsg:
 		switch m.mode {
-		case modeCreate, modeClone, modeDeleteConfirm, modeSnapshotCreate, modeSnapshotDeleteConfirm:
+		case modeCreate, modeClone, modeDeleteConfirm, modeSnapshotCreate, modeSnapshotDeleteConfirm, modeEnvSet, modeEnvDeleteConfirm:
 			return m.updateInputMode(msg)
 		default:
 			return m.updateBrowseMode(msg)
@@ -245,6 +275,22 @@ func (m Model) View() string {
 			m.input.View(),
 			"enter delete | esc cancel",
 		))
+	case modeEnvSet:
+		sections = append(sections, m.renderInputPanel(
+			"Set Env Var",
+			"Create or update a user env var. Built-in FASCINATE_* vars are managed by Fascinate and cannot be overridden here.",
+			"KEY=value",
+			m.input.View(),
+			"enter save | esc cancel",
+		))
+	case modeEnvDeleteConfirm:
+		sections = append(sections, m.renderInputPanel(
+			"Delete Env Var",
+			fmt.Sprintf("Type %s exactly to remove this user env var from all future shells and process starts.", m.pendingEnvKey),
+			"confirm",
+			m.input.View(),
+			"enter delete | esc cancel",
+		))
 	default:
 		sections = append(sections, m.renderBrowse(width))
 	}
@@ -258,12 +304,12 @@ func (m Model) updateBrowseMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "ctrl+c", "q":
 		return m, tea.Quit
 	case "tab":
-		if len(m.snapshots) == 0 {
-			return m, nil
-		}
-		if m.focus == focusMachines {
+		switch m.focus {
+		case focusMachines:
 			m.focus = focusSnapshots
-		} else {
+		case focusSnapshots:
+			m.focus = focusEnvVars
+		default:
 			m.focus = focusMachines
 		}
 		return m, nil
@@ -271,6 +317,12 @@ func (m Model) updateBrowseMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.focus == focusSnapshots {
 			if m.selectedSnapshot > 0 {
 				m.selectedSnapshot--
+			}
+			return m, nil
+		}
+		if m.focus == focusEnvVars {
+			if m.selectedEnvVar > 0 {
+				m.selectedEnvVar--
 			}
 			return m, nil
 		}
@@ -285,6 +337,12 @@ func (m Model) updateBrowseMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
+		if m.focus == focusEnvVars {
+			if m.selectedEnvVar < len(m.envVars)-1 {
+				m.selectedEnvVar++
+			}
+			return m, nil
+		}
 		if m.selected < len(m.items)-1 {
 			m.selected++
 		}
@@ -295,7 +353,7 @@ func (m Model) updateBrowseMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.errMsg = ""
 		return m, m.loadMachinesCmd()
 	case "enter":
-		if m.focus == focusSnapshots {
+		if m.focus == focusSnapshots || m.focus == focusEnvVars {
 			return m, nil
 		}
 		selected, ok := m.selectedMachine()
@@ -347,6 +405,18 @@ func (m Model) updateBrowseMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.input.Focus()
 			return m, nil
 		}
+		if m.focus == focusEnvVars {
+			envVar, ok := m.selectedEnvVarItem()
+			if !ok {
+				return m, nil
+			}
+			m.mode = modeEnvDeleteConfirm
+			m.pendingEnvKey = envVar.Key
+			m.input.Placeholder = envVar.Key
+			m.input.SetValue("")
+			m.input.Focus()
+			return m, nil
+		}
 		selected, ok := m.selectedMachine()
 		if !ok || !machineAllowsDelete(selected) {
 			return m, nil
@@ -358,7 +428,7 @@ func (m Model) updateBrowseMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.input.Focus()
 		return m, nil
 	case "p":
-		if m.focus == focusSnapshots {
+		if m.focus == focusSnapshots || m.focus == focusEnvVars {
 			return m, nil
 		}
 		selected, ok := m.selectedMachine()
@@ -369,6 +439,34 @@ func (m Model) updateBrowseMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.sourceName = selected.Name
 		m.input.Placeholder = selected.Name + "-snapshot"
 		m.input.SetValue("")
+		m.input.Focus()
+		return m, nil
+	case "a":
+		if m.focus != focusEnvVars {
+			return m, nil
+		}
+		m.mode = modeEnvSet
+		m.status = ""
+		m.errMsg = ""
+		m.pendingEnvKey = ""
+		m.input.Placeholder = "KEY=value"
+		m.input.SetValue("")
+		m.input.Focus()
+		return m, nil
+	case "e":
+		if m.focus != focusEnvVars {
+			return m, nil
+		}
+		envVar, ok := m.selectedEnvVarItem()
+		if !ok {
+			return m, nil
+		}
+		m.mode = modeEnvSet
+		m.status = ""
+		m.errMsg = ""
+		m.pendingEnvKey = envVar.Key
+		m.input.Placeholder = "KEY=value"
+		m.input.SetValue(envVar.Key + "=" + envVar.RawValue)
 		m.input.Focus()
 		return m, nil
 	default:
@@ -385,6 +483,7 @@ func (m Model) updateInputMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.sourceName = ""
 		m.pendingName = ""
 		m.pendingSnapshotName = ""
+		m.pendingEnvKey = ""
 		return m, nil
 	case "ctrl+c":
 		return m, tea.Quit
@@ -445,6 +544,23 @@ func (m Model) updateInputMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.busy = true
 			m.input.Blur()
 			return m, m.deleteSnapshotCmd(m.pendingSnapshotName)
+		case modeEnvSet:
+			key, rawValue, err := parseEnvAssignment(m.input.Value())
+			if err != nil {
+				m.errMsg = err.Error()
+				return m, nil
+			}
+			m.busy = true
+			m.input.Blur()
+			return m, m.setEnvVarCmd(key, rawValue)
+		case modeEnvDeleteConfirm:
+			if value != m.pendingEnvKey {
+				m.errMsg = "confirmation did not match env var key"
+				return m, nil
+			}
+			m.busy = true
+			m.input.Blur()
+			return m, m.deleteEnvVarCmd(m.pendingEnvKey)
 		}
 	}
 
@@ -483,6 +599,13 @@ func (m Model) selectedSnapshotItem() (controlplane.Snapshot, bool) {
 	return m.snapshots[m.selectedSnapshot], true
 }
 
+func (m Model) selectedEnvVarItem() (controlplane.EnvVar, bool) {
+	if len(m.envVars) == 0 || m.selectedEnvVar < 0 || m.selectedEnvVar >= len(m.envVars) {
+		return controlplane.EnvVar{}, false
+	}
+	return m.envVars[m.selectedEnvVar], true
+}
+
 func (m Model) loadMachinesCmd() tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -493,7 +616,11 @@ func (m Model) loadMachinesCmd() tea.Cmd {
 			return loadMachinesMsg{err: err}
 		}
 		snapshots, err := m.machines.ListSnapshots(ctx, m.userEmail)
-		return loadMachinesMsg{machines: machines, snapshots: snapshots, err: err}
+		if err != nil {
+			return loadMachinesMsg{err: err}
+		}
+		envVars, err := m.machines.ListEnvVars(ctx, m.userEmail)
+		return loadMachinesMsg{machines: machines, snapshots: snapshots, envVars: envVars, err: err}
 	}
 }
 
@@ -583,6 +710,41 @@ func (m Model) deleteSnapshotCmd(name string) tea.Cmd {
 			return operationDoneMsg{err: err}
 		}
 		return operationDoneMsg{info: fmt.Sprintf("deleted snapshot %s", name), reload: true}
+	}
+}
+
+func (m Model) setEnvVarCmd(key, value string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+
+		envVar, err := m.machines.SetEnvVar(ctx, controlplane.SetEnvVarInput{
+			OwnerEmail: m.userEmail,
+			Key:        key,
+			Value:      value,
+		})
+		if err != nil {
+			return operationDoneMsg{err: err}
+		}
+		return operationDoneMsg{
+			info:   fmt.Sprintf("set %s", envVar.Key),
+			envVar: &envVar,
+		}
+	}
+}
+
+func (m Model) deleteEnvVarCmd(key string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+
+		if err := m.machines.DeleteEnvVar(ctx, m.userEmail, key); err != nil {
+			return operationDoneMsg{err: err}
+		}
+		return operationDoneMsg{
+			info:          fmt.Sprintf("deleted %s", key),
+			deletedEnvKey: key,
+		}
 	}
 }
 
@@ -703,6 +865,29 @@ func (m Model) renderBrowse(width int) string {
 	}
 
 	sections = append(sections, m.renderPanel(width, "Snapshots", snapshotContent, m.focus == focusSnapshots))
+	envContent := ""
+	if len(m.envVars) == 0 {
+		envContent = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("244")).
+			Render("No user env vars yet.\n\nPress a to add one. Built-in FASCINATE_* vars are still injected into every machine.")
+	} else {
+		var rows []string
+		for i, envVar := range m.envVars {
+			rows = append(rows, m.renderEnvVarRow(envVar, i == m.selectedEnvVar, width))
+		}
+		if envVar, ok := m.selectedEnvVarItem(); ok {
+			rows = append(rows, "")
+			detail := []string{
+				m.renderKeyValue("Value", envVar.RawValue),
+				m.renderKeyValue("Updated", envVar.UpdatedAt),
+				"",
+				lipgloss.NewStyle().Foreground(lipgloss.Color("244")).Render("(a) add  •  (e) edit  •  (d) delete"),
+			}
+			rows = append(rows, detail...)
+		}
+		envContent = strings.Join(rows, "\n")
+	}
+	sections = append(sections, m.renderPanel(width, "Env Vars", envContent, m.focus == focusEnvVars))
 	return strings.Join(sections, "\n\n")
 }
 
@@ -807,17 +992,37 @@ func (m Model) renderSnapshotRow(snapshot controlplane.Snapshot, selected bool, 
 	return style.Render(strings.Join(lines, "\n"))
 }
 
+func (m Model) renderEnvVarRow(envVar controlplane.EnvVar, selected bool, totalWidth int) string {
+	innerWidth := m.panelInnerWidth(totalWidth)
+	name := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color("255")).
+		Render(m.truncate(envVar.Key, maxInt(18, innerWidth-4)))
+	lines := []string{name, lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Render(m.truncate(envVar.RawValue, innerWidth))}
+
+	style := lipgloss.NewStyle().
+		Padding(0, 1).
+		Width(innerWidth).
+		BorderStyle(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("240"))
+	if selected {
+		style = style.
+			BorderStyle(lipgloss.DoubleBorder()).
+			BorderForeground(lipgloss.Color("81")).
+			Background(lipgloss.Color("235"))
+	}
+	return style.Render(strings.Join(lines, "\n"))
+}
+
 func (m Model) renderFooter(width int) string {
 	help := "(n) new  •  (r) refresh  •  (q) quit"
 	switch m.focus {
 	case focusMachines:
-		if len(m.snapshots) > 0 {
-			help = "(n) new  •  (p) snapshot  •  (tab) snapshots  •  (r) refresh  •  (q) quit"
-		} else {
-			help = "(n) new  •  (p) snapshot  •  (r) refresh  •  (q) quit"
-		}
+		help = "(n) new  •  (p) snapshot  •  (tab) snapshots  •  (r) refresh  •  (q) quit"
 	case focusSnapshots:
-		help = "(n) new  •  (d) delete snapshot  •  (tab) machines  •  (r) refresh  •  (q) quit"
+		help = "(n) new  •  (d) delete snapshot  •  (tab) env vars  •  (r) refresh  •  (q) quit"
+	case focusEnvVars:
+		help = "(a) add env  •  (e) edit env  •  (d) delete env  •  (tab) machines  •  (r) refresh  •  (q) quit"
 	}
 	style := lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
 	if width <= 0 {
@@ -915,6 +1120,8 @@ func (m Model) modeLabel() string {
 		return "clone"
 	case modeDeleteConfirm:
 		return "delete"
+	case modeEnvSet, modeEnvDeleteConfirm:
+		return "env"
 	default:
 		return "browse"
 	}
@@ -992,6 +1199,51 @@ func (m *Model) upsertSnapshot(snapshot controlplane.Snapshot) {
 			m.selectedSnapshot = idx
 			return
 		}
+	}
+}
+
+func (m *Model) upsertEnvVar(envVar controlplane.EnvVar) {
+	for idx, item := range m.envVars {
+		if item.Key != envVar.Key {
+			continue
+		}
+		m.envVars[idx] = envVar
+		m.selectedEnvVar = idx
+		return
+	}
+
+	m.envVars = append(m.envVars, envVar)
+	sort.Slice(m.envVars, func(i, j int) bool {
+		return m.envVars[i].Key < m.envVars[j].Key
+	})
+	for idx, item := range m.envVars {
+		if item.Key == envVar.Key {
+			m.selectedEnvVar = idx
+			return
+		}
+	}
+}
+
+func (m *Model) removeEnvVar(key string) {
+	for idx, item := range m.envVars {
+		if item.Key != key {
+			continue
+		}
+		m.envVars = append(m.envVars[:idx], m.envVars[idx+1:]...)
+		if len(m.envVars) == 0 {
+			m.selectedEnvVar = 0
+			if m.focus == focusEnvVars {
+				m.focus = focusMachines
+			}
+			return
+		}
+		if m.selectedEnvVar >= len(m.envVars) {
+			m.selectedEnvVar = len(m.envVars) - 1
+		}
+		if m.selectedEnvVar < 0 {
+			m.selectedEnvVar = 0
+		}
+		return
 	}
 }
 
@@ -1088,4 +1340,20 @@ func byteSummary(size int64) string {
 	default:
 		return fmt.Sprintf("%d B", size)
 	}
+}
+
+func parseEnvAssignment(value string) (string, string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", "", fmt.Errorf("env assignment is required")
+	}
+	index := strings.Index(value, "=")
+	if index <= 0 {
+		return "", "", fmt.Errorf("env assignment must look like KEY=value")
+	}
+	key := strings.TrimSpace(value[:index])
+	if key == "" {
+		return "", "", fmt.Errorf("env var key is required")
+	}
+	return key, value[index+1:], nil
 }
