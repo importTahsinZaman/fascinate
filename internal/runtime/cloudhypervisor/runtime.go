@@ -19,6 +19,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -111,6 +112,7 @@ type Manager struct {
 	selfBinary        string
 	waitForGuest      func(context.Context, metadata) error
 	now               func() time.Time
+	networkMu         sync.Mutex
 }
 
 func New(cfg config.Config) (*Manager, error) {
@@ -271,8 +273,20 @@ func (m *Manager) CreateMachine(ctx context.Context, req machineruntime.CreateMa
 		return machineruntime.Machine{}, err
 	}
 
+	m.networkMu.Lock()
+	networkLocked := true
+	defer func() {
+		if networkLocked {
+			m.networkMu.Unlock()
+		}
+	}()
+
 	meta, err := m.prepareMetadata(name, req)
 	if err != nil {
+		_ = os.RemoveAll(machineDir)
+		return machineruntime.Machine{}, err
+	}
+	if err := m.storeMetadata(meta); err != nil {
 		_ = os.RemoveAll(machineDir)
 		return machineruntime.Machine{}, err
 	}
@@ -293,6 +307,8 @@ func (m *Manager) CreateMachine(ctx context.Context, req machineruntime.CreateMa
 		_ = m.cleanupMachine(context.Background(), meta)
 		return machineruntime.Machine{}, err
 	}
+	m.networkMu.Unlock()
+	networkLocked = false
 	if err := m.startAppForwarder(ctx, &meta); err != nil {
 		_ = m.cleanupMachine(context.Background(), meta)
 		return machineruntime.Machine{}, err
@@ -303,6 +319,58 @@ func (m *Manager) CreateMachine(ctx context.Context, req machineruntime.CreateMa
 	}
 	if err := m.waitForGuest(ctx, meta); err != nil {
 		_ = m.cleanupMachine(context.Background(), meta)
+		return machineruntime.Machine{}, err
+	}
+
+	return m.machineFromMetadata(meta), nil
+}
+
+func (m *Manager) StartMachine(ctx context.Context, name string) (machineruntime.Machine, error) {
+	meta, err := m.loadMetadata(strings.TrimSpace(name))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return machineruntime.Machine{}, machineruntime.ErrMachineNotFound
+		}
+		return machineruntime.Machine{}, err
+	}
+
+	if meta.ProcessID > 0 && processAlive(meta.ProcessID) {
+		if err := m.startAppForwarder(ctx, &meta); err != nil {
+			return machineruntime.Machine{}, err
+		}
+		if err := m.startSSHForwarder(ctx, &meta); err != nil {
+			return machineruntime.Machine{}, err
+		}
+		return m.machineFromMetadata(meta), nil
+	}
+
+	m.networkMu.Lock()
+	networkLocked := true
+	defer func() {
+		if networkLocked {
+			m.networkMu.Unlock()
+		}
+	}()
+
+	if err := m.createNamespaceNetwork(ctx, meta); err != nil {
+		return machineruntime.Machine{}, err
+	}
+	if err := m.startVM(ctx, &meta); err != nil {
+		m.stopMachineRuntime(context.Background(), meta)
+		return machineruntime.Machine{}, err
+	}
+	m.networkMu.Unlock()
+	networkLocked = false
+	if err := m.startAppForwarder(ctx, &meta); err != nil {
+		m.stopMachineRuntime(context.Background(), meta)
+		return machineruntime.Machine{}, err
+	}
+	if err := m.startSSHForwarder(ctx, &meta); err != nil {
+		m.stopMachineRuntime(context.Background(), meta)
+		return machineruntime.Machine{}, err
+	}
+	if err := m.waitForGuest(ctx, meta); err != nil {
+		m.stopMachineRuntime(context.Background(), meta)
 		return machineruntime.Machine{}, err
 	}
 
@@ -353,7 +421,7 @@ func (m *Manager) prepareMetadata(name string, req machineruntime.CreateMachineR
 		NamespaceName:     namespaceName,
 		BridgeName:        namespaceBridgeName,
 		HostVethName:      hostVethName,
-		NamespaceVethName: namespaceUplinkName,
+		NamespaceVethName: namespacePeerVethName(name),
 		HostVethIPv4:      hostVethIPv4,
 		NamespaceVethIPv4: namespaceVethIPv4,
 		DiskPath:          filepath.Join(machineDir, diskFileName),
@@ -599,7 +667,7 @@ func (m *Manager) startVM(ctx context.Context, meta *metadata) error {
 	return m.storeMetadata(*meta)
 }
 
-func (m *Manager) cleanupMachine(ctx context.Context, meta metadata) error {
+func (m *Manager) stopMachineRuntime(ctx context.Context, meta metadata) {
 	_ = m.stopAppForwarder(ctx, &meta)
 	_ = m.stopSSHForwarder(ctx, &meta)
 	if meta.ProcessID > 0 {
@@ -615,7 +683,10 @@ func (m *Manager) cleanupMachine(ctx context.Context, meta metadata) error {
 	}
 
 	m.deleteNamespaceNetwork(ctx, meta)
+}
 
+func (m *Manager) cleanupMachine(ctx context.Context, meta metadata) error {
+	m.stopMachineRuntime(ctx, meta)
 	if err := os.RemoveAll(m.machineDir(meta.Name)); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
@@ -1167,11 +1238,18 @@ func loadOrCreateGuestSSHKey(path string) (string, error) {
 	}
 
 	if body, err := os.ReadFile(path); err == nil {
+		if err := os.Chmod(path, 0o600); err != nil {
+			return "", err
+		}
 		signer, err := ssh.ParsePrivateKey(body)
 		if err != nil {
 			return "", err
 		}
-		return strings.TrimSpace(string(ssh.MarshalAuthorizedKey(signer.PublicKey()))), nil
+		publicKey := strings.TrimSpace(string(ssh.MarshalAuthorizedKey(signer.PublicKey())))
+		if err := os.WriteFile(path+".pub", []byte(publicKey+"\n"), 0o644); err != nil {
+			return "", err
+		}
+		return publicKey, nil
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return "", err
 	}

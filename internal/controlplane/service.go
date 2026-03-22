@@ -26,6 +26,7 @@ var memoryLimitPattern = regexp.MustCompile(`(?i)^([0-9]+(?:\.[0-9]+)?)\s*([kmgt
 const (
 	machineStateCreating = "CREATING"
 	machineStateRunning  = "RUNNING"
+	machineStateStopped  = "STOPPED"
 	machineStateFailed   = "FAILED"
 
 	snapshotStateCreating = "CREATING"
@@ -757,6 +758,7 @@ func (s *Service) ReconcileRuntimeState(ctx context.Context) error {
 		}
 	}
 
+	var reconcileErrs []error
 	for runtimeName, record := range recordByRuntime {
 		liveMachine, ok := liveMachines[runtimeName]
 		if !ok {
@@ -766,6 +768,32 @@ func (s *Service) ReconcileRuntimeState(ctx context.Context) error {
 			continue
 		}
 
+		if strings.EqualFold(liveMachine.State, machineStateStopped) && !strings.EqualFold(record.State, machineStateCreating) {
+			log.Printf("fascinate: recovering machine %s", runtimeName)
+			s.recordEventBestEffort(&record.OwnerUserID, &record.ID, "machine.recover.started", map[string]any{
+				"machine_name": record.Name,
+				"runtime_name": runtimeName,
+			})
+			recovered, err := s.runtime.StartMachine(ctx, runtimeName)
+			if err != nil {
+				log.Printf("fascinate: recover machine %s failed: %v", runtimeName, err)
+				s.recordEventBestEffort(&record.OwnerUserID, &record.ID, "machine.recover.failed", map[string]any{
+					"machine_name": record.Name,
+					"runtime_name": runtimeName,
+					"error":        err.Error(),
+				})
+				reconcileErrs = append(reconcileErrs, fmt.Errorf("%s: %w", runtimeName, err))
+			} else {
+				log.Printf("fascinate: recovered machine %s", runtimeName)
+				liveMachine = recovered
+				s.recordEventBestEffort(&record.OwnerUserID, &record.ID, "machine.recover.succeeded", map[string]any{
+					"machine_name": record.Name,
+					"runtime_name": runtimeName,
+					"state":        recovered.State,
+				})
+			}
+		}
+
 		if !strings.EqualFold(record.State, liveMachine.State) {
 			if err := s.store.UpdateMachineState(ctx, record.ID, liveMachine.State); err != nil && !errors.Is(err, database.ErrNotFound) {
 				return err
@@ -773,7 +801,7 @@ func (s *Service) ReconcileRuntimeState(ctx context.Context) error {
 		}
 	}
 
-	return nil
+	return errors.Join(reconcileErrs...)
 }
 
 func (s *Service) SyncRunningToolAuth(ctx context.Context) error {

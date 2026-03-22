@@ -22,6 +22,8 @@ import (
 	"fascinate/internal/toolauth"
 )
 
+const runtimeReconcileInterval = 30 * time.Second
+
 type App struct {
 	cfg        config.Config
 	db         *database.Store
@@ -67,7 +69,7 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 		return nil, err
 	}
 	controlPlane := controlplane.New(cfg, store, runtimeClient, toolAuthManager)
-	reconcileCtx, reconcileCancel := context.WithTimeout(context.Background(), 60*time.Second)
+	reconcileCtx, reconcileCancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	if err := controlPlane.ReconcileRuntimeState(reconcileCtx); err != nil {
 		reconcileCancel()
 		store.Close()
@@ -115,6 +117,7 @@ func (a *App) Run(ctx context.Context) error {
 	}()
 
 	go a.runToolAuthSyncLoop(ctx)
+	go a.runRuntimeReconcileLoop(ctx)
 
 	select {
 	case <-ctx.Done():
@@ -142,6 +145,28 @@ func (a *App) runToolAuthSyncLoop(ctx context.Context) {
 			syncCtx, cancel := context.WithTimeout(context.Background(), a.cfg.ToolAuthSyncInterval)
 			if err := a.control.SyncRunningToolAuth(syncCtx); err != nil {
 				log.Printf("fascinate: sync tool auth: %v", err)
+			}
+			cancel()
+		}
+	}
+}
+
+func (a *App) runRuntimeReconcileLoop(ctx context.Context) {
+	if a == nil || a.control == nil || runtimeReconcileInterval <= 0 {
+		return
+	}
+
+	ticker := time.NewTicker(runtimeReconcileInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			reconcileCtx, cancel := context.WithTimeout(context.Background(), runtimeReconcileInterval)
+			if err := a.control.ReconcileRuntimeState(reconcileCtx); err != nil {
+				log.Printf("fascinate: reconcile runtime: %v", err)
 			}
 			cancel()
 		}

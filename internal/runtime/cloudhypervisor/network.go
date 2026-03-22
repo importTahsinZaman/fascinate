@@ -340,6 +340,16 @@ func hostVethName(name string) string {
 	return fmt.Sprintf("fsv%s%06x", base, hasher.Sum32()&0xffffff)
 }
 
+func namespacePeerVethName(name string) string {
+	base := compactTapName(name)
+	if len(base) > 4 {
+		base = base[:4]
+	}
+	hasher := fnv.New32a()
+	_, _ = hasher.Write([]byte("peer:" + compactTapName(name)))
+	return fmt.Sprintf("fsn%s%06x", base, hasher.Sum32()&0xffffff)
+}
+
 func guestMACAddress() string {
 	return "02:fc:0a:2a:00:02"
 }

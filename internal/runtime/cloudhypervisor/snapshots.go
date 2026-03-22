@@ -152,6 +152,14 @@ func (m *Manager) restoreMachineFromSnapshot(ctx context.Context, snapshotName s
 		return machineruntime.Machine{}, err
 	}
 
+	m.networkMu.Lock()
+	networkLocked := true
+	defer func() {
+		if networkLocked {
+			m.networkMu.Unlock()
+		}
+	}()
+
 	createReq := machineruntime.CreateMachineRequest{
 		Name:         name,
 		CPU:          snapshotMeta.CPU,
@@ -176,6 +184,10 @@ func (m *Manager) restoreMachineFromSnapshot(ctx context.Context, snapshotName s
 	targetMeta.Disk = createReq.RootDiskSize
 	targetMeta.PrimaryPort = createReq.PrimaryPort
 	targetMeta.MACAddress = snapshotMeta.MACAddress
+	if err := m.storeMetadata(targetMeta); err != nil {
+		_ = os.RemoveAll(targetDir)
+		return machineruntime.Machine{}, err
+	}
 
 	if err := m.copyDisk(ctx, snapshotMeta.DiskPath, targetMeta.DiskPath); err != nil {
 		_ = os.RemoveAll(targetDir)
@@ -208,6 +220,8 @@ func (m *Manager) restoreMachineFromSnapshot(ctx context.Context, snapshotName s
 		_ = m.cleanupMachine(context.Background(), targetMeta)
 		return machineruntime.Machine{}, err
 	}
+	m.networkMu.Unlock()
+	networkLocked = false
 	if err := m.startAppForwarder(ctx, &targetMeta); err != nil {
 		_ = m.cleanupMachine(context.Background(), targetMeta)
 		return machineruntime.Machine{}, err

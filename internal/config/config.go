@@ -106,7 +106,7 @@ func Load() Config {
 		DefaultMachineCPU:    getenv("FASCINATE_DEFAULT_MACHINE_CPU", "1"),
 		DefaultMachineRAM:    getenv("FASCINATE_DEFAULT_MACHINE_RAM", "2GiB"),
 		DefaultMachineDisk:   getenv("FASCINATE_DEFAULT_MACHINE_DISK", "20GiB"),
-		MaxMachinesPerUser:   getenvInt("FASCINATE_MAX_MACHINES_PER_USER", 3),
+		MaxMachinesPerUser:   getenvInt("FASCINATE_MAX_MACHINES_PER_USER", 6),
 		MaxMachineCPU:        getenv("FASCINATE_MAX_MACHINE_CPU", "2"),
 		MaxMachineRAM:        getenv("FASCINATE_MAX_MACHINE_RAM", "4GiB"),
 		MaxMachineDisk:       getenv("FASCINATE_MAX_MACHINE_DISK", "20GiB"),

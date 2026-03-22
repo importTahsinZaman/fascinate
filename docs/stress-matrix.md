@@ -7,10 +7,12 @@ This document defines the current Fascinate product expectations and maps each e
 | Area | Expectation | Coverage |
 | --- | --- | --- |
 | VM create | `POST /v1/machines` returns quickly and the VM reaches `RUNNING` only after guest access is actually ready | `internal/controlplane/service_test.go`, `ops/host/smoke.sh`, `ops/host/stress.sh` |
+| Concurrent multi-user create | Simultaneous creates across different users do not collide in runtime network allocation, and per-user machine limits are enforced independently | `internal/runtime/cloudhypervisor/runtime_test.go`, manual live concurrent-load validation |
 | Guest readiness | A `RUNNING` machine has usable SSH access, expected guest tooling, and stable forwarders | `internal/sshfrontdoor/server_test.go`, `ops/host/smoke.sh`, `ops/host/stress.sh` |
 | Shell entry | Entering a VM through the frontdoor works without malformed shell handoff or early-boot race failures | `internal/sshfrontdoor/server_test.go`, `ops/host/smoke.sh`, `ops/host/stress.sh` |
 | Public app routing | `https://<machine>.<base-domain>` reaches the current primary-port workload or the fallback "No services detected" page | `internal/httpapi/server_test.go`, `ops/host/smoke.sh`, `ops/host/smoke-snapshots.sh`, `ops/host/stress.sh` |
 | Local workloads | A VM can run a public app server, a local database process, and Docker containers at the same time | `ops/host/stress.sh` |
+| Heavier SQL workload | A VM can serve a live app backed by a Dockerized PostgreSQL workload with meaningful row volume and benchmark traffic | Manual live SQL workload validation |
 | Service restart | Restarting `fascinate` does not kill running VMs or break routing/forwarders | `ops/host/smoke.sh`, `ops/host/stress.sh` |
 | Snapshot save | Saving a snapshot from a running VM succeeds and records snapshot artifacts durably | `ops/host/smoke-snapshots.sh`, `ops/host/stress.sh` |
 | Create from snapshot | A VM created from a saved snapshot restores the captured machine state instead of booting from source files alone | `ops/host/smoke-snapshots.sh`, `ops/host/stress.sh` |
@@ -20,7 +22,7 @@ This document defines the current Fascinate product expectations and maps each e
 | Tool auth persistence | Supported tool auth persists across later VMs for the same user and is not silently clobbered by opportunistic empty syncs | `internal/toolauth/manager_test.go`, `internal/controlplane/service_test.go`, `ops/host/smoke-tool-auth.sh` |
 | Tool auth diagnostics | Capture/restore failures for Claude, Codex, or GitHub auth are visible to operators | `internal/httpapi/server_test.go`, `ops/host/diagnostics.sh` |
 | Lifecycle diagnostics | Operators can inspect machine/snapshot runtime handles, lifecycle failures, forwarder state, and recent events without manual host forensics | `internal/httpapi/server_test.go`, `ops/host/diagnostics.sh` |
-| Host reboot survival | Expectations after a full host reboot are documented, but not yet covered by an automated smoke in this pass | Manual check only |
+| Host reboot survival | After a full host reboot, the control plane restarts, stopped VMs are recovered, and guest workloads configured for guest boot come back without manual host repair | `internal/controlplane/service_test.go`, manual live reboot validation |
 
 ## Live Validation Entry Points
 

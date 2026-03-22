@@ -13,6 +13,7 @@ type Manager interface {
 	ListMachines(context.Context) ([]Machine, error)
 	GetMachine(context.Context, string) (Machine, error)
 	CreateMachine(context.Context, CreateMachineRequest) (Machine, error)
+	StartMachine(context.Context, string) (Machine, error)
 	DeleteMachine(context.Context, string) error
 	CloneMachine(context.Context, CloneMachineRequest) (Machine, error)
 	ListSnapshots(context.Context) ([]Snapshot, error)

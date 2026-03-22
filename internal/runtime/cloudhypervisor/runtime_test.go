@@ -77,6 +77,45 @@ func TestLoadOrCreateGuestSSHKeyWritesPublicKey(t *testing.T) {
 	}
 }
 
+func TestLoadOrCreateGuestSSHKeyRepairsPermissionsAndRewritesPublicKey(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "guest_ssh_ed25519")
+	if _, err := loadOrCreateGuestSSHKey(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(path + ".pub"); err != nil {
+		t.Fatal(err)
+	}
+
+	publicKey, err := loadOrCreateGuestSSHKey(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if publicKey == "" {
+		t.Fatalf("expected public key to be regenerated")
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("expected repaired private key permissions 0600, got %o", info.Mode().Perm())
+	}
+
+	pubBody, err := os.ReadFile(path + ".pub")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(pubBody)) != publicKey {
+		t.Fatalf("unexpected rewritten public key %q", strings.TrimSpace(string(pubBody)))
+	}
+}
+
 func TestMachineFromMetadataUsesRunningState(t *testing.T) {
 	t.Parallel()
 
@@ -172,6 +211,27 @@ func TestHostVethNameIsStableAndAvoidsPrefixCollisions(t *testing.T) {
 	}
 	if len(first) > 15 {
 		t.Fatalf("host veth name too long: %q", first)
+	}
+}
+
+func TestNamespacePeerVethNameIsStableAndAvoidsPrefixCollisions(t *testing.T) {
+	t.Parallel()
+
+	first := namespacePeerVethName("tic-tac-toe")
+	second := namespacePeerVethName("tic_tac_toe")
+	other := namespacePeerVethName("tic-tac-toe-v2")
+
+	if first != second {
+		t.Fatalf("expected equivalent names to hash the same, got %q vs %q", first, second)
+	}
+	if first == other {
+		t.Fatalf("expected different names to avoid collisions, got %q", first)
+	}
+	if len(first) > 15 {
+		t.Fatalf("namespace peer veth name too long: %q", first)
+	}
+	if first == namespaceUplinkName {
+		t.Fatalf("temporary peer name should not reuse namespace uplink name")
 	}
 }
 

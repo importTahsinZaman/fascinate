@@ -19,6 +19,7 @@ type fakeRuntime struct {
 	machines      map[string]machineruntime.Machine
 	snapshots     map[string]machineruntime.Snapshot
 	createErr     error
+	startErr      error
 	deleteErr     error
 	cloneErr      error
 	getErr        error
@@ -27,6 +28,7 @@ type fakeRuntime struct {
 	createBlock   <-chan struct{}
 	deleted       []string
 	createdReq    []machineruntime.CreateMachineRequest
+	started       []string
 	clonedReq     []machineruntime.CloneMachineRequest
 }
 
@@ -109,6 +111,21 @@ func (f *fakeRuntime) CreateMachine(ctx context.Context, req machineruntime.Crea
 		Disk:   req.RootDiskSize,
 	}
 	f.machines[req.Name] = machine
+	return machine, nil
+}
+
+func (f *fakeRuntime) StartMachine(_ context.Context, name string) (machineruntime.Machine, error) {
+	if f.startErr != nil {
+		return machineruntime.Machine{}, f.startErr
+	}
+
+	machine, ok := f.machines[name]
+	if !ok {
+		return machineruntime.Machine{}, machineruntime.ErrMachineNotFound
+	}
+	machine.State = machineStateRunning
+	f.machines[name] = machine
+	f.started = append(f.started, name)
 	return machine, nil
 }
 
@@ -912,6 +929,54 @@ func TestServiceReconcileRuntimeStateQueuesCreatingMachines(t *testing.T) {
 	}
 }
 
+func TestServiceReconcileRuntimeStateRestartsStoppedMachines(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, runtime := newTestServiceDeps(t, ctx)
+
+	user, err := store.UpsertUser(ctx, "dev@example.com", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := store.CreateMachine(ctx, database.CreateMachineParams{
+		ID:          "machine-stopped",
+		Name:        "habits",
+		OwnerUserID: user.ID,
+		RuntimeName: "habits",
+		State:       machineStateRunning,
+		PrimaryPort: 3000,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	runtime.machines["habits"] = machineruntime.Machine{
+		Name:   "habits",
+		Type:   "vm",
+		State:  machineStateStopped,
+		CPU:    "1",
+		Memory: "2GiB",
+		Disk:   "20GiB",
+	}
+
+	service := newTestService(store, runtime)
+	if err := service.ReconcileRuntimeState(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(runtime.started) != 1 || runtime.started[0] != "habits" {
+		t.Fatalf("expected stopped machine restart, got %+v", runtime.started)
+	}
+
+	record, err := store.GetMachineByName(ctx, "habits")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.State != machineStateRunning {
+		t.Fatalf("expected machine state RUNNING after reconcile, got %q", record.State)
+	}
+}
+
 func TestMachineFromRecordDoesNotPromoteCreatingFromRuntimeLiveness(t *testing.T) {
 	t.Parallel()
 
@@ -1124,14 +1189,27 @@ func TestServiceEnforcesMaxMachinesPerUser(t *testing.T) {
 		}
 		runtime.machines[name] = machineruntime.Machine{Name: name, Type: "vm", State: "RUNNING", CPU: "1", Memory: "2GiB", Disk: "20GiB"}
 	}
+	for _, name := range []string{"four", "five", "six"} {
+		if _, err := store.CreateMachine(ctx, database.CreateMachineParams{
+			ID:          "machine-" + name,
+			Name:        name,
+			OwnerUserID: user.ID,
+			RuntimeName: name,
+			State:       "RUNNING",
+			PrimaryPort: 3000,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		runtime.machines[name] = machineruntime.Machine{Name: name, Type: "vm", State: "RUNNING", CPU: "1", Memory: "2GiB", Disk: "20GiB"}
+	}
 
 	service := newTestService(store, runtime)
 
 	_, err = service.CreateMachine(ctx, CreateMachineInput{
-		Name:       "four",
+		Name:       "seven",
 		OwnerEmail: "dev@example.com",
 	})
-	if err == nil || !strings.Contains(err.Error(), "maximum 3 machines per user") {
+	if err == nil || !strings.Contains(err.Error(), "maximum 6 machines per user") {
 		t.Fatalf("expected machine quota error, got %v", err)
 	}
 	if len(runtime.createdReq) != 0 {
@@ -1288,7 +1366,7 @@ func TestServiceSerializesQuotaCheckedCreates(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	for _, name := range []string{"one", "two"} {
+	for _, name := range []string{"one", "two", "three", "four", "five"} {
 		if _, err := store.CreateMachine(ctx, database.CreateMachineParams{
 			ID:          "machine-" + name,
 			Name:        name,
@@ -1320,8 +1398,8 @@ func TestServiceSerializesQuotaCheckedCreates(t *testing.T) {
 	}
 
 	wg.Add(2)
-	go create("three")
-	go create("four")
+	go create("six")
+	go create("seven")
 	close(block)
 	wg.Wait()
 	close(results)
@@ -1333,7 +1411,7 @@ func TestServiceSerializesQuotaCheckedCreates(t *testing.T) {
 			successCount++
 			continue
 		}
-		if strings.Contains(err.Error(), "maximum 3 machines per user") {
+		if strings.Contains(err.Error(), "maximum 6 machines per user") {
 			quotaErrors++
 			continue
 		}
@@ -1509,7 +1587,7 @@ func newTestService(store *database.Store, runtime *fakeRuntime) *Service {
 		DefaultMachineCPU:  "1",
 		DefaultMachineRAM:  "2GiB",
 		DefaultMachineDisk: "20GiB",
-		MaxMachinesPerUser: 3,
+		MaxMachinesPerUser: 6,
 		MaxMachineCPU:      "2",
 		MaxMachineRAM:      "4GiB",
 		MaxMachineDisk:     "20GiB",
