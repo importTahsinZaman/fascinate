@@ -9,6 +9,7 @@ This repo now contains:
 - a VM base image builder under [`ops/cloudhypervisor/build-base-image.sh`](/Users/tahsin/Desktop/vmcloud/ops/cloudhypervisor/build-base-image.sh)
 - a Go control plane under [`cmd/fascinate/main.go`](/Users/tahsin/Desktop/vmcloud/cmd/fascinate/main.go)
 - SQLite migrations for the first platform tables
+- a first-class host registry and local-host heartbeat model
 - a Cloud Hypervisor runtime wrapper and health endpoints
 - an SSH frontdoor backed by SQLite-stored public keys
 - first-class full-VM snapshots and snapshot-backed cloning
@@ -23,7 +24,8 @@ Fascinate currently gives us:
   - initialize SQLite
   - run migrations
   - expose `/healthz`, `/readyz`, and `/v1/runtime/machines`
-  - talk to the local `cloud-hypervisor` runtime
+  - register the current box as a first-class host and heartbeat its capacity
+  - talk to the local `cloud-hypervisor` runtime through a host executor boundary
   - provision persistent VMs asynchronously
   - save full-VM snapshots and restore new VMs from them
   - perform true snapshot-backed cloning
@@ -42,6 +44,7 @@ Current HTTP API:
 - `POST /v1/snapshots`
 - `DELETE /v1/snapshots/{name}`
 - `GET /v1/diagnostics/events`
+- `GET /v1/diagnostics/hosts`
 - `GET /v1/diagnostics/tool-auth`
 - `GET /v1/diagnostics/machines/{name}`
 - `GET /v1/diagnostics/snapshots/{name}`
@@ -71,6 +74,7 @@ Current SSH/frontdoor surface:
 - [`ops/systemd/fascinate.service`](/Users/tahsin/Desktop/vmcloud/ops/systemd/fascinate.service): example systemd unit
 - [`cmd/fascinate/main.go`](/Users/tahsin/Desktop/vmcloud/cmd/fascinate/main.go): entrypoint
 - [`internal/config/config.go`](/Users/tahsin/Desktop/vmcloud/internal/config/config.go): env-backed config
+- [`internal/controlplane/hosts.go`](/Users/tahsin/Desktop/vmcloud/internal/controlplane/hosts.go): host registry, heartbeat, placement, and local-host executor wiring
 - [`internal/database/migrations/0001_init.sql`](/Users/tahsin/Desktop/vmcloud/internal/database/migrations/0001_init.sql): initial SQLite schema
 - [`internal/runtime/cloudhypervisor/runtime.go`](/Users/tahsin/Desktop/vmcloud/internal/runtime/cloudhypervisor/runtime.go): Cloud Hypervisor VM runtime
 - [`internal/sshfrontdoor/server.go`](/Users/tahsin/Desktop/vmcloud/internal/sshfrontdoor/server.go): SSH transport and auth
@@ -125,6 +129,7 @@ sudo ./ops/host/smoke-snapshots.sh
 Query live diagnostics from a configured host:
 
 ```bash
+sudo ./ops/host/diagnostics.sh hosts
 sudo ./ops/host/diagnostics.sh machine you@example.com machine-name
 sudo ./ops/host/diagnostics.sh snapshot you@example.com snapshot-name
 sudo ./ops/host/diagnostics.sh tool-auth you@example.com
@@ -227,6 +232,11 @@ export FASCINATE_NODE_VERSION=latest
 export FASCINATE_GO_VERSION=latest
 export FASCINATE_NPM_VERSION=latest
 export FASCINATE_SSH_HOST_KEY_PATH=./data/ssh_host_ed25519_key
+export FASCINATE_HOST_ID=local-host
+export FASCINATE_HOST_NAME=local-host
+export FASCINATE_HOST_REGION=local
+export FASCINATE_HOST_ROLE=combined
+export FASCINATE_HOST_HEARTBEAT_INTERVAL=30s
 export FASCINATE_RESEND_API_KEY=...
 export FASCINATE_EMAIL_FROM='Fascinate <hello@example.com>'
 export FASCINATE_RESEND_BASE_URL=https://api.resend.com
@@ -304,6 +314,7 @@ Current scope:
 - Machine diagnostics surface runtime handles, forwarding ports, reachability, and recent lifecycle events.
 - Snapshot diagnostics surface artifact locations, runtime metadata, and recent snapshot lifecycle events.
 - Owner event diagnostics surface machine, snapshot, and tool-auth lifecycle history without needing manual host log forensics.
+- Host diagnostics surface registered hosts, heartbeat freshness, placement eligibility, and advertised capacity.
 
 Host storage:
 - encrypted bundles live under `FASCINATE_TOOL_AUTH_DIR`
@@ -315,6 +326,21 @@ Security and recovery notes:
 - the safe rotation flow is: stop `fascinate`, back up `FASCINATE_TOOL_AUTH_DIR` and the current key, replace the key, remove or migrate old bundles, then restart
 - per-user cleanup is done by deleting the matching subtree under `FASCINATE_TOOL_AUTH_DIR`
 - if host recovery is needed, restore both the tool-auth directory and its matching key backup together
+
+## Host Model
+
+Fascinate now has a first-class host model even in the current one-box deployment.
+
+- every machine and snapshot record belongs to a `host_id`
+- the current OVH box self-registers as the local host on startup
+- the control plane heartbeats local capacity and health into the `hosts` table
+- machine, snapshot, diagnostics, shell, and routing flows resolve host ownership before touching runtime state
+
+Today that still dispatches to the local host executor, but it means the control plane is already shaped for:
+
+- adding more VM worker boxes later
+- keeping snapshot and clone operations host-local at first
+- eventually moving the control plane and DB onto a smaller dedicated machine
 
 Available exec-style SSH commands:
 

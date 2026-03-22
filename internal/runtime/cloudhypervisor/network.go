@@ -42,6 +42,17 @@ func (m *Manager) prepareNetworkMetadata(targetName string) (string, string, str
 		}
 		used[addr] = struct{}{}
 	}
+	if m.listHostAddrs != nil {
+		addrs, err := m.listHostAddrs()
+		if err != nil {
+			return "", "", "", "", "", err
+		}
+		for _, addr := range addrs {
+			if m.namespacePrefix.Contains(addr) {
+				used[addr] = struct{}{}
+			}
+		}
+	}
 
 	start := m.namespacePrefix.Addr()
 	for i := 0; i < 16384; i++ {
@@ -58,6 +69,29 @@ func (m *Manager) prepareNetworkMetadata(targetName string) (string, string, str
 	}
 
 	return "", "", "", "", "", fmt.Errorf("no free namespace uplink addresses remain in %s", m.namespacePrefix.String())
+}
+
+func listHostInterfaceAddrs() ([]netip.Addr, error) {
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]netip.Addr, 0, len(interfaces))
+	for _, iface := range interfaces {
+		addrs, err := iface.Addrs()
+		if err != nil {
+			return nil, err
+		}
+		for _, addr := range addrs {
+			prefix, err := netip.ParsePrefix(strings.TrimSpace(addr.String()))
+			if err != nil {
+				continue
+			}
+			out = append(out, prefix.Addr())
+		}
+	}
+	return out, nil
 }
 
 func (m *Manager) ensureRootNetwork(ctx context.Context) error {

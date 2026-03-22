@@ -126,6 +126,23 @@ run_guest_command() {
     "$@"
 }
 
+wait_for_guest_toolchain() {
+  local host="$1"
+  local port="$2"
+  local attempts=120
+
+  while (( attempts > 0 )); do
+    if run_guest_command "${host}" "${port}" "claude --version >/dev/null 2>&1 && codex --version >/dev/null 2>&1 && gh --version >/dev/null 2>&1 && node --version >/dev/null 2>&1 && go version >/dev/null 2>&1 && docker --version >/dev/null 2>&1 && systemctl is-active --quiet docker"; then
+      return 0
+    fi
+    attempts=$((attempts - 1))
+    sleep 2
+  done
+
+  echo "guest toolchain never became ready on ${host}:${port}" >&2
+  exit 1
+}
+
 wait_for_machine_ready() {
   local name="$1"
   local attempts=240
@@ -402,6 +419,7 @@ main() {
   local source_host source_port
   read -r source_host source_port <<<"$(wait_for_machine_ready "${SOURCE_NAME}")"
   record_machine_artifacts "${SOURCE_NAME}"
+  wait_for_guest_toolchain "${source_host}" "${source_port}"
 
   echo "setting up source workloads"
   setup_source_workloads "${source_host}" "${source_port}"

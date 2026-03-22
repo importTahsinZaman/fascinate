@@ -69,6 +69,16 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 		return nil, err
 	}
 	controlPlane := controlplane.New(cfg, store, runtimeClient, toolAuthManager)
+	hostCtx, hostCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	if _, err := controlPlane.EnsureLocalHost(hostCtx); err != nil {
+		hostCancel()
+		store.Close()
+		return nil, err
+	}
+	if err := controlPlane.HeartbeatLocalHost(hostCtx); err != nil {
+		log.Printf("fascinate: initial host heartbeat: %v", err)
+	}
+	hostCancel()
 	reconcileCtx, reconcileCancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	if err := controlPlane.ReconcileRuntimeState(reconcileCtx); err != nil {
 		reconcileCancel()
@@ -118,6 +128,7 @@ func (a *App) Run(ctx context.Context) error {
 
 	go a.runToolAuthSyncLoop(ctx)
 	go a.runRuntimeReconcileLoop(ctx)
+	go a.runHostHeartbeatLoop(ctx)
 
 	select {
 	case <-ctx.Done():
@@ -167,6 +178,28 @@ func (a *App) runRuntimeReconcileLoop(ctx context.Context) {
 			reconcileCtx, cancel := context.WithTimeout(context.Background(), runtimeReconcileInterval)
 			if err := a.control.ReconcileRuntimeState(reconcileCtx); err != nil {
 				log.Printf("fascinate: reconcile runtime: %v", err)
+			}
+			cancel()
+		}
+	}
+}
+
+func (a *App) runHostHeartbeatLoop(ctx context.Context) {
+	if a == nil || a.control == nil || a.cfg.HostHeartbeatInterval <= 0 {
+		return
+	}
+
+	ticker := time.NewTicker(a.cfg.HostHeartbeatInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			heartbeatCtx, cancel := context.WithTimeout(context.Background(), a.cfg.HostHeartbeatInterval)
+			if err := a.control.HeartbeatLocalHost(heartbeatCtx); err != nil {
+				log.Printf("fascinate: local host heartbeat: %v", err)
 			}
 			cancel()
 		}

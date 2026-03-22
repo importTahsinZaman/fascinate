@@ -13,6 +13,22 @@ DATA_DIR="${FASCINATE_DATA_DIR:-/var/lib/fascinate}"
 SERVICE_PATH="${FASCINATE_SERVICE_PATH:-/etc/systemd/system/fascinate.service}"
 OVERWRITE_ENV="${FASCINATE_OVERWRITE_ENV:-0}"
 
+default_host_id() {
+  if [[ -n "${FASCINATE_HOST_ID:-}" ]]; then
+    printf '%s' "${FASCINATE_HOST_ID}"
+    return
+  fi
+  hostname -s
+}
+
+default_host_name() {
+  if [[ -n "${FASCINATE_HOST_NAME:-}" ]]; then
+    printf '%s' "${FASCINATE_HOST_NAME}"
+    return
+  fi
+  hostname -s
+}
+
 require_root() {
   if [[ "${EUID}" -ne 0 ]]; then
     echo "run as root" >&2
@@ -62,6 +78,11 @@ FASCINATE_TOOL_AUTH_DIR=$(quote_env_value "${FASCINATE_TOOL_AUTH_DIR:-${DATA_DIR
 FASCINATE_TOOL_AUTH_KEY_PATH=$(quote_env_value "${FASCINATE_TOOL_AUTH_KEY_PATH:-${DATA_DIR}/tool_auth.key}")
 FASCINATE_TOOL_AUTH_SYNC_INTERVAL=$(quote_env_value "${FASCINATE_TOOL_AUTH_SYNC_INTERVAL:-2m}")
 FASCINATE_SSH_HOST_KEY_PATH=$(quote_env_value "${FASCINATE_SSH_HOST_KEY_PATH:-${DATA_DIR}/ssh_host_ed25519_key}")
+FASCINATE_HOST_ID=$(quote_env_value "$(default_host_id)")
+FASCINATE_HOST_NAME=$(quote_env_value "$(default_host_name)")
+FASCINATE_HOST_REGION=$(quote_env_value "${FASCINATE_HOST_REGION:-local}")
+FASCINATE_HOST_ROLE=$(quote_env_value "${FASCINATE_HOST_ROLE:-combined}")
+FASCINATE_HOST_HEARTBEAT_INTERVAL=$(quote_env_value "${FASCINATE_HOST_HEARTBEAT_INTERVAL:-30s}")
 FASCINATE_RESEND_API_KEY=$(quote_env_value "${FASCINATE_RESEND_API_KEY:-}")
 FASCINATE_EMAIL_FROM=$(quote_env_value "${FASCINATE_EMAIL_FROM:-}")
 FASCINATE_RESEND_BASE_URL=$(quote_env_value "${FASCINATE_RESEND_BASE_URL:-https://api.resend.com}")

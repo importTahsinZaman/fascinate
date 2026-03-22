@@ -10,11 +10,11 @@ import (
 func (s *Store) CreateSnapshot(ctx context.Context, params CreateSnapshotParams) (SnapshotRecord, error) {
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO snapshots (
-			id, name, owner_user_id, source_machine_id, runtime_name, state, artifact_dir,
+			id, name, owner_user_id, host_id, source_machine_id, runtime_name, state, artifact_dir,
 			disk_size_bytes, memory_size_bytes, runtime_version, firmware_version
 		)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, params.ID, params.Name, params.OwnerUserID, params.SourceMachineID, params.RuntimeName, params.State, params.ArtifactDir,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, params.ID, params.Name, params.OwnerUserID, params.HostID, params.SourceMachineID, params.RuntimeName, params.State, params.ArtifactDir,
 		params.DiskSizeBytes, params.MemorySizeBytes, params.RuntimeVersion, params.FirmwareVersion)
 	if err != nil {
 		if isUniqueConstraint(err) {
@@ -34,6 +34,7 @@ func (s *Store) GetSnapshotByName(ctx context.Context, ownerUserID, name string)
 			s.name,
 			s.owner_user_id,
 			u.email,
+			s.host_id,
 			s.source_machine_id,
 			m.name,
 			s.runtime_name,
@@ -55,6 +56,7 @@ func (s *Store) GetSnapshotByName(ctx context.Context, ownerUserID, name string)
 		&record.Name,
 		&record.OwnerUserID,
 		&record.OwnerEmail,
+		nullableString(&record.HostID),
 		nullableString(&record.SourceMachineID),
 		nullableString(&record.SourceMachineName),
 		&record.RuntimeName,
@@ -86,6 +88,7 @@ func (s *Store) GetSnapshotByID(ctx context.Context, id string) (SnapshotRecord,
 			s.name,
 			s.owner_user_id,
 			u.email,
+			s.host_id,
 			s.source_machine_id,
 			m.name,
 			s.runtime_name,
@@ -107,6 +110,7 @@ func (s *Store) GetSnapshotByID(ctx context.Context, id string) (SnapshotRecord,
 		&record.Name,
 		&record.OwnerUserID,
 		&record.OwnerEmail,
+		nullableString(&record.HostID),
 		nullableString(&record.SourceMachineID),
 		nullableString(&record.SourceMachineName),
 		&record.RuntimeName,
@@ -137,6 +141,7 @@ func (s *Store) ListSnapshots(ctx context.Context, ownerEmail string) ([]Snapsho
 			s.name,
 			s.owner_user_id,
 			u.email,
+			s.host_id,
 			s.source_machine_id,
 			m.name,
 			s.runtime_name,
@@ -175,6 +180,7 @@ func (s *Store) ListSnapshots(ctx context.Context, ownerEmail string) ([]Snapsho
 			&record.Name,
 			&record.OwnerUserID,
 			&record.OwnerEmail,
+			nullableString(&record.HostID),
 			nullableString(&record.SourceMachineID),
 			nullableString(&record.SourceMachineName),
 			&record.RuntimeName,

@@ -75,6 +75,8 @@ type fakeMachineManager struct {
 	diagToolAuthOwner  string
 	diagToolAuthResult controlplane.ToolAuthDiagnostics
 	diagToolAuthErr    error
+	diagHostsResult    []controlplane.Host
+	diagHostsErr       error
 	diagEventsOwner    string
 	diagEventsLimit    int
 	diagEventsResult   []controlplane.Event
@@ -172,6 +174,13 @@ func (f *fakeMachineManager) GetToolAuthDiagnostics(_ context.Context, ownerEmai
 		return controlplane.ToolAuthDiagnostics{}, f.diagToolAuthErr
 	}
 	return f.diagToolAuthResult, nil
+}
+
+func (f *fakeMachineManager) ListHosts(_ context.Context) ([]controlplane.Host, error) {
+	if f.diagHostsErr != nil {
+		return nil, f.diagHostsErr
+	}
+	return f.diagHostsResult, nil
 }
 
 func (f *fakeMachineManager) ListOwnerEvents(_ context.Context, ownerEmail string, limit int) ([]controlplane.Event, error) {
@@ -401,6 +410,26 @@ func TestDiagnosticsToolAuthEndpointCallsManager(t *testing.T) {
 	}
 	if manager.diagToolAuthOwner != "dev@example.com" {
 		t.Fatalf("unexpected tool-auth diagnostics owner: %q", manager.diagToolAuthOwner)
+	}
+}
+
+func TestDiagnosticsHostsEndpointCallsManager(t *testing.T) {
+	t.Parallel()
+
+	manager := &fakeMachineManager{
+		diagHostsResult: []controlplane.Host{{ID: "local-host", Name: "local-host", PlacementEligible: true}},
+	}
+	handler := newTestHandler(t, &fakeRuntime{}, manager)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/diagnostics/hosts", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "local-host") {
+		t.Fatalf("expected host body, got %q", rec.Body.String())
 	}
 }
 

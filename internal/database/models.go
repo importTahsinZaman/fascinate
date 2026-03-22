@@ -13,6 +13,7 @@ type MachineRecord struct {
 	Name             string  `json:"name"`
 	OwnerUserID      string  `json:"owner_user_id"`
 	OwnerEmail       string  `json:"owner_email"`
+	HostID           *string `json:"host_id,omitempty"`
 	RuntimeName      string  `json:"runtime_name"`
 	SourceSnapshotID *string `json:"source_snapshot_id,omitempty"`
 	State            string  `json:"state"`
@@ -26,6 +27,7 @@ type CreateMachineParams struct {
 	ID               string
 	Name             string
 	OwnerUserID      string
+	HostID           *string
 	RuntimeName      string
 	SourceSnapshotID *string
 	State            string
@@ -37,6 +39,7 @@ type SnapshotRecord struct {
 	Name              string  `json:"name"`
 	OwnerUserID       string  `json:"owner_user_id"`
 	OwnerEmail        string  `json:"owner_email"`
+	HostID            *string `json:"host_id,omitempty"`
 	SourceMachineID   *string `json:"source_machine_id,omitempty"`
 	SourceMachineName *string `json:"source_machine_name,omitempty"`
 	RuntimeName       string  `json:"runtime_name"`
@@ -55,6 +58,7 @@ type CreateSnapshotParams struct {
 	ID              string
 	Name            string
 	OwnerUserID     string
+	HostID          *string
 	SourceMachineID *string
 	RuntimeName     string
 	State           string
@@ -93,6 +97,57 @@ type EventRecord struct {
 	Kind        string  `json:"kind"`
 	PayloadJSON string  `json:"payload_json"`
 	CreatedAt   string  `json:"created_at"`
+}
+
+type HostRecord struct {
+	ID                   string  `json:"id"`
+	Name                 string  `json:"name"`
+	Region               string  `json:"region"`
+	Role                 string  `json:"role"`
+	Status               string  `json:"status"`
+	LabelsJSON           string  `json:"labels_json"`
+	CapabilitiesJSON     string  `json:"capabilities_json"`
+	RuntimeVersion       string  `json:"runtime_version"`
+	HeartbeatAt          *string `json:"heartbeat_at,omitempty"`
+	TotalCPU             int     `json:"total_cpu"`
+	AllocatedCPU         int     `json:"allocated_cpu"`
+	TotalMemoryBytes     int64   `json:"total_memory_bytes"`
+	AllocatedMemoryBytes int64   `json:"allocated_memory_bytes"`
+	TotalDiskBytes       int64   `json:"total_disk_bytes"`
+	AllocatedDiskBytes   int64   `json:"allocated_disk_bytes"`
+	AvailableDiskBytes   int64   `json:"available_disk_bytes"`
+	MachineCount         int     `json:"machine_count"`
+	SnapshotCount        int     `json:"snapshot_count"`
+	LastError            *string `json:"last_error,omitempty"`
+	CreatedAt            string  `json:"created_at"`
+	UpdatedAt            string  `json:"updated_at"`
+}
+
+type UpsertHostParams struct {
+	ID               string
+	Name             string
+	Region           string
+	Role             string
+	Status           string
+	LabelsJSON       string
+	CapabilitiesJSON string
+	RuntimeVersion   string
+}
+
+type UpdateHostHeartbeatParams struct {
+	ID                   string
+	RuntimeVersion       string
+	Healthy              bool
+	TotalCPU             int
+	AllocatedCPU         int
+	TotalMemoryBytes     int64
+	AllocatedMemoryBytes int64
+	TotalDiskBytes       int64
+	AllocatedDiskBytes   int64
+	AvailableDiskBytes   int64
+	MachineCount         int
+	SnapshotCount        int
+	LastError            *string
 }
 
 type CreateEventParams struct {

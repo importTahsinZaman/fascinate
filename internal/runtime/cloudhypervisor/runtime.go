@@ -112,6 +112,7 @@ type Manager struct {
 	selfBinary        string
 	waitForGuest      func(context.Context, metadata) error
 	now               func() time.Time
+	listHostAddrs     func() ([]netip.Addr, error)
 	networkMu         sync.Mutex
 }
 
@@ -162,6 +163,7 @@ func New(cfg config.Config) (*Manager, error) {
 		sshClientBinary:   strings.TrimSpace(cfg.SSHClientBinary),
 		selfBinary:        selfBinary,
 		now:               time.Now,
+		listHostAddrs:     listHostInterfaceAddrs,
 	}
 	manager.waitForGuest = manager.waitForGuestSSH
 

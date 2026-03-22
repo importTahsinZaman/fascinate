@@ -9,9 +9,9 @@ import (
 
 func (s *Store) CreateMachine(ctx context.Context, params CreateMachineParams) (MachineRecord, error) {
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO machines (id, name, owner_user_id, runtime_name, source_snapshot_id, state, primary_port)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
-	`, params.ID, params.Name, params.OwnerUserID, params.RuntimeName, params.SourceSnapshotID, params.State, params.PrimaryPort)
+		INSERT INTO machines (id, name, owner_user_id, host_id, runtime_name, source_snapshot_id, state, primary_port)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	`, params.ID, params.Name, params.OwnerUserID, params.HostID, params.RuntimeName, params.SourceSnapshotID, params.State, params.PrimaryPort)
 	if err != nil {
 		if isUniqueConstraint(err) {
 			return MachineRecord{}, ErrConflict
@@ -30,6 +30,7 @@ func (s *Store) GetMachineByName(ctx context.Context, name string) (MachineRecor
 			m.name,
 			m.owner_user_id,
 			u.email,
+			m.host_id,
 			m.runtime_name,
 			m.source_snapshot_id,
 			m.state,
@@ -45,6 +46,7 @@ func (s *Store) GetMachineByName(ctx context.Context, name string) (MachineRecor
 		&record.Name,
 		&record.OwnerUserID,
 		&record.OwnerEmail,
+		nullableString(&record.HostID),
 		&record.RuntimeName,
 		nullableString(&record.SourceSnapshotID),
 		&record.State,
@@ -70,6 +72,7 @@ func (s *Store) ListMachines(ctx context.Context, ownerEmail string) ([]MachineR
 			m.name,
 			m.owner_user_id,
 			u.email,
+			m.host_id,
 			m.runtime_name,
 			m.source_snapshot_id,
 			m.state,
@@ -102,6 +105,7 @@ func (s *Store) ListMachines(ctx context.Context, ownerEmail string) ([]MachineR
 			&record.Name,
 			&record.OwnerUserID,
 			&record.OwnerEmail,
+			nullableString(&record.HostID),
 			&record.RuntimeName,
 			nullableString(&record.SourceSnapshotID),
 			&record.State,

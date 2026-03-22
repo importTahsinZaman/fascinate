@@ -6,6 +6,7 @@ ENV_FILE="${FASCINATE_ENV_FILE:-/etc/fascinate/fascinate.env}"
 usage() {
   cat <<'EOF'
 usage:
+  diagnostics.sh hosts
   diagnostics.sh machine <owner_email> <machine_name>
   diagnostics.sh snapshot <owner_email> <snapshot_name>
   diagnostics.sh tool-auth <owner_email>
@@ -41,6 +42,9 @@ main() {
 
   local command="${1:-}"
   case "${command}" in
+    hosts)
+      curl -fsS "$(api_url "/v1/diagnostics/hosts")" | jq .
+      ;;
     machine)
       local owner_email="${2:-}"
       local machine_name="${3:-}"

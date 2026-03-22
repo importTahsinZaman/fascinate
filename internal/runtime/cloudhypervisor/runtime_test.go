@@ -20,6 +20,7 @@ func TestPrepareNetworkMetadataSkipsUsedNamespaceAddresses(t *testing.T) {
 		guestPrefix:     mustPrefix(t, "10.42.0.0/24"),
 		bridgePrefix:    mustPrefix(t, "10.42.0.1/24"),
 		namespacePrefix: mustPrefix(t, "100.96.0.0/16"),
+		listHostAddrs:   func() ([]netip.Addr, error) { return nil, nil },
 	}
 
 	if err := os.MkdirAll(filepath.Join(stateDir, "alpha"), 0o755); err != nil {
@@ -55,6 +56,34 @@ func TestPrepareNetworkMetadataSkipsUsedNamespaceAddresses(t *testing.T) {
 	}
 	if mac != "02:fc:0a:2a:00:02" {
 		t.Fatalf("unexpected fixed guest MAC %q", mac)
+	}
+}
+
+func TestPrepareNetworkMetadataSkipsLiveInterfaceAddresses(t *testing.T) {
+	t.Parallel()
+
+	manager := &Manager{
+		stateDir:        t.TempDir(),
+		guestPrefix:     mustPrefix(t, "10.42.0.0/24"),
+		bridgePrefix:    mustPrefix(t, "10.42.0.1/24"),
+		namespacePrefix: mustPrefix(t, "100.96.0.0/16"),
+		listHostAddrs: func() ([]netip.Addr, error) {
+			return []netip.Addr{
+				netip.MustParseAddr("100.96.0.1"),
+				netip.MustParseAddr("148.113.224.213"),
+			}, nil
+		},
+	}
+
+	_, _, hostIPv4, namespaceIPv4, _, err := manager.prepareNetworkMetadata("beta")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hostIPv4 != "100.96.0.5" {
+		t.Fatalf("expected allocator to skip live host address 100.96.0.1, got %q", hostIPv4)
+	}
+	if namespaceIPv4 != "100.96.0.6" {
+		t.Fatalf("expected paired namespace address 100.96.0.6, got %q", namespaceIPv4)
 	}
 }
 

@@ -38,6 +38,7 @@ type machineManager interface {
 }
 
 type diagnosticsManager interface {
+	ListHosts(context.Context) ([]controlplane.Host, error)
 	GetMachineDiagnostics(context.Context, string, string) (controlplane.MachineDiagnostics, error)
 	GetSnapshotDiagnostics(context.Context, string, string) (controlplane.SnapshotDiagnostics, error)
 	GetToolAuthDiagnostics(context.Context, string) (controlplane.ToolAuthDiagnostics, error)
@@ -355,6 +356,27 @@ func New(cfg config.Config, store *database.Store, runtime runtimeChecker, machi
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"events": events})
+	})
+
+	mux.HandleFunc("/v1/diagnostics/hosts", func(w http.ResponseWriter, r *http.Request) {
+		if diagnostics == nil {
+			http.NotFound(w, r)
+			return
+		}
+		if r.Method != http.MethodGet {
+			writeMethodNotAllowed(w, http.MethodGet)
+			return
+		}
+
+		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+		defer cancel()
+
+		hosts, err := diagnostics.ListHosts(ctx)
+		if err != nil {
+			writeServiceError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"hosts": hosts})
 	})
 
 	mux.HandleFunc("/v1/diagnostics/tool-auth", func(w http.ResponseWriter, r *http.Request) {

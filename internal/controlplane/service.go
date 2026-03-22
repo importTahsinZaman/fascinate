@@ -35,10 +35,11 @@ const (
 )
 
 type Service struct {
-	cfg      config.Config
-	store    *database.Store
-	runtime  machineruntime.Manager
-	toolAuth toolAuthManager
+	cfg         config.Config
+	store       *database.Store
+	toolAuth    toolAuthManager
+	localHostID string
+	executors   map[string]hostExecutor
 
 	userLocksMu sync.Mutex
 	userLocks   map[string]*sync.Mutex
@@ -51,6 +52,7 @@ type Machine struct {
 	ID           string                  `json:"id"`
 	Name         string                  `json:"name"`
 	OwnerEmail   string                  `json:"owner_email"`
+	HostID       string                  `json:"host_id,omitempty"`
 	State        string                  `json:"state"`
 	PrimaryPort  int                     `json:"primary_port"`
 	URL          string                  `json:"url,omitempty"`
@@ -76,6 +78,7 @@ type Snapshot struct {
 	ID                string                   `json:"id"`
 	Name              string                   `json:"name"`
 	OwnerEmail        string                   `json:"owner_email"`
+	HostID            string                   `json:"host_id,omitempty"`
 	SourceMachineName string                   `json:"source_machine_name,omitempty"`
 	State             string                   `json:"state"`
 	ArtifactDir       string                   `json:"artifact_dir,omitempty"`
@@ -106,15 +109,45 @@ func New(cfg config.Config, store *database.Store, runtime machineruntime.Manage
 	if len(extras) > 0 {
 		toolAuth = extras[0]
 	}
+	localHostID := strings.TrimSpace(cfg.HostID)
+	if localHostID == "" {
+		localHostID = "local-host"
+	}
+	if strings.TrimSpace(cfg.HostName) == "" {
+		cfg.HostName = localHostID
+	}
+	if strings.TrimSpace(cfg.HostRegion) == "" {
+		cfg.HostRegion = "local"
+	}
+	if strings.TrimSpace(cfg.HostRole) == "" {
+		cfg.HostRole = "combined"
+	}
+	if cfg.HostHeartbeatInterval <= 0 {
+		cfg.HostHeartbeatInterval = 30 * time.Second
+	}
 
-	return &Service{
+	service := &Service{
 		cfg:           cfg,
 		store:         store,
-		runtime:       runtime,
 		toolAuth:      toolAuth,
+		localHostID:   localHostID,
+		executors:     map[string]hostExecutor{localHostID: newLocalHostExecutor(runtime)},
 		userLocks:     map[string]*sync.Mutex{},
 		createCancels: map[string]context.CancelFunc{},
 	}
+
+	return service.withLocalHostSeeded()
+}
+
+func (s *Service) withLocalHostSeeded() *Service {
+	if s == nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_, _ = s.EnsureLocalHost(ctx)
+	_ = s.HeartbeatLocalHost(ctx)
+	return s
 }
 
 func (s *Service) ListMachines(ctx context.Context, ownerEmail string) ([]Machine, error) {
@@ -129,7 +162,21 @@ func (s *Service) ListMachines(ctx context.Context, ownerEmail string) ([]Machin
 	}
 
 	liveMachines := map[string]machineruntime.Machine{}
-	if runtimeMachines, err := s.runtime.ListMachines(ctx); err == nil {
+	seenHosts := map[string]struct{}{}
+	for _, record := range records {
+		hostID := machineHostID(record, s.localHostID)
+		if _, ok := seenHosts[hostID]; ok {
+			continue
+		}
+		seenHosts[hostID] = struct{}{}
+		executor, err := s.executorForHostID(hostID)
+		if err != nil {
+			continue
+		}
+		runtimeMachines, err := executor.ListMachines(ctx)
+		if err != nil {
+			continue
+		}
 		for _, machine := range runtimeMachines {
 			liveMachines[machine.Name] = machine
 		}
@@ -166,7 +213,11 @@ func (s *Service) GetMachine(ctx context.Context, name, ownerEmail string) (Mach
 }
 
 func (s *Service) machineFromRecordWithRuntime(ctx context.Context, record database.MachineRecord) (Machine, error) {
-	liveMachine, err := s.runtime.GetMachine(ctx, runtimeNameForRecord(record))
+	executor, err := s.executorForHostID(machineHostID(record, s.localHostID))
+	if err != nil {
+		return Machine{}, err
+	}
+	liveMachine, err := executor.GetMachine(ctx, runtimeNameForRecord(record))
 	if err != nil {
 		if errors.Is(err, machineruntime.ErrMachineNotFound) {
 			if machineStateAllowsMissingRuntime(record.State) {
@@ -208,6 +259,7 @@ func (s *Service) CreateMachine(ctx context.Context, input CreateMachineInput) (
 	}
 
 	var sourceSnapshotID *string
+	var hostID string
 	if snapshotName := strings.TrimSpace(input.SnapshotName); snapshotName != "" {
 		snapshotRecord, err := s.store.GetSnapshotByName(ctx, user.ID, snapshotName)
 		if err != nil {
@@ -216,8 +268,20 @@ func (s *Service) CreateMachine(ctx context.Context, input CreateMachineInput) (
 		if !strings.EqualFold(snapshotRecord.State, snapshotStateReady) {
 			return Machine{}, fmt.Errorf("snapshot %q is %s", snapshotName, strings.ToLower(strings.TrimSpace(snapshotRecord.State)))
 		}
+		hostID = snapshotHostID(snapshotRecord)
+		if hostID == "" {
+			hostID = s.localHostID
+		}
+		if _, err := s.executorForHostID(hostID); err != nil {
+			return Machine{}, fmt.Errorf("snapshot host unavailable: %w", err)
+		}
 		sourceSnapshotID = &snapshotRecord.ID
 	} else {
+		host, err := s.getPlacementHost(ctx)
+		if err != nil {
+			return Machine{}, err
+		}
+		hostID = host.ID
 		s.syncToolAuthFromOwnerRunningMachines(ctx, user.ID, name)
 	}
 
@@ -228,6 +292,7 @@ func (s *Service) CreateMachine(ctx context.Context, input CreateMachineInput) (
 		ID:               uuid.NewString(),
 		Name:             name,
 		OwnerUserID:      user.ID,
+		HostID:           &hostID,
 		RuntimeName:      name,
 		SourceSnapshotID: sourceSnapshotID,
 		State:            machineStateCreating,
@@ -282,7 +347,11 @@ func (s *Service) DeleteMachine(ctx context.Context, name, ownerEmail string) er
 
 	s.captureToolAuthBestEffort(deleteCtx, record)
 
-	if err := s.runtime.DeleteMachine(deleteCtx, runtimeName); err != nil && !errors.Is(err, machineruntime.ErrMachineNotFound) {
+	executor, err := s.executorForHostID(machineHostID(record, s.localHostID))
+	if err != nil {
+		return err
+	}
+	if err := executor.DeleteMachine(deleteCtx, runtimeName); err != nil && !errors.Is(err, machineruntime.ErrMachineNotFound) {
 		s.recordEventBestEffort(&record.OwnerUserID, &record.ID, "machine.delete.failed", map[string]any{
 			"machine_name": record.Name,
 			"runtime_name": runtimeName,
@@ -333,7 +402,12 @@ func (s *Service) CloneMachine(ctx context.Context, input CloneMachineInput) (Ma
 	if normalizeEmail(sourceRecord.OwnerEmail) != ownerEmail {
 		return Machine{}, database.ErrNotFound
 	}
-	liveSource, err := s.runtime.GetMachine(ctx, runtimeNameForRecord(sourceRecord))
+	sourceHostID := machineHostID(sourceRecord, s.localHostID)
+	executor, err := s.executorForHostID(sourceHostID)
+	if err != nil {
+		return Machine{}, err
+	}
+	liveSource, err := executor.GetMachine(ctx, runtimeNameForRecord(sourceRecord))
 	if err != nil {
 		return Machine{}, err
 	}
@@ -357,7 +431,7 @@ func (s *Service) CloneMachine(ctx context.Context, input CloneMachineInput) (Ma
 		"source_runtime": runtimeNameForRecord(sourceRecord),
 	})
 
-	liveMachine, err := s.runtime.CloneMachine(ctx, machineruntime.CloneMachineRequest{
+	liveMachine, err := executor.CloneMachine(ctx, machineruntime.CloneMachineRequest{
 		SourceName:   runtimeNameForRecord(sourceRecord),
 		TargetName:   targetName,
 		RootDiskSize: rootDiskSize,
@@ -379,12 +453,13 @@ func (s *Service) CloneMachine(ctx context.Context, input CloneMachineInput) (Ma
 		ID:          uuid.NewString(),
 		Name:        targetName,
 		OwnerUserID: user.ID,
+		HostID:      &sourceHostID,
 		RuntimeName: liveMachine.Name,
 		State:       liveMachine.State,
 		PrimaryPort: sourceRecord.PrimaryPort,
 	})
 	if err != nil {
-		s.cleanupRuntimeMachine(targetName)
+		s.cleanupRuntimeMachine(targetName, sourceHostID)
 		return Machine{}, err
 	}
 
@@ -431,7 +506,24 @@ func (s *Service) ListSnapshots(ctx context.Context, ownerEmail string) ([]Snaps
 	}
 
 	runtimeSnapshots := map[string]machineruntime.Snapshot{}
-	if live, err := s.runtime.ListSnapshots(ctx); err == nil {
+	seenHosts := map[string]struct{}{}
+	for _, record := range records {
+		hostID := snapshotHostID(record)
+		if hostID == "" {
+			hostID = s.localHostID
+		}
+		if _, ok := seenHosts[hostID]; ok {
+			continue
+		}
+		seenHosts[hostID] = struct{}{}
+		executor, err := s.executorForHostID(hostID)
+		if err != nil {
+			continue
+		}
+		live, err := executor.ListSnapshots(ctx)
+		if err != nil {
+			continue
+		}
 		for _, snapshot := range live {
 			runtimeSnapshots[strings.TrimSpace(snapshot.Name)] = snapshot
 		}
@@ -469,10 +561,12 @@ func (s *Service) CreateSnapshot(ctx context.Context, input CreateSnapshotInput)
 	defer cancel()
 
 	runtimeName := uuid.NewString()
+	hostID := machineHostID(machineRecord, s.localHostID)
 	record, err := s.store.CreateSnapshot(persistCtx, database.CreateSnapshotParams{
 		ID:              uuid.NewString(),
 		Name:            snapshotName,
 		OwnerUserID:     user.ID,
+		HostID:          &hostID,
 		SourceMachineID: &machineRecord.ID,
 		RuntimeName:     runtimeName,
 		State:           snapshotStateCreating,
@@ -517,7 +611,11 @@ func (s *Service) DeleteSnapshot(ctx context.Context, name, ownerEmail string) e
 
 	deleteCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	if err := s.runtime.DeleteSnapshot(deleteCtx, record.RuntimeName); err != nil && !errors.Is(err, machineruntime.ErrSnapshotNotFound) {
+	executor, err := s.executorForHostID(snapshotHostID(record))
+	if err != nil {
+		return err
+	}
+	if err := executor.DeleteSnapshot(deleteCtx, record.RuntimeName); err != nil && !errors.Is(err, machineruntime.ErrSnapshotNotFound) {
 		s.recordEventBestEffort(&user.ID, record.SourceMachineID, "snapshot.delete.failed", map[string]any{
 			"snapshot_id":   record.ID,
 			"snapshot_name": record.Name,
@@ -642,6 +740,7 @@ func (s *Service) machineFromRecord(ctx context.Context, record database.Machine
 		ID:          record.ID,
 		Name:        record.Name,
 		OwnerEmail:  record.OwnerEmail,
+		HostID:      machineHostID(record, s.localHostID),
 		State:       record.State,
 		PrimaryPort: record.PrimaryPort,
 		URL:         machineURL(record.Name, s.cfg.BaseDomain),
@@ -672,6 +771,7 @@ func (s *Service) snapshotFromRecord(ctx context.Context, record database.Snapsh
 		ID:                record.ID,
 		Name:              record.Name,
 		OwnerEmail:        record.OwnerEmail,
+		HostID:            coalesceHostID(snapshotHostID(record), s.localHostID),
 		SourceMachineName: sourceMachineName,
 		State:             record.State,
 		ArtifactDir:       record.ArtifactDir,
@@ -731,7 +831,11 @@ func (s *Service) ReconcileRuntimeState(ctx context.Context) error {
 		recordByRuntime[runtimeName] = record
 	}
 
-	runtimeMachines, err := s.runtime.ListMachines(ctx)
+	executor, err := s.executorForHostID(s.localHostID)
+	if err != nil {
+		return err
+	}
+	runtimeMachines, err := executor.ListMachines(ctx)
 	if err != nil {
 		return err
 	}
@@ -753,7 +857,7 @@ func (s *Service) ReconcileRuntimeState(ctx context.Context) error {
 		if _, ok := known[name]; ok {
 			continue
 		}
-		if err := s.runtime.DeleteMachine(ctx, name); err != nil && !errors.Is(err, machineruntime.ErrMachineNotFound) {
+		if err := executor.DeleteMachine(ctx, name); err != nil && !errors.Is(err, machineruntime.ErrMachineNotFound) {
 			return err
 		}
 	}
@@ -762,7 +866,7 @@ func (s *Service) ReconcileRuntimeState(ctx context.Context) error {
 	for runtimeName, record := range recordByRuntime {
 		liveMachine, ok := liveMachines[runtimeName]
 		if !ok {
-			if strings.EqualFold(record.State, machineStateCreating) {
+			if strings.EqualFold(record.State, machineStateCreating) && machineHostID(record, s.localHostID) == s.localHostID {
 				s.queueMachineCreate(record)
 			}
 			continue
@@ -774,7 +878,7 @@ func (s *Service) ReconcileRuntimeState(ctx context.Context) error {
 				"machine_name": record.Name,
 				"runtime_name": runtimeName,
 			})
-			recovered, err := s.runtime.StartMachine(ctx, runtimeName)
+			recovered, err := executor.StartMachine(ctx, runtimeName)
 			if err != nil {
 				log.Printf("fascinate: recover machine %s failed: %v", runtimeName, err)
 				s.recordEventBestEffort(&record.OwnerUserID, &record.ID, "machine.recover.failed", map[string]any{
@@ -843,10 +947,14 @@ func (s *Service) isAdminEmail(email string) bool {
 	return false
 }
 
-func (s *Service) cleanupRuntimeMachine(name string) {
+func (s *Service) cleanupRuntimeMachine(name, hostID string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	_ = s.runtime.DeleteMachine(ctx, name)
+	executor, err := s.executorForHostID(hostID)
+	if err != nil {
+		return
+	}
+	_ = executor.DeleteMachine(ctx, name)
 }
 
 func (s *Service) queueMachineCreate(record database.MachineRecord) {
@@ -894,7 +1002,12 @@ func (s *Service) runMachineCreate(ctx context.Context, record database.MachineR
 		"stage":        "runtime_create",
 	})
 
-	liveMachine, err := s.runtime.CreateMachine(ctx, req)
+	executor, err := s.executorForHostID(machineHostID(record, s.localHostID))
+	if err != nil {
+		s.finishCreateFailure(record, req.Name, "host_lookup", err)
+		return
+	}
+	liveMachine, err := executor.CreateMachine(ctx, req)
 	if err != nil {
 		s.finishCreateFailure(record, req.Name, "runtime_create", err)
 		return
@@ -925,7 +1038,12 @@ func (s *Service) runSnapshotCreate(record database.SnapshotRecord) {
 		"stage":         "runtime_snapshot",
 	})
 
-	runtimeSnapshot, err := s.runtime.CreateSnapshot(ctx, machineruntime.CreateSnapshotRequest{
+	executor, err := s.executorForHostID(snapshotHostID(record))
+	if err != nil {
+		s.finishSnapshotFailure(record, "host_lookup", err)
+		return
+	}
+	runtimeSnapshot, err := executor.CreateSnapshot(ctx, machineruntime.CreateSnapshotRequest{
 		MachineName:  sourceMachineNameForSnapshot(record),
 		SnapshotName: record.RuntimeName,
 		ArtifactDir:  record.ArtifactDir,
@@ -997,17 +1115,17 @@ func (s *Service) finishCreateSuccess(record database.MachineRecord, liveMachine
 	currentRecord, err := s.store.GetMachineByName(persistCtx, record.Name)
 	if err != nil {
 		if errors.Is(err, database.ErrNotFound) {
-			s.cleanupRuntimeMachine(runtimeNameForRecord(record))
+			s.cleanupRuntimeMachine(runtimeNameForRecord(record), machineHostID(record, s.localHostID))
 			return
 		}
 		log.Printf("fascinate: finalize machine %s: %v", record.Name, err)
-		s.cleanupRuntimeMachine(runtimeNameForRecord(record))
+		s.cleanupRuntimeMachine(runtimeNameForRecord(record), machineHostID(record, s.localHostID))
 		return
 	}
 
 	if err := s.store.UpdateMachineState(persistCtx, currentRecord.ID, liveMachine.State); err != nil {
 		if errors.Is(err, database.ErrNotFound) {
-			s.cleanupRuntimeMachine(runtimeNameForRecord(record))
+			s.cleanupRuntimeMachine(runtimeNameForRecord(record), machineHostID(record, s.localHostID))
 			return
 		}
 		log.Printf("fascinate: update machine %s state: %v", record.Name, err)
@@ -1022,7 +1140,7 @@ func (s *Service) finishCreateSuccess(record database.MachineRecord, liveMachine
 
 func (s *Service) finishCreateFailure(record database.MachineRecord, runtimeName, stage string, createErr error) {
 	log.Printf("fascinate: machine create failed for %s: %v", record.Name, createErr)
-	s.cleanupRuntimeMachine(runtimeName)
+	s.cleanupRuntimeMachine(runtimeName, machineHostID(record, s.localHostID))
 
 	persistCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -1053,7 +1171,10 @@ func (s *Service) finishSnapshotSuccess(record database.SnapshotRecord, runtimeS
 	currentRecord, err := s.store.GetSnapshotByID(persistCtx, record.ID)
 	if err != nil {
 		if errors.Is(err, database.ErrNotFound) {
-			_ = s.runtime.DeleteSnapshot(persistCtx, record.RuntimeName)
+			executor, execErr := s.executorForHostID(snapshotHostID(record))
+			if execErr == nil {
+				_ = executor.DeleteSnapshot(persistCtx, record.RuntimeName)
+			}
 			return
 		}
 		log.Printf("fascinate: finalize snapshot %s: %v", record.Name, err)
@@ -1137,7 +1258,11 @@ func (s *Service) syncToolAuthForRecord(ctx context.Context, record database.Mac
 		return nil
 	}
 
-	liveMachine, err := s.runtime.GetMachine(ctx, runtimeName)
+	executor, err := s.executorForHostID(machineHostID(record, s.localHostID))
+	if err != nil {
+		return err
+	}
+	liveMachine, err := executor.GetMachine(ctx, runtimeName)
 	if err != nil {
 		return err
 	}

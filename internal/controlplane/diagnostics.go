@@ -48,6 +48,10 @@ type ToolAuthDiagnostics struct {
 	Events     []Event            `json:"events,omitempty"`
 }
 
+func (s *Service) GetHostDiagnostics(ctx context.Context) ([]Host, error) {
+	return s.ListHosts(ctx)
+}
+
 func (s *Service) GetMachineDiagnostics(ctx context.Context, name, ownerEmail string) (MachineDiagnostics, error) {
 	record, err := s.ownedMachineRecord(ctx, name, ownerEmail)
 	if err != nil {
@@ -64,15 +68,17 @@ func (s *Service) GetMachineDiagnostics(ctx context.Context, name, ownerEmail st
 		RuntimeName:      runtimeNameForRecord(record),
 		SourceSnapshotID: record.SourceSnapshotID,
 	}
-	if provider, ok := s.runtime.(runtimeDiagnosticsProvider); ok {
-		runtimeDiag, err := provider.InspectMachine(ctx, runtimeNameForRecord(record))
-		if err != nil && !errors.Is(err, machineruntime.ErrMachineNotFound) {
-			return MachineDiagnostics{}, err
-		}
-		if err == nil {
-			copy := runtimeDiag
-			diag.Runtime = &copy
-		}
+	executor, err := s.executorForHostID(machineHostID(record, s.localHostID))
+	if err != nil {
+		return MachineDiagnostics{}, err
+	}
+	runtimeDiag, err := executor.InspectMachine(ctx, runtimeNameForRecord(record))
+	if err != nil && !errors.Is(err, machineruntime.ErrMachineNotFound) {
+		return MachineDiagnostics{}, err
+	}
+	if err == nil {
+		copy := runtimeDiag
+		diag.Runtime = &copy
 	}
 
 	if events, err := s.store.ListMachineEvents(ctx, record.ID, 25); err == nil {
@@ -102,15 +108,17 @@ func (s *Service) GetSnapshotDiagnostics(ctx context.Context, name, ownerEmail s
 		Snapshot:    s.snapshotFromRecord(ctx, record, machineruntime.Snapshot{}),
 		RuntimeName: strings.TrimSpace(record.RuntimeName),
 	}
-	if provider, ok := s.runtime.(runtimeDiagnosticsProvider); ok {
-		runtimeDiag, err := provider.InspectSnapshot(ctx, record.RuntimeName)
-		if err != nil && !errors.Is(err, machineruntime.ErrSnapshotNotFound) {
-			return SnapshotDiagnostics{}, err
-		}
-		if err == nil {
-			copy := runtimeDiag
-			diag.Runtime = &copy
-		}
+	executor, err := s.executorForHostID(snapshotHostID(record))
+	if err != nil {
+		return SnapshotDiagnostics{}, err
+	}
+	runtimeDiag, err := executor.InspectSnapshot(ctx, record.RuntimeName)
+	if err != nil && !errors.Is(err, machineruntime.ErrSnapshotNotFound) {
+		return SnapshotDiagnostics{}, err
+	}
+	if err == nil {
+		copy := runtimeDiag
+		diag.Runtime = &copy
 	}
 
 	if events, err := s.store.ListActorEvents(ctx, user.ID, 100); err == nil {

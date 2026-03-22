@@ -15,7 +15,7 @@ This repo uses Go modules and Make; there is no root JavaScript package manager.
 - Host benchmark (configured host only): `bash ops/host/benchmark.sh`
 - Snapshot smoke (configured host only): `bash ops/host/smoke-snapshots.sh`
 - Tool-auth smoke (configured host only): `bash ops/host/smoke-tool-auth.sh`
-- Host diagnostics helper: `bash ops/host/diagnostics.sh <machine|snapshot|tool-auth|events> ...`
+- Host diagnostics helper: `bash ops/host/diagnostics.sh <hosts|machine|snapshot|tool-auth|events> ...`
 
 ## Testing
 - Prefer package-scoped tests first, then `go test ./...` when changes cross packages.
@@ -28,6 +28,7 @@ This repo uses Go modules and Make; there is no root JavaScript package manager.
 - `internal/app/` — app wiring, background loops, adapter registration
 - `internal/config/` — environment config and env-file loading
 - `internal/controlplane/` — machine and snapshot orchestration, state transitions, quotas
+- `internal/controlplane/hosts.go` — first-class host registry, heartbeat, placement, and host dispatch
 - `internal/runtime/cloudhypervisor/` — VM runtime, network namespaces, snapshots, restore/clone
 - `internal/sshfrontdoor/` — SSH command handling, guest shell handoff, dashboard launch
 - `internal/tui/` — Bubble Tea dashboard and signup flows
@@ -40,6 +41,7 @@ This repo uses Go modules and Make; there is no root JavaScript package manager.
 - Follow existing Go patterns: small structs, explicit errors, narrow helper functions, and `gofmt` output.
 - Keep user-visible state transitions explicit (`CREATING`, `RUNNING`, `FAILED`, `DELETING`) and cover them with tests.
 - Preserve the current architecture: Cloud Hypervisor VMs, per-VM network namespaces/forwarders, and host-managed persisted tool auth.
+- Preserve the current host model: even on one box, machines and snapshots are host-owned and runtime work should flow through the host executor boundary.
 
 ## Boundaries
 
