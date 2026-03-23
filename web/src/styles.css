@@ -1157,9 +1157,9 @@ a {
   line-height: 16px;
 }
 
-.git-diff-more-button {
-  justify-self: start;
-  margin-top: 6px;
+.git-diff-load-more-sentinel {
+  width: 100%;
+  height: 1px;
 }
 
 .git-diff-unified {

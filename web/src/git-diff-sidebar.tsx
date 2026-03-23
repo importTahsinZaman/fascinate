@@ -5,7 +5,6 @@ import {
   useMemo,
   useRef,
   useState,
-  type UIEvent,
 } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
@@ -25,7 +24,7 @@ import { useWorkspaceStore } from "./store";
 const statusPollIntervalMs = 4_000;
 const initialDiffPageSize = 2;
 const diffPageStep = 3;
-const diffPagePreloadThresholdPx = 960;
+const diffPagePreloadThresholdPx = 720;
 
 export function GitDiffSidebar() {
   const windows = useWorkspaceStore((state) => state.windows);
@@ -53,6 +52,8 @@ export function GitDiffSidebar() {
   const deferredFiles = useDeferredValue(files);
   const [visibleFileCount, setVisibleFileCount] = useState(initialDiffPageSize);
   const streamRef = useRef<HTMLDivElement | null>(null);
+  const [streamNode, setStreamNode] = useState<HTMLDivElement | null>(null);
+  const loadMoreRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     setVisibleFileCount(initialDiffPageSize);
@@ -63,15 +64,38 @@ export function GitDiffSidebar() {
     [deferredFiles, visibleFileCount],
   );
 
-  const handleStreamScroll = (event: UIEvent<HTMLDivElement>) => {
-    const { clientHeight, scrollHeight, scrollTop } = event.currentTarget;
-    if (scrollTop + clientHeight < scrollHeight - diffPagePreloadThresholdPx) {
+  useEffect(() => {
+    if (visibleFileCount >= deferredFiles.length) {
       return;
     }
-    startTransition(() => {
-      setVisibleFileCount((current) => Math.min(deferredFiles.length, current + diffPageStep));
-    });
-  };
+    if (typeof IntersectionObserver === "undefined") {
+      startTransition(() => {
+        setVisibleFileCount((current) => Math.min(deferredFiles.length, current + diffPageStep));
+      });
+      return;
+    }
+    const root = streamNode;
+    const target = loadMoreRef.current;
+    if (!root || !target) {
+      return;
+    }
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (!entries.some((entry) => entry.isIntersecting)) {
+          return;
+        }
+        startTransition(() => {
+          setVisibleFileCount((current) => Math.min(deferredFiles.length, current + diffPageStep));
+        });
+      },
+      {
+        root,
+        rootMargin: `0px 0px ${diffPagePreloadThresholdPx}px 0px`,
+      },
+    );
+    observer.observe(target);
+    return () => observer.disconnect();
+  }, [deferredFiles.length, streamNode, visibleFileCount]);
 
   if (!gitDiffSidebar.windowID || !activeWindow) {
     return null;
@@ -145,10 +169,12 @@ export function GitDiffSidebar() {
           />
         ) : (
           <section
-            ref={streamRef}
+            ref={(node: HTMLDivElement | null) => {
+              streamRef.current = node;
+              setStreamNode(node);
+            }}
             className="git-diff-stream"
             aria-label="Git file diffs"
-            onScroll={handleStreamScroll}
           >
             <div className="git-diff-stream-summary">
               <div>
@@ -172,6 +198,7 @@ export function GitDiffSidebar() {
                 file={file}
                 repoRoot={statusQuery.data.repo_root ?? ""}
                 sessionId={sessionId}
+                scrollRoot={streamNode}
               />
             ))}
 
@@ -182,20 +209,10 @@ export function GitDiffSidebar() {
                   Showing {visibleFileCount} of {deferredFiles.length} changed file
                   {deferredFiles.length === 1 ? "" : "s"}.
                 </span>
-                <button
-                  type="button"
-                  className="git-diff-more-button"
-                  onClick={() =>
-                    startTransition(() => {
-                      setVisibleFileCount((current) =>
-                        Math.min(deferredFiles.length, current + diffPageStep),
-                      );
-                    })
-                  }
-                >
-                  Load more
-                </button>
               </div>
+            ) : null}
+            {visibleFileCount < deferredFiles.length ? (
+              <div ref={loadMoreRef} className="git-diff-load-more-sentinel" aria-hidden="true" />
             ) : null}
           </section>
         )}
@@ -210,12 +227,14 @@ function GitDiffFileCard({
   file,
   repoRoot,
   sessionId,
+  scrollRoot,
 }: {
   branch?: string;
   cwd: string;
   file: GitChangedFile;
   repoRoot: string;
   sessionId: string;
+  scrollRoot: HTMLDivElement | null;
 }) {
   const cardRef = useRef<HTMLElement | null>(null);
   const [shouldFetchDiff, setShouldFetchDiff] = useState(false);
@@ -240,11 +259,11 @@ function GitDiffFileCard({
         setShouldFetchDiff(true);
         observer.disconnect();
       },
-      { root: null, rootMargin: "480px 0px" },
+      { root: scrollRoot, rootMargin: "480px 0px" },
     );
     observer.observe(node);
     return () => observer.disconnect();
-  }, [shouldFetchDiff]);
+  }, [scrollRoot, shouldFetchDiff]);
 
   const diffQuery = useQuery({
     queryKey: [

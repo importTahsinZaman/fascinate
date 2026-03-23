@@ -757,9 +757,6 @@ line 20
     expect(await screen.findByText("new alpha")).toBeTruthy();
     expect(await screen.findByText("new store")).toBeTruthy();
     expect(screen.getByText("All 2 lines")).toBeTruthy();
-    expect(screen.getByText("More file diffs load as you scroll.")).toBeTruthy();
-    expect(screen.queryByText("stacked diff panel")).toBeNull();
-
     fireEvent.click(screen.getByText("All 2 lines"));
     expect((await screen.findAllByText("line 11")).length).toBeGreaterThan(0);
 
@@ -773,6 +770,9 @@ line 20
     Object.defineProperty(scrollContainer, "scrollTop", { configurable: true, value: 1320 });
     fireEvent.scroll(scrollContainer);
 
+    await waitFor(() => {
+      expect(screen.queryByRole("button", { name: "Load more" })).toBeNull();
+    });
     expect(await screen.findByText("stacked diff panel")).toBeTruthy();
   });
 
