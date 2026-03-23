@@ -19,6 +19,7 @@ import {
   type UnifiedDiffCollapsedRow,
   type UnifiedDiffLineRow,
 } from "./git-diff";
+import { highlightDiffRows, type HighlightedDiffLineMap } from "./shiki-highlight";
 import { useWorkspaceStore } from "./store";
 
 const statusPollIntervalMs = 4_000;
@@ -105,7 +106,6 @@ export function GitDiffSidebar() {
     <aside className="git-diff-sidebar" aria-label="Git diff sidebar">
       <header className="git-diff-sidebar-header">
         <div className="git-diff-sidebar-header-copy">
-          <div className="eyebrow">Git Diff</div>
           <h2>{activeWindow.machineName}</h2>
           <div className="git-diff-sidebar-header-meta">
             <span
@@ -300,7 +300,7 @@ function GitDiffFileCard({
 
   return (
     <article ref={cardRef} className="git-diff-file-card">
-      <FilePanelHeader diff={diffQuery.data} file={file} repoRoot={repoRoot} />
+      <FilePanelHeader diff={diffQuery.data} file={file} />
 
       {!shouldFetchDiff ? (
         <SidebarStateCard
@@ -334,7 +334,7 @@ function GitDiffFileCard({
           <p>{diffQuery.data.message ?? "Fascinate cannot render this file as inline text."}</p>
         </div>
       ) : parsedDiff && parsedDiff.rows.length > 0 ? (
-        <UnifiedDiffRows rows={parsedDiff.rows} />
+        <UnifiedDiffRows path={file.path} rows={parsedDiff.rows} />
       ) : (
         <div className="git-diff-nonrenderable">
           <strong>No inline hunks available</strong>
@@ -348,51 +348,77 @@ function GitDiffFileCard({
 function FilePanelHeader({
   diff,
   file,
-  repoRoot,
 }: {
   diff?: GitFileDiff;
   file: GitChangedFile;
-  repoRoot: string;
 }) {
   const displayName = useMemo(() => file.path.split("/").at(-1) ?? file.path, [file.path]);
 
   return (
     <div className="git-diff-file-header">
       <div className="git-diff-file-header-copy">
+        <div className="git-diff-file-header-title">
         <strong>{displayName}</strong>
         <span title={file.path}>{file.path}</span>
+        </div>
       </div>
       <div className="git-diff-file-header-meta">
-        <span className={`git-diff-file-kind git-diff-file-kind-${file.kind}`}>
-          {formatFileKind(file.kind)}
-        </span>
         {typeof diff?.additions === "number" ? (
           <span className="git-diff-stat git-diff-stat-added">+{diff.additions}</span>
         ) : null}
         {typeof diff?.deletions === "number" ? (
           <span className="git-diff-stat git-diff-stat-deleted">-{diff.deletions}</span>
         ) : null}
-        <span className="git-diff-file-context" title={repoRoot}>
-          {file.previous_path ? `${file.previous_path} -> ${file.path}` : repoRoot}
-        </span>
       </div>
     </div>
   );
 }
 
-function UnifiedDiffRows({ rows }: { rows: ParsedGitDiff["rows"] }) {
+function UnifiedDiffRows({
+  path,
+  rows,
+}: {
+  path: string;
+  rows: ParsedGitDiff["rows"];
+}) {
   const [expandedRows, setExpandedRows] = useState<Record<string, boolean>>({});
+  const [highlightedLines, setHighlightedLines] = useState<HighlightedDiffLineMap>({});
+  const lineRows = useMemo(() => collectLineRows(rows), [rows]);
 
   useEffect(() => {
     setExpandedRows({});
   }, [rows]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setHighlightedLines({});
+    if (lineRows.length === 0) {
+      return () => {
+        cancelled = true;
+      };
+    }
+    void highlightDiffRows(path, lineRows)
+      .then((nextLines) => {
+        if (!cancelled) {
+          setHighlightedLines(nextLines);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setHighlightedLines({});
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [lineRows, path]);
 
   return (
     <div className="git-diff-unified" role="table" aria-label="Unified diff">
       {rows.map((row) =>
         row.type === "collapsed" ? (
           expandedRows[row.id] ? (
-            <ExpandedContextRows key={row.id} rows={row.rows} />
+            <ExpandedContextRows key={row.id} highlightedLines={highlightedLines} rows={row.rows} />
           ) : (
             <CollapsedContextRow
               key={row.id}
@@ -401,18 +427,24 @@ function UnifiedDiffRows({ rows }: { rows: ParsedGitDiff["rows"] }) {
             />
           )
         ) : (
-          <UnifiedDiffLine key={row.id} row={row} />
+          <UnifiedDiffLine key={row.id} highlightedLine={highlightedLines[row.id]} row={row} />
         ),
       )}
     </div>
   );
 }
 
-function ExpandedContextRows({ rows }: { rows: UnifiedDiffLineRow[] }) {
+function ExpandedContextRows({
+  highlightedLines,
+  rows,
+}: {
+  highlightedLines: HighlightedDiffLineMap;
+  rows: UnifiedDiffLineRow[];
+}) {
   return (
     <>
       {rows.map((row) => (
-        <UnifiedDiffLine key={row.id} row={row} />
+        <UnifiedDiffLine key={row.id} highlightedLine={highlightedLines[row.id]} row={row} />
       ))}
     </>
   );
@@ -437,14 +469,32 @@ function CollapsedContextRow({
   );
 }
 
-function UnifiedDiffLine({ row }: { row: UnifiedDiffLineRow }) {
+function UnifiedDiffLine({
+  highlightedLine,
+  row,
+}: {
+  highlightedLine?: HighlightedDiffLineMap[string];
+  row: UnifiedDiffLineRow;
+}) {
   const lineNumber = row.kind === "delete" ? row.oldLineNumber : row.newLineNumber ?? row.oldLineNumber;
 
   return (
     <div className={`git-diff-unified-row git-diff-unified-row-${row.kind}`} role="row">
       <div className="git-diff-unified-gutter">{lineNumber ?? ""}</div>
       <div className="git-diff-unified-code">
-        <code>{row.text}</code>
+        <code>
+          {highlightedLine && highlightedLine.length > 0
+            ? highlightedLine.map((token, index) => (
+                <span
+                  key={`${row.id}-${index}`}
+                  className="git-diff-token"
+                  style={tokenStyle(token.fontStyle, token.color)}
+                >
+                  {token.content}
+                </span>
+              ))
+            : row.text}
+        </code>
       </div>
     </div>
   );
@@ -476,19 +526,23 @@ function SidebarStateCard({
   );
 }
 
-function formatFileKind(kind: string) {
-  switch (kind) {
-    case "added":
-      return "A";
-    case "deleted":
-      return "D";
-    case "renamed":
-      return "R";
-    case "copied":
-      return "C";
-    case "untracked":
-      return "??";
-    default:
-      return "M";
+function collectLineRows(rows: ParsedGitDiff["rows"]) {
+  const lineRows: UnifiedDiffLineRow[] = [];
+  for (const row of rows) {
+    if (row.type === "line") {
+      lineRows.push(row);
+      continue;
+    }
+    lineRows.push(...row.rows);
   }
+  return lineRows;
+}
+
+function tokenStyle(fontStyle: number | undefined, color: string | undefined) {
+  return {
+    color,
+    fontStyle: fontStyle && (fontStyle & 1) !== 0 ? "italic" : "normal",
+    fontWeight: fontStyle && (fontStyle & 2) !== 0 ? 700 : 400,
+    textDecoration: fontStyle && (fontStyle & 4) !== 0 ? "underline" : "none",
+  } as const;
 }

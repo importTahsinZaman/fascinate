@@ -752,6 +752,7 @@ line 20
     fireEvent.click(screen.getByRole("button", { name: "Open git diff for m-1 shell" }));
 
     expect(await screen.findByRole("heading", { name: "m-1" })).toBeTruthy();
+    expect(screen.queryByText(/^Git Diff$/)).toBeNull();
     expect(await screen.findByText("main")).toBeTruthy();
     expect((await screen.findAllByText("web/src/app.tsx")).length).toBeGreaterThan(0);
     expect((await screen.findAllByText("web/src/store.ts")).length).toBeGreaterThan(0);
