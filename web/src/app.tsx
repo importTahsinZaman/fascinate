@@ -1,4 +1,4 @@
-import { Suspense, lazy, startTransition, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Suspense, lazy, startTransition, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { Camera, GitFork, Trash, X } from "@phosphor-icons/react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -24,6 +24,7 @@ import {
   type WorkspaceViewport,
   type WorkspaceWindow,
 } from "./api";
+import { getMachineColorStyle, getMachineColorStyles } from "./machine-colors";
 import { useWorkspaceStore } from "./store";
 
 const TerminalView = lazy(async () => import("./terminal").then((module) => ({ default: module.TerminalView })));
@@ -243,6 +244,10 @@ function CommandCenter() {
   });
 
   const machineList = machinesQuery.data ?? [];
+  const machineColorStyles = useMemo(
+    () => getMachineColorStyles([...machineList.map((machine) => machine.name), ...windows.map((window) => window.machineName)]),
+    [machineList, windows],
+  );
   const snapshotList = snapshotsQuery.data ?? [];
   const envList = envVarsQuery.data ?? [];
   const windowsByMachine = useMemo(() => {
@@ -560,6 +565,7 @@ function CommandCenter() {
       <WorkspaceAutosave enabled={workspaceQuery.isSuccess} />
       <div className="command-center-workspace">
         <WorkspaceCanvas
+          machineColorStyles={machineColorStyles}
           closingShellIDs={closingShellIDs}
           onCloseShell={(window) => closeShellWindow(window)}
         />
@@ -587,9 +593,14 @@ function CommandCenter() {
                 {machineList.map((machine) => {
                   const machineWindows = windowsByMachine.get(machine.name) ?? [];
                   return (
-                    <article key={machine.id} className="machine-card">
+                    <article
+                      key={machine.id}
+                      className="machine-card"
+                      style={machineColorStyles[machine.name] ?? getMachineColorStyle(machine.name)}
+                    >
                       <div className="machine-card-header">
-                        <div>
+                        <div className="machine-card-title">
+                          <span className="machine-color-dot" aria-hidden="true" />
                           <strong>{machine.name}</strong>
                         </div>
                         <div className="actions">
@@ -637,7 +648,7 @@ function CommandCenter() {
                               const shellLabel = formatShellListLabel(windowCwds[window.id], index + 1);
                               return (
                                 <div key={window.id} className="machine-shell-row">
-                              <button
+                                  <button
                                     type="button"
                                     className="machine-shell-focus"
                                     onClick={() => focusShellWindow(window.id)}
@@ -777,9 +788,11 @@ function WorkspaceAutosave({ enabled }: { enabled: boolean }) {
 }
 
 function WorkspaceCanvas({
+  machineColorStyles,
   closingShellIDs,
   onCloseShell,
 }: {
+  machineColorStyles: Record<string, CSSProperties>;
   closingShellIDs: string[];
   onCloseShell: (window: WorkspaceWindow) => Promise<void>;
 }) {
@@ -1092,6 +1105,7 @@ function WorkspaceCanvas({
             <WindowFrame
               key={window.id}
               window={window}
+              machineColorStyle={machineColorStyles[window.machineName] ?? getMachineColorStyle(window.machineName)}
               onClose={() => {
                 void onCloseShell(window);
               }}
@@ -1130,6 +1144,7 @@ function formatShellListLabel(cwd: string | undefined, index: number) {
 
 function WindowFrame({
   window: layoutWindow,
+  machineColorStyle,
   children,
   onClose,
   isClosing,
@@ -1139,6 +1154,7 @@ function WindowFrame({
   toCanvasPoint,
 }: {
   window: WorkspaceWindow;
+  machineColorStyle: CSSProperties;
   children: ReactNode;
   onClose: () => void;
   isClosing: boolean;
@@ -1171,6 +1187,7 @@ function WindowFrame({
     <div
       className="window-frame"
       style={{
+        ...machineColorStyle,
         transform: `translate3d(${layoutWindow.x}px, ${layoutWindow.y}px, 0)`,
         width: layoutWindow.width,
         height: layoutWindow.height,
@@ -1188,35 +1205,31 @@ function WindowFrame({
             y: point.y - layoutWindow.y,
           };
         }}
+        onDoubleClick={() => {
+          onRequestViewportFocus();
+        }}
       >
         <div className="window-header-actions window-header-actions-start">
           <button
-            className="window-header-button window-header-button-danger"
+            className="window-header-button window-header-button-icon window-header-button-danger"
             type="button"
             aria-label="Close shell"
             title="Close shell"
             onPointerDown={(event) => event.stopPropagation()}
+            onDoubleClick={(event) => event.stopPropagation()}
             onClick={onClose}
             disabled={isClosing}
           >
-            Close
+            <X className="icon-svg" weight="regular" />
           </button>
         </div>
         <div className="window-header-title">
-          <strong>{layoutWindow.title}</strong>
+          <div className="window-header-machine-title">
+            <span className="machine-color-dot" aria-hidden="true" />
+            <strong>{layoutWindow.title}</strong>
+          </div>
         </div>
-        <div className="window-header-actions window-header-actions-end">
-          <button
-            className="window-header-button window-header-button-focus"
-            type="button"
-            aria-label="Focus shell"
-            title="Focus shell"
-            onPointerDown={(event) => event.stopPropagation()}
-            onClick={onRequestViewportFocus}
-          >
-            Focus
-          </button>
-        </div>
+        <div className="window-header-actions window-header-actions-end" aria-hidden="true" />
       </header>
       <div className="window-body">{children}</div>
     </div>
