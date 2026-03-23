@@ -748,6 +748,10 @@ func persistentGuestShellCommand(tmuxSession, shellCommand string) string {
 		"fi",
 		`tmux set-option -t "$session" status off >/dev/null 2>&1 || true`,
 		`tmux set-option -t "$session" mouse on >/dev/null 2>&1 || true`,
+		`cwd=$(tmux display-message -p -t "$session" '#{pane_current_path}' 2>/dev/null || true)`,
+		`if [ -n "$cwd" ]; then`,
+		`  printf '\033]1337;FascinateCwd=%s\a' "$cwd"`,
+		"fi",
 		`exec tmux attach-session -t "$session"`,
 	}, "\n")
 }

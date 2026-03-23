@@ -9,6 +9,7 @@ type Props = {
   title: string;
   sessionId?: string;
   onSessionId: (sessionId: string) => void;
+  onCwdChange?: (cwd: string) => void;
 };
 
 type TerminalStats = {
@@ -19,7 +20,11 @@ type TerminalStats = {
   note: string | null;
 };
 
-export function TerminalView({ machineName, title, sessionId, onSessionId }: Props) {
+const cwdSequencePrefix = "\u001b]1337;FascinateCwd=";
+const ansiSequencePattern = /\u001b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|[ -/]*[@-~])/g;
+const promptPathPattern = /^[^\s@]+@[^:\s]+:(.+?)[#$]\s?$/;
+
+export function TerminalView({ machineName, title, sessionId, onSessionId, onCwdChange }: Props) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -29,6 +34,9 @@ export function TerminalView({ machineName, title, sessionId, onSessionId }: Pro
   const webglAddonRef = useRef<WebglAddon | null>(null);
   const webglContextLossRef = useRef<{ dispose(): void } | null>(null);
   const sessionIdRef = useRef(sessionId ?? "");
+  const decoderRef = useRef<TextDecoder | null>(null);
+  const pendingMetadataRef = useRef("");
+  const promptLineRef = useRef("");
   const [stats, setStats] = useState<TerminalStats>({
     status: "connecting",
     attachMs: null,
@@ -40,6 +48,9 @@ export function TerminalView({ machineName, title, sessionId, onSessionId }: Pro
   const label = useMemo(() => `${title} (${machineName})`, [machineName, title]);
   const persistSessionId = useEffectEvent((value: string) => {
     onSessionId(value);
+  });
+  const persistCwd = useEffectEvent((value: string) => {
+    onCwdChange?.(value);
   });
 
   useEffect(() => {
@@ -107,6 +118,9 @@ export function TerminalView({ machineName, title, sessionId, onSessionId }: Pro
       resizeListenerRef.current = null;
       webglContextLossRef.current = null;
       webglAddonRef.current = null;
+      decoderRef.current = null;
+      pendingMetadataRef.current = "";
+      promptLineRef.current = "";
     };
   }, []);
 
@@ -213,8 +227,22 @@ export function TerminalView({ machineName, title, sessionId, onSessionId }: Pro
               attachMs: Math.round(performance.now() - startedAt),
             }));
           }
-          const chunk = new Uint8Array(event.data as ArrayBuffer);
-          terminalRef.current?.write(chunk);
+          const decoder = decoderRef.current ?? new TextDecoder();
+          decoderRef.current = decoder;
+          const decodedChunk = decoder.decode(new Uint8Array(event.data as ArrayBuffer), { stream: true });
+          const parsedChunk = parseTerminalMetadata(pendingMetadataRef.current + decodedChunk);
+          pendingMetadataRef.current = parsedChunk.pending;
+          if (parsedChunk.cwd) {
+            persistCwd(parsedChunk.cwd);
+          }
+          if (parsedChunk.output !== "") {
+            terminalRef.current?.write(parsedChunk.output);
+            const promptMetadata = detectPromptPath(promptLineRef.current, parsedChunk.output);
+            promptLineRef.current = promptMetadata.line;
+            if (promptMetadata.cwd) {
+              persistCwd(promptMetadata.cwd);
+            }
+          }
         });
 
         socket.addEventListener("close", () => {
@@ -282,4 +310,81 @@ export function TerminalView({ machineName, title, sessionId, onSessionId }: Pro
       <div className="terminal-host" ref={hostRef} />
     </div>
   );
+}
+
+function parseTerminalMetadata(chunk: string) {
+  let output = "";
+  let cwd: string | undefined;
+  let index = 0;
+
+  while (index < chunk.length) {
+    const nextSequence = findNextMetadataSequence(chunk, index);
+    if (!nextSequence) {
+      output += chunk.slice(index);
+      return { output, pending: "", cwd };
+    }
+
+    output += chunk.slice(index, nextSequence.start);
+    const contentStart = nextSequence.start + nextSequence.prefix.length;
+    const bellIndex = chunk.indexOf("\u0007", contentStart);
+    const stringTerminatorIndex = chunk.indexOf("\u001b\\", contentStart);
+    let sequenceEnd = -1;
+    let terminatorLength = 0;
+
+    if (bellIndex !== -1 && (stringTerminatorIndex === -1 || bellIndex < stringTerminatorIndex)) {
+      sequenceEnd = bellIndex;
+      terminatorLength = 1;
+    } else if (stringTerminatorIndex !== -1) {
+      sequenceEnd = stringTerminatorIndex;
+      terminatorLength = 2;
+    }
+
+    if (sequenceEnd === -1) {
+      return { output, pending: chunk.slice(nextSequence.start), cwd };
+    }
+
+    const value = chunk.slice(contentStart, sequenceEnd).trim();
+    if (nextSequence.prefix === cwdSequencePrefix) {
+      cwd = value;
+    }
+    index = sequenceEnd + terminatorLength;
+  }
+
+  return { output, pending: "", cwd };
+}
+
+function findNextMetadataSequence(chunk: string, index: number) {
+  const cwdStart = chunk.indexOf(cwdSequencePrefix, index);
+  if (cwdStart === -1) {
+    return null;
+  }
+  return { start: cwdStart, prefix: cwdSequencePrefix };
+}
+
+function detectPromptPath(previousLine: string, output: string) {
+  const plainText = output.replace(ansiSequencePattern, "");
+  if (plainText === "") {
+    return { line: previousLine, cwd: null as string | null };
+  }
+
+  const segments = plainText.split(/\r\n|\n|\r/g);
+  let currentLine = previousLine;
+  for (let index = 0; index < segments.length; index += 1) {
+    const segment = segments[index];
+    if (index > 0) {
+      currentLine = "";
+    }
+    currentLine += segment;
+  }
+
+  const normalizedLine = promptLineRefSafeguard(currentLine);
+  const match = normalizedLine.match(promptPathPattern);
+  return {
+    line: normalizedLine,
+    cwd: match?.[1]?.trim() || null,
+  };
+}
+
+function promptLineRefSafeguard(value: string) {
+  return value.replace(/\u0000/g, "").slice(-512);
 }

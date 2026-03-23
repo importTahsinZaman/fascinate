@@ -142,6 +142,7 @@ function CommandCenter() {
   const hydrate = useWorkspaceStore((state) => state.hydrate);
   const openTerminal = useWorkspaceStore((state) => state.openTerminal);
   const windows = useWorkspaceStore((state) => state.windows);
+  const windowCwds = useWorkspaceStore((state) => state.windowCwds);
   const closeWindow = useWorkspaceStore((state) => state.closeWindow);
   const focusWindow = useWorkspaceStore((state) => state.focusWindow);
 
@@ -436,8 +437,14 @@ function CommandCenter() {
                       >
                         Restore
                       </button>
-                      <button className="danger" type="button" onClick={() => deleteSnapshotMutation.mutate(snapshot.name)}>
-                        Delete
+                      <button
+                        className="icon-action-button danger"
+                        type="button"
+                        aria-label={`Delete snapshot ${snapshot.name}`}
+                        title={`Delete snapshot ${snapshot.name}`}
+                        onClick={() => deleteSnapshotMutation.mutate(snapshot.name)}
+                      >
+                        <X className="icon-svg" weight="regular" />
                       </button>
                     </div>
                   </article>
@@ -599,38 +606,41 @@ function CommandCenter() {
                         </div>
                       </div>
                       <div className="machine-card-shells">
-                        <div className="machine-card-shells-header">
-                          <span className="machine-card-shells-title">Shells</span>
-                          <button type="button" onClick={() => openMachineShell(machine.name)}>
-                            New shell
-                          </button>
-                        </div>
                         {machineWindows.length === 0 ? (
                           <p className="muted">No open shells.</p>
                         ) : (
                           <div className="machine-shell-list">
-                            {machineWindows.map((window) => (
-                              <div key={window.id} className="machine-shell-row">
-                                <button
-                                  type="button"
-                                  className="machine-shell-focus"
-                                  onClick={() => focusWindow(window.id)}
-                                >
-                                  {window.title}
-                                </button>
-                                <button
-                                  type="button"
-                                  className="icon-action-button danger"
-                                  aria-label={`Close ${window.title}`}
-                                  title={`Close ${window.title}`}
-                                  onClick={() => closeShellWindow(window)}
-                                >
-                                  <X className="icon-svg" weight="regular" />
-                                </button>
-                              </div>
-                            ))}
+                            {machineWindows.map((window, index) => {
+                              const shellLabel = formatShellListLabel(windowCwds[window.id], index + 1);
+                              return (
+                                <div key={window.id} className="machine-shell-row">
+                                  <button
+                                    type="button"
+                                    className="machine-shell-focus"
+                                    onClick={() => focusWindow(window.id)}
+                                    title={windowCwds[window.id] ?? shellLabel}
+                                  >
+                                    <span className="machine-shell-label">{shellLabel}</span>
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="machine-shell-delete"
+                                    aria-label={`Delete ${shellLabel}`}
+                                    title={`Delete ${shellLabel}`}
+                                    onClick={() => closeShellWindow(window)}
+                                  >
+                                    <X className="icon-svg" weight="regular" />
+                                  </button>
+                                </div>
+                              );
+                            })}
                           </div>
                         )}
+                        <div className="machine-card-shells-actions">
+                          <button type="button" onClick={() => openMachineShell(machine.name)}>
+                            New shell
+                          </button>
+                        </div>
                       </div>
                     </article>
                   );
@@ -642,20 +652,27 @@ function CommandCenter() {
         </div>
 
         <footer className="control-sidebar-footer">
-          <button type="button" onClick={() => setModal({ type: "env-vars" })}>
-            Manage env vars
-          </button>
-          <button type="button" onClick={() => setModal({ type: "snapshots" })}>
-            Snapshots
-          </button>
-          <button
-            className="sidebar-signout-button"
-            type="button"
-            onClick={() => logoutMutation.mutate()}
-            disabled={logoutMutation.isPending}
-          >
-            {logoutMutation.isPending ? "Signing out…" : "Sign out"}
-          </button>
+          <div className="control-sidebar-manage">
+            <span className="control-sidebar-manage-label">Manage</span>
+            <div className="control-sidebar-manage-actions">
+              <button type="button" onClick={() => setModal({ type: "env-vars" })}>
+                Env vars
+              </button>
+              <button type="button" onClick={() => setModal({ type: "snapshots" })}>
+                Snapshots
+              </button>
+            </div>
+          </div>
+          <div className="sidebar-signout-row">
+            <button
+              className="sidebar-signout-button"
+              type="button"
+              onClick={() => logoutMutation.mutate()}
+              disabled={logoutMutation.isPending}
+            >
+              {logoutMutation.isPending ? "Signing out…" : "Sign out"}
+            </button>
+          </div>
         </footer>
       </aside>
       {renderModal()}
@@ -740,6 +757,7 @@ function WorkspaceCanvas() {
   const focusWindow = useWorkspaceStore((state) => state.focusWindow);
   const moveWindow = useWorkspaceStore((state) => state.moveWindow);
   const setWindowSession = useWorkspaceStore((state) => state.setWindowSession);
+  const setWindowCwd = useWorkspaceStore((state) => state.setWindowCwd);
 
   const workspaceViewportRef = useRef<HTMLDivElement | null>(null);
   const viewportRef = useRef(viewport);
@@ -997,6 +1015,7 @@ function WorkspaceCanvas() {
                   title={window.title}
                   sessionId={window.sessionId}
                   onSessionId={(sessionId) => setWindowSession(window.id, sessionId)}
+                  onCwdChange={(cwd) => setWindowCwd(window.id, cwd)}
                 />
               </Suspense>
             </WindowFrame>
@@ -1005,6 +1024,13 @@ function WorkspaceCanvas() {
       </div>
     </section>
   );
+}
+
+function formatShellListLabel(cwd: string | undefined, index: number) {
+  if (!cwd) {
+    return `Shell ${index}`;
+  }
+  return cwd.replace(/^\/home\/ubuntu(?=\/|$)/, "~");
 }
 
 function WindowFrame({

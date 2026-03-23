@@ -149,6 +149,12 @@ func TestPersistentGuestShellCommandDisablesTmuxStatusBar(t *testing.T) {
 	if !strings.Contains(command, `tmux set-option -t "$session" mouse on`) {
 		t.Fatalf("expected tmux mouse mode to be enabled, command was %q", command)
 	}
+	if !strings.Contains(command, `#{pane_current_path}`) {
+		t.Fatalf("expected tmux current path lookup to be included, command was %q", command)
+	}
+	if !strings.Contains(command, `FascinateCwd=`) {
+		t.Fatalf("expected cwd metadata sequence to be emitted, command was %q", command)
+	}
 }
 
 func TestExpectedSessionEndErrorTreatsNormalWebsocketCloseAsClean(t *testing.T) {

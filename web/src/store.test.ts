@@ -15,7 +15,7 @@ function overlaps(
 
 describe("workspace store", () => {
   beforeEach(() => {
-    useWorkspaceStore.setState({ windows: [], hydrated: false });
+    useWorkspaceStore.setState({ windows: [], windowCwds: {}, hydrated: false });
   });
 
   it("opens terminals as distinct windows", () => {
@@ -51,8 +51,8 @@ describe("workspace store", () => {
 
     expect(useWorkspaceStore.getState().windows).toHaveLength(1);
     expect(useWorkspaceStore.getState().windows[0].sessionId).toBe("term-1");
-    expect(useWorkspaceStore.getState().windows[0].width).toBe(1144);
-    expect(useWorkspaceStore.getState().windows[0].height).toBe(736);
+    expect(useWorkspaceStore.getState().windows[0].width).toBe(1297);
+    expect(useWorkspaceStore.getState().windows[0].height).toBe(907);
     expect(useWorkspaceStore.getState().viewport).toEqual({ x: 120, y: 96, scale: 1 });
   });
 
@@ -63,6 +63,26 @@ describe("workspace store", () => {
     useWorkspaceStore.getState().setWindowSession(windowId, "term-1");
 
     expect(useWorkspaceStore.getState().windows[0].sessionId).toBe("term-1");
+  });
+
+  it("stores cwd metadata separately from persisted window layout", () => {
+    useWorkspaceStore.getState().openTerminal("m-1");
+    const windowId = useWorkspaceStore.getState().windows[0].id;
+
+    useWorkspaceStore.getState().setWindowCwd(windowId, "/home/ubuntu/space-shooter");
+
+    expect(useWorkspaceStore.getState().windowCwds[windowId]).toBe("/home/ubuntu/space-shooter");
+    expect(useWorkspaceStore.getState().serialize().windows[0]).not.toHaveProperty("cwd");
+  });
+
+  it("clears cwd metadata when a window closes", () => {
+    useWorkspaceStore.getState().openTerminal("m-1");
+    const windowId = useWorkspaceStore.getState().windows[0].id;
+
+    useWorkspaceStore.getState().setWindowCwd(windowId, "/home/ubuntu/space-shooter");
+    useWorkspaceStore.getState().closeWindow(windowId);
+
+    expect(useWorkspaceStore.getState().windowCwds[windowId]).toBeUndefined();
   });
 
   it("persists canvas viewport state", () => {

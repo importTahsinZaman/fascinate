@@ -6,9 +6,14 @@ import { App } from "./app";
 import { useWorkspaceStore } from "./store";
 
 vi.mock("./terminal", () => ({
-  TerminalView: ({ machineName, title }: { machineName: string; title: string }) => (
-    <div data-testid={`terminal-${machineName}`}>{title}</div>
-  ),
+  TerminalView: ({
+    machineName,
+    title,
+  }: {
+    machineName: string;
+    title: string;
+    onCwdChange?: (cwd: string) => void;
+  }) => <div data-testid={`terminal-${machineName}`}>{title}</div>,
 }));
 
 function renderApp() {
@@ -38,6 +43,7 @@ describe("App", () => {
   beforeEach(() => {
     useWorkspaceStore.setState({
       windows: [],
+      windowCwds: {},
       viewport: { x: 120, y: 96, scale: 1 },
       hydrated: false,
     });
@@ -129,7 +135,7 @@ describe("App", () => {
 
     expect(await screen.findByRole("heading", { name: "Machines" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "New machine" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Manage env vars" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Env vars" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Snapshots" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Sign out" })).toBeTruthy();
 
@@ -145,7 +151,7 @@ describe("App", () => {
     expect(await screen.findByRole("dialog", { name: "Create snapshot" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Close modal" }));
 
-    fireEvent.click(screen.getByRole("button", { name: "Manage env vars" }));
+    fireEvent.click(screen.getByRole("button", { name: "Env vars" }));
     expect(await screen.findByRole("dialog", { name: "Environment variables" })).toBeTruthy();
     expect(screen.getByText("FRONTEND_URL")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Close modal" }));
@@ -158,6 +164,7 @@ describe("App", () => {
     fireEvent.click(screen.getByRole("button", { name: "New shell" }));
 
     expect(await screen.findByTestId("terminal-m-1")).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Shell 1" })).toBeTruthy();
 
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(

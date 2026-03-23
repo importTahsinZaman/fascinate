@@ -218,4 +218,41 @@ describe("TerminalView", () => {
     });
     expect(onSessionId).toHaveBeenCalledWith("term-1");
   });
+
+  it("updates cwd metadata from the terminal stream", async () => {
+    const onSessionId = vi.fn();
+    const onCwdChange = vi.fn();
+
+    render(
+      <TerminalView
+        machineName="m-1"
+        title="m-1 shell"
+        onSessionId={onSessionId}
+        onCwdChange={onCwdChange}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(createTerminalSession).toHaveBeenCalledWith("m-1", 120, 40);
+    });
+
+    await act(async () => {
+      MockWebSocket.instances[0].emit("open");
+    });
+
+    await act(async () => {
+      MockWebSocket.instances[0].emit("message", {
+        data: new TextEncoder().encode("\u001b]1337;FascinateCwd=/home/ubuntu/space-shooter\u0007").buffer,
+      });
+    });
+
+    await act(async () => {
+      MockWebSocket.instances[0].emit("message", {
+        data: new TextEncoder().encode("\u001b(Bubuntu@m-1:~/space-shooter$ ").buffer,
+      });
+    });
+
+    expect(onCwdChange).toHaveBeenNthCalledWith(1, "/home/ubuntu/space-shooter");
+    expect(onCwdChange).toHaveBeenNthCalledWith(2, "~/space-shooter");
+  });
 });

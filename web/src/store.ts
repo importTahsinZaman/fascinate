@@ -3,11 +3,13 @@ import type { WorkspaceLayout, WorkspaceViewport, WorkspaceWindow } from "./api"
 
 type WorkspaceState = {
   windows: WorkspaceWindow[];
+  windowCwds: Record<string, string>;
   viewport: WorkspaceViewport;
   hydrated: boolean;
   hydrate: (layout: WorkspaceLayout) => void;
   openTerminal: (machineName: string, title?: string) => void;
   setWindowSession: (id: string, sessionId: string) => void;
+  setWindowCwd: (id: string, cwd: string) => void;
   closeWindow: (id: string) => void;
   focusWindow: (id: string) => void;
   moveWindow: (id: string, x: number, y: number) => void;
@@ -16,11 +18,12 @@ type WorkspaceState = {
 };
 
 const defaultViewport: WorkspaceViewport = { x: 120, y: 96, scale: 1 };
-const defaultWindowSize = { width: 1144, height: 736 };
+const defaultWindowSize = { width: 1297, height: 907 };
 const windowMargin = 36;
 
 export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   windows: [],
+  windowCwds: {},
   viewport: defaultViewport,
   hydrated: false,
   hydrate: (layout) =>
@@ -47,6 +50,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         : [];
       return {
         windows,
+        windowCwds: {},
         viewport: normalizeViewport(layout.viewport),
         hydrated: true,
       };
@@ -78,8 +82,36 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
           : item,
       ),
     })),
+  setWindowCwd: (id, cwd) =>
+    set((state) => {
+      const nextCwd = cwd.trim();
+      if (nextCwd === "") {
+        if (!(id in state.windowCwds)) {
+          return state;
+        }
+        const windowCwds = { ...state.windowCwds };
+        delete windowCwds[id];
+        return { windowCwds };
+      }
+      if (state.windowCwds[id] === nextCwd) {
+        return state;
+      }
+      return {
+        windowCwds: {
+          ...state.windowCwds,
+          [id]: nextCwd,
+        },
+      };
+    }),
   closeWindow: (id) =>
-    set((state) => ({ windows: state.windows.filter((item) => item.id !== id) })),
+    set((state) => {
+      const windowCwds = { ...state.windowCwds };
+      delete windowCwds[id];
+      return {
+        windows: state.windows.filter((item) => item.id !== id),
+        windowCwds,
+      };
+    }),
   focusWindow: (id) =>
     set((state) => {
       const nextZ = state.windows.reduce((max, item) => Math.max(max, item.z), 0) + 1;
