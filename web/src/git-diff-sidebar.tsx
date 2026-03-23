@@ -58,21 +58,6 @@ export function GitDiffSidebar() {
     setVisibleFileCount(initialDiffPageSize);
   }, [gitDiffSidebar.windowID, sessionId, cwd, statusQuery.data?.repo_root, deferredFiles.length]);
 
-  useEffect(() => {
-    const container = streamRef.current;
-    if (!container || statusQuery.data?.state !== "ready" || visibleFileCount >= deferredFiles.length) {
-      return;
-    }
-    if (container.clientHeight <= 0 || container.scrollHeight <= 0) {
-      return;
-    }
-    if (container.scrollHeight <= container.clientHeight + diffPagePreloadThresholdPx / 2) {
-      startTransition(() => {
-        setVisibleFileCount((current) => Math.min(deferredFiles.length, current + diffPageStep));
-      });
-    }
-  }, [deferredFiles.length, statusQuery.data?.state, visibleFileCount]);
-
   const visibleFiles = useMemo(
     () => deferredFiles.slice(0, visibleFileCount),
     [deferredFiles, visibleFileCount],
@@ -197,6 +182,19 @@ export function GitDiffSidebar() {
                   Showing {visibleFileCount} of {deferredFiles.length} changed file
                   {deferredFiles.length === 1 ? "" : "s"}.
                 </span>
+                <button
+                  type="button"
+                  className="git-diff-more-button"
+                  onClick={() =>
+                    startTransition(() => {
+                      setVisibleFileCount((current) =>
+                        Math.min(deferredFiles.length, current + diffPageStep),
+                      );
+                    })
+                  }
+                >
+                  Load more
+                </button>
               </div>
             ) : null}
           </section>
@@ -219,6 +217,35 @@ function GitDiffFileCard({
   repoRoot: string;
   sessionId: string;
 }) {
+  const cardRef = useRef<HTMLElement | null>(null);
+  const [shouldFetchDiff, setShouldFetchDiff] = useState(false);
+
+  useEffect(() => {
+    if (shouldFetchDiff) {
+      return;
+    }
+    const node = cardRef.current;
+    if (!node) {
+      return;
+    }
+    if (typeof IntersectionObserver === "undefined") {
+      setShouldFetchDiff(true);
+      return;
+    }
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (!entries.some((entry) => entry.isIntersecting)) {
+          return;
+        }
+        setShouldFetchDiff(true);
+        observer.disconnect();
+      },
+      { root: null, rootMargin: "480px 0px" },
+    );
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [shouldFetchDiff]);
+
   const diffQuery = useQuery({
     queryKey: [
       "terminal-git-diff",
@@ -241,7 +268,7 @@ function GitDiffFileCard({
         index_status: file.index_status,
         worktree_status: file.worktree_status,
       }),
-    enabled: Boolean(sessionId && cwd && repoRoot),
+    enabled: Boolean(sessionId && cwd && repoRoot && shouldFetchDiff),
     refetchOnWindowFocus: false,
     retry: false,
   });
@@ -254,10 +281,16 @@ function GitDiffFileCard({
   }, [diffQuery.data]);
 
   return (
-    <article className="git-diff-file-card">
+    <article ref={cardRef} className="git-diff-file-card">
       <FilePanelHeader branch={branch} diff={diffQuery.data} file={file} repoRoot={repoRoot} />
 
-      {diffQuery.isPending ? (
+      {!shouldFetchDiff ? (
+        <SidebarStateCard
+          title="Diff queued"
+          description="Scroll this file into view to load its unified patch."
+          compact
+        />
+      ) : diffQuery.isPending ? (
         <SidebarStateCard title="Loading file diff" description="Fetching this file patch." compact />
       ) : diffQuery.error ? (
         <SidebarStateCard
