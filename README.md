@@ -167,7 +167,7 @@ sudo ./ops/cloudhypervisor/build-base-image.sh
 
 The base image builder only prepares the raw Ubuntu cloud image. Fascinate installs the developer toolchain, Claude Code, Codex CLI, and GitHub CLI during VM first boot.
 
-If you want Fascinate to own port `22`, move host admin SSH first:
+If you want host admin SSH on port `2220`, move it explicitly:
 
 ```bash
 export FASCINATE_HOST_ADMIN_SSH_PORT=2220
@@ -176,7 +176,6 @@ sudo ./ops/host/configure-admin-ssh.sh
 
 After that:
 - host admin SSH uses `ssh -p 2220 root@fascinate.dev`
-- Fascinate can safely bind `:22`
 
 Deploy or redeploy the Fascinate service:
 
@@ -184,7 +183,6 @@ Deploy or redeploy the Fascinate service:
 export FASCINATE_BASE_DOMAIN=fascinate.dev
 export FASCINATE_ACME_EMAIL=you@example.com
 export FASCINATE_ADMIN_EMAILS=you@example.com
-export FASCINATE_SSH_ADDR=0.0.0.0:22
 sudo ./ops/host/install-control-plane.sh
 ```
 
@@ -222,7 +220,6 @@ Useful env vars:
 
 ```bash
 export FASCINATE_HTTP_ADDR=127.0.0.1:8080
-export FASCINATE_SSH_ADDR=127.0.0.1:2222
 export FASCINATE_DATA_DIR=./data
 export FASCINATE_DB_PATH=./data/fascinate.db
 export FASCINATE_BASE_DOMAIN=fascinate.dev
@@ -255,7 +252,6 @@ export FASCINATE_TOOL_AUTH_SYNC_INTERVAL=2m
 export FASCINATE_NODE_VERSION=latest
 export FASCINATE_GO_VERSION=latest
 export FASCINATE_NPM_VERSION=latest
-export FASCINATE_SSH_HOST_KEY_PATH=./data/ssh_host_ed25519_key
 export FASCINATE_HOST_ID=local-host
 export FASCINATE_HOST_NAME=local-host
 export FASCINATE_HOST_REGION=local
@@ -285,30 +281,9 @@ export FASCINATE_STRESS_RESTORE_NAME=stress-restore-$(date +%s)
 export FASCINATE_STRESS_FORK_NAME=stress-fork-$(date +%s)
 ```
 
-Seed an SSH key into the local SQLite DB:
+Open the browser command center at [https://fascinate.dev/app](https://fascinate.dev/app) or your local `/app` route. Browser sign-in uses email verification codes; no SSH key registration flow is required.
 
-```bash
-./bin/fascinate seed-ssh-key \
-  --email you@example.com \
-  --name laptop \
-  --public-key-file ~/.ssh/id_ed25519.pub
-```
-
-Then connect to the local SSH frontdoor:
-
-```bash
-ssh -p 2222 localhost machines
-```
-
-Or open an interactive shell:
-
-```bash
-ssh -p 2222 localhost
-```
-
-If the SSH key is unknown and email delivery is configured, the session opens a signup flow instead of rejecting the connection. After verification, the key is persisted and the dashboard opens in the same SSH session.
-
-If your host Caddy config forwards wildcard subdomains to `FASCINATE_HTTP_ADDR`, requests for `https://<machine>.fascinate.dev` are proxied to that machine's primary port. If nothing is listening yet, Fascinate serves a status page with the SSH shell command for that machine.
+If your host Caddy config forwards wildcard subdomains to `FASCINATE_HTTP_ADDR`, requests for `https://<machine>.fascinate.dev` are proxied to that machine's primary port. If nothing is listening yet, Fascinate serves a status page that points users back to the browser command center.
 
 New machines built from `fascinate-base` come with:
 - Ubuntu 24.04 packages upgraded to the latest versions available in the current Ubuntu repositories during VM first boot
@@ -434,7 +409,6 @@ Runtime notes:
 
 ## Next Milestones
 
-1. Add recovery and “attach another SSH key” flows for existing accounts.
-2. Add signup and email-code abuse guardrails such as rate limits and quotas around account creation.
-3. Improve snapshot and fork UX in the dashboard, including clearer retention and cleanup flows.
-4. Add more persistent tool-auth adapters beyond the current Claude, Codex, and GitHub session-state set.
+1. Add browser-auth recovery and email-code abuse guardrails such as rate limits and quotas around account access.
+2. Improve snapshot and fork UX in the command center, including clearer retention and cleanup flows.
+3. Add more persistent tool-auth adapters beyond the current Claude, Codex, and GitHub session-state set.

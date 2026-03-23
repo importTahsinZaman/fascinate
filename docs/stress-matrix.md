@@ -8,8 +8,8 @@ This document defines the current Fascinate product expectations and maps each e
 | --- | --- | --- |
 | VM create | `POST /v1/machines` returns quickly and the VM reaches `RUNNING` only after guest access is actually ready | `internal/controlplane/service_test.go`, `ops/host/smoke.sh`, `ops/host/stress.sh` |
 | Concurrent multi-user create | Simultaneous creates across different users do not collide in runtime network allocation, and per-user machine limits are enforced independently | `internal/runtime/cloudhypervisor/runtime_test.go`, manual live concurrent-load validation |
-| Guest readiness | A `RUNNING` machine has usable SSH access, expected guest tooling, and stable forwarders | `internal/sshfrontdoor/server_test.go`, `ops/host/smoke.sh`, `ops/host/stress.sh` |
-| Shell entry | Entering a VM through the frontdoor works without malformed shell handoff or early-boot race failures | `internal/sshfrontdoor/server_test.go`, `ops/host/smoke.sh`, `ops/host/stress.sh` |
+| Guest readiness | A `RUNNING` machine has usable guest access for browser terminals, expected guest tooling, and stable forwarders | `internal/browserterm/manager_test.go`, `ops/host/smoke.sh`, `ops/host/stress.sh` |
+| Shell entry | Opening a browser shell works without malformed handoff or early-boot guest race failures | `internal/browserterm/manager_test.go`, `ops/host/smoke.sh`, `ops/host/stress.sh` |
 | Public app routing | `https://<machine>.<base-domain>` reaches the current primary-port workload or the fallback "No services detected" page | `internal/httpapi/server_test.go`, `ops/host/smoke.sh`, `ops/host/smoke-snapshots.sh`, `ops/host/stress.sh` |
 | Local workloads | A VM can run a public app server, a local database process, and Docker containers at the same time | `ops/host/stress.sh` |
 | Heavier SQL workload | A VM can serve a live app backed by a Dockerized PostgreSQL workload with meaningful row volume and benchmark traffic | Manual live SQL workload validation |

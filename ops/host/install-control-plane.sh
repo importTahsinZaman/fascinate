@@ -63,7 +63,6 @@ write_env_file() {
 
   cat >"${ENV_FILE}" <<EOF_ENV
 FASCINATE_HTTP_ADDR=$(quote_env_value "${FASCINATE_HTTP_ADDR:-127.0.0.1:8080}")
-FASCINATE_SSH_ADDR=$(quote_env_value "${FASCINATE_SSH_ADDR:-0.0.0.0:2222}")
 FASCINATE_DATA_DIR=$(quote_env_value "${DATA_DIR}")
 FASCINATE_DB_PATH=$(quote_env_value "${FASCINATE_DB_PATH:-${DATA_DIR}/fascinate.db}")
 FASCINATE_BASE_DOMAIN=$(quote_env_value "${FASCINATE_BASE_DOMAIN:-}")
@@ -93,7 +92,6 @@ FASCINATE_DEFAULT_PRIMARY_PORT=$(quote_env_value "${FASCINATE_DEFAULT_PRIMARY_PO
 FASCINATE_TOOL_AUTH_DIR=$(quote_env_value "${FASCINATE_TOOL_AUTH_DIR:-${DATA_DIR}/tool-auth}")
 FASCINATE_TOOL_AUTH_KEY_PATH=$(quote_env_value "${FASCINATE_TOOL_AUTH_KEY_PATH:-${DATA_DIR}/tool_auth.key}")
 FASCINATE_TOOL_AUTH_SYNC_INTERVAL=$(quote_env_value "${FASCINATE_TOOL_AUTH_SYNC_INTERVAL:-2m}")
-FASCINATE_SSH_HOST_KEY_PATH=$(quote_env_value "${FASCINATE_SSH_HOST_KEY_PATH:-${DATA_DIR}/ssh_host_ed25519_key}")
 FASCINATE_HOST_ID=$(quote_env_value "$(default_host_id)")
 FASCINATE_HOST_NAME=$(quote_env_value "$(default_host_name)")
 FASCINATE_HOST_REGION=$(quote_env_value "${FASCINATE_HOST_REGION:-local}")
@@ -136,20 +134,6 @@ install_systemd_unit() {
   install -m 0644 "${REPO_ROOT}/ops/systemd/fascinate.service" "${SERVICE_PATH}"
 }
 
-maybe_open_firewall_port() {
-  local addr="${1}"
-  local port="${addr##*:}"
-  if [[ -z "${port}" || "${port}" == "${addr}" ]]; then
-    return 0
-  fi
-
-  if ! command -v ufw >/dev/null 2>&1; then
-    return 0
-  fi
-
-  ufw allow "${port}/tcp" >/dev/null
-}
-
 main() {
   require_root
   install_binary
@@ -165,7 +149,6 @@ main() {
   source "${ENV_FILE}"
   set +a
 
-  maybe_open_firewall_port "${FASCINATE_SSH_ADDR}"
   bash "${REPO_ROOT}/ops/host/write-caddyfile.sh"
 
   systemctl daemon-reload

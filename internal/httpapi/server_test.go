@@ -736,8 +736,8 @@ func TestMachineSubdomainShowsStatusPageWhenNoRuntimeAddress(t *testing.T) {
 	if body := rec.Body.String(); !strings.Contains(body, "No services detected") {
 		t.Fatalf("unexpected body: %q", body)
 	}
-	if body := rec.Body.String(); !strings.Contains(body, "ssh -tt fascinate.dev shell habits") {
-		t.Fatalf("expected shell command in body: %q", body)
+	if body := rec.Body.String(); !strings.Contains(body, "Open Fascinate to inspect the machine and start a browser shell.") {
+		t.Fatalf("expected browser guidance in body: %q", body)
 	}
 }
 

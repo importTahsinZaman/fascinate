@@ -12,16 +12,18 @@ Then come back and use it in three ways:
 
 1. As a glossary when you hit unfamiliar infrastructure terms.
 2. As a map when you need to find the right package to change.
-3. As a checklist before making control-plane, runtime, SSH, snapshot, or tool-auth changes.
+3. As a checklist before making control-plane, runtime, browser-terminal, snapshot, or tool-auth changes.
+
+Note: Fascinate is now browser-first. Historical references below to the old SSH frontdoor, Bubble Tea dashboard, or `seed-ssh-key` flow are obsolete and should be ignored if they have not been rewritten yet.
 
 ## What Fascinate Is
 
-Fascinate is a terminal-first control plane for persistent developer VMs.
+Fascinate is a browser-first command center for persistent developer VMs.
 
 In practical terms, it gives a user:
 
 - a persistent Linux VM
-- shell access to that VM through an SSH "front door"
+- shell access to that VM through the browser command center
 - a hosted app URL for the VM's main application port
 - full-VM snapshots
 - true forks created from snapshots
@@ -35,7 +37,7 @@ The codebase is not a generic cloud platform. It is a focused product with a cle
 - Cloud Hypervisor as the VM runtime
 - Linux network namespaces for per-VM isolation
 - an HTTP API
-- an SSH server plus a Bubble Tea dashboard
+- browser auth plus a browser terminal gateway
 - host-side storage for persisted auth bundles
 
 The shortest mental model is:
@@ -44,7 +46,7 @@ The shortest mental model is:
 - `internal/controlplane/hosts.go` decides which host should do the work
 - `internal/runtime/cloudhypervisor` makes it exist on the owning host
 - `internal/database` remembers product state
-- `internal/httpapi` and `internal/sshfrontdoor` let users interact with it
+- `internal/httpapi` and `internal/browserterm` let users interact with it
 
 ## Start With The Basics
 
@@ -302,7 +304,6 @@ Read `cmd/fascinate/main.go` first. It shows the entire surface area:
 - `migrate`
 - `runtime-machines`
 - `version`
-- `seed-ssh-key`
 - `netns-forward`
 
 The default command is `serve`.

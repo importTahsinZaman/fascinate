@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"html/template"
 	"net"
 	"net/http"
@@ -901,16 +900,16 @@ func withMachineProxy(cfg config.Config, machines machineManager, next http.Hand
 		machine, err := machines.GetPublicMachine(ctx, machineName)
 		if err != nil {
 			if errors.Is(err, database.ErrNotFound) || errors.Is(err, machineruntime.ErrMachineNotFound) {
-				writeMachinePage(w, http.StatusNotFound, host, "Unknown machine", "No machine with this name exists.", "")
+				writeMachinePage(w, http.StatusNotFound, host, "Unknown machine", "No machine with this name exists.")
 				return
 			}
-			writeMachinePage(w, http.StatusBadGateway, host, "Machine unavailable", err.Error(), "")
+			writeMachinePage(w, http.StatusBadGateway, host, "Machine unavailable", err.Error())
 			return
 		}
 
 		target, ok := machineUpstream(machine)
 		if !ok {
-			writeMachinePage(w, http.StatusOK, host, "No services detected", "This machine is running but nothing is listening yet.", machineShellCommand(machine.Name))
+			writeMachinePage(w, http.StatusOK, host, "No services detected", "This machine is running but nothing is listening yet. Open Fascinate to inspect the machine and start a browser shell.")
 			return
 		}
 
@@ -924,7 +923,7 @@ func withMachineProxy(cfg config.Config, machines machineManager, next http.Hand
 			}
 		}
 		proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
-			writeMachinePage(w, http.StatusOK, host, "No services detected", "This machine is running but nothing is listening yet.", machineShellCommand(machine.Name))
+			writeMachinePage(w, http.StatusOK, host, "No services detected", "This machine is running but nothing is listening yet. Open Fascinate to inspect the machine and start a browser shell.")
 		}
 		proxy.ServeHTTP(w, r)
 	})
@@ -946,14 +945,6 @@ func machineUpstream(machine controlplane.Machine) (*url.URL, bool) {
 	}, true
 }
 
-func machineShellCommand(name string) string {
-	name = strings.TrimSpace(name)
-	if name == "" {
-		return ""
-	}
-	return fmt.Sprintf("ssh -tt fascinate.dev shell %s", name)
-}
-
 func normalizeHost(value string) string {
 	value = strings.TrimSpace(value)
 	if value == "" {
@@ -968,7 +959,7 @@ func normalizeHost(value string) string {
 	return strings.ToLower(strings.TrimSuffix(value, "."))
 }
 
-func writeMachinePage(w http.ResponseWriter, status int, host, title, body, command string) {
+func writeMachinePage(w http.ResponseWriter, status int, host, title, body string) {
 	const page = `<!doctype html>
 <html lang="en">
 <head>
@@ -988,7 +979,6 @@ func writeMachinePage(w http.ResponseWriter, status int, host, title, body, comm
   <main>
     <h1>{{ .Title }}</h1>
     <p>{{ .Body }}</p>
-    {{ if .Command }}<pre>{{ .Command }}</pre>{{ end }}
   </main>
 </body>
 </html>`
@@ -998,9 +988,8 @@ func writeMachinePage(w http.ResponseWriter, status int, host, title, body, comm
 
 	tpl := template.Must(template.New("machine-page").Parse(page))
 	_ = tpl.Execute(w, map[string]string{
-		"Host":    host,
-		"Title":   title,
-		"Body":    body,
-		"Command": command,
+		"Host":  host,
+		"Title": title,
+		"Body":  body,
 	})
 }

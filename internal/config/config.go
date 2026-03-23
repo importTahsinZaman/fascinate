@@ -10,7 +10,6 @@ import (
 
 type Config struct {
 	HTTPAddr              string
-	SSHAddr               string
 	DataDir               string
 	DBPath                string
 	WebDistDir            string
@@ -46,7 +45,6 @@ type Config struct {
 	ToolAuthDir           string
 	ToolAuthKeyPath       string
 	ToolAuthSyncInterval  time.Duration
-	SSHHostKeyPath        string
 	ResendAPIKey          string
 	ResendBaseURL         string
 	EmailFrom             string
@@ -105,7 +103,6 @@ func Load() Config {
 
 	return Config{
 		HTTPAddr:              getenv("FASCINATE_HTTP_ADDR", "127.0.0.1:8080"),
-		SSHAddr:               getenv("FASCINATE_SSH_ADDR", "127.0.0.1:2222"),
 		DataDir:               dataDir,
 		DBPath:                dbPath,
 		WebDistDir:            getenv("FASCINATE_WEB_DIST_DIR", "./web/dist"),
@@ -141,7 +138,6 @@ func Load() Config {
 		ToolAuthDir:           toolAuthDir,
 		ToolAuthKeyPath:       toolAuthKeyPath,
 		ToolAuthSyncInterval:  getenvDuration("FASCINATE_TOOL_AUTH_SYNC_INTERVAL", 2*time.Minute),
-		SSHHostKeyPath:        getenv("FASCINATE_SSH_HOST_KEY_PATH", filepath.Join(dataDir, "ssh_host_ed25519_key")),
 		ResendAPIKey:          getenv("FASCINATE_RESEND_API_KEY", ""),
 		ResendBaseURL:         getenv("FASCINATE_RESEND_BASE_URL", "https://api.resend.com"),
 		EmailFrom:             getenv("FASCINATE_EMAIL_FROM", ""),
