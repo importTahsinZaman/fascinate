@@ -143,7 +143,11 @@ type fakeTerminalManager struct {
 	sessionID   string
 	cols        int
 	rows        int
+	cwd         string
+	diffRequest browserterm.GitDiffRequest
 	init        browserterm.SessionInit
+	gitStatus   browserterm.GitRepoStatus
+	gitDiff     browserterm.GitFileDiff
 	err         error
 }
 
@@ -173,6 +177,26 @@ func (f *fakeTerminalManager) CloseSession(_ context.Context, userEmail, session
 	f.userEmail = userEmail
 	f.sessionID = sessionID
 	return f.err
+}
+
+func (f *fakeTerminalManager) GetGitStatus(_ context.Context, userEmail, sessionID, cwd string) (browserterm.GitRepoStatus, error) {
+	f.userEmail = userEmail
+	f.sessionID = sessionID
+	f.cwd = cwd
+	if f.err != nil {
+		return browserterm.GitRepoStatus{}, f.err
+	}
+	return f.gitStatus, nil
+}
+
+func (f *fakeTerminalManager) GetGitDiff(_ context.Context, userEmail, sessionID string, request browserterm.GitDiffRequest) (browserterm.GitFileDiff, error) {
+	f.userEmail = userEmail
+	f.sessionID = sessionID
+	f.diffRequest = request
+	if f.err != nil {
+		return browserterm.GitFileDiff{}, f.err
+	}
+	return f.gitDiff, nil
 }
 
 func (f *fakeTerminalManager) StreamSession(http.ResponseWriter, *http.Request, string) error {
@@ -1125,5 +1149,99 @@ func TestCloseTerminalSessionUsesBrowserSession(t *testing.T) {
 	}
 	if terminals.userEmail != "dev@example.com" || terminals.sessionID != "term-1" {
 		t.Fatalf("unexpected terminal close args %+v", terminals)
+	}
+}
+
+func TestTerminalGitStatusUsesBrowserSession(t *testing.T) {
+	t.Parallel()
+
+	auth := &fakeBrowserAuth{
+		token: "session-token",
+		session: browserauth.Session{
+			User: database.User{ID: "user-1", Email: "dev@example.com"},
+			Record: database.WebSessionRecord{
+				ID:        "session-1",
+				UserID:    "user-1",
+				UserEmail: "dev@example.com",
+			},
+		},
+	}
+	terminals := &fakeTerminalManager{
+		gitStatus: browserterm.GitRepoStatus{
+			State:    "ready",
+			RepoRoot: "/home/ubuntu/project",
+			Branch:   "main",
+			Files: []browserterm.GitChangedFile{
+				{Path: "web/src/app.tsx", Kind: "modified", WorktreeStatus: "M"},
+			},
+		},
+	}
+	handler := newTestHandlerWithExtras(t, config.Config{
+		BaseDomain:           "fascinate.dev",
+		WebSessionCookieName: "fascinate_session",
+	}, &fakeRuntime{}, &fakeMachineManager{}, auth, terminals, nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/terminal/sessions/term-1/git/status", strings.NewReader(`{"cwd":"/home/ubuntu/project/web"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(&http.Cookie{Name: "fascinate_session", Value: "session-token"})
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if terminals.userEmail != "dev@example.com" || terminals.sessionID != "term-1" || terminals.cwd != "/home/ubuntu/project/web" {
+		t.Fatalf("unexpected git status args %+v", terminals)
+	}
+	if !strings.Contains(rec.Body.String(), `"repo_root":"/home/ubuntu/project"`) {
+		t.Fatalf("expected repo root in response, got %s", rec.Body.String())
+	}
+}
+
+func TestTerminalGitDiffUsesBrowserSession(t *testing.T) {
+	t.Parallel()
+
+	auth := &fakeBrowserAuth{
+		token: "session-token",
+		session: browserauth.Session{
+			User: database.User{ID: "user-1", Email: "dev@example.com"},
+			Record: database.WebSessionRecord{
+				ID:        "session-1",
+				UserID:    "user-1",
+				UserEmail: "dev@example.com",
+			},
+		},
+	}
+	terminals := &fakeTerminalManager{
+		gitDiff: browserterm.GitFileDiff{
+			State:     "ready",
+			Path:      "web/src/app.tsx",
+			Patch:     "diff --git a/web/src/app.tsx b/web/src/app.tsx\n@@ -1 +1 @@\n-old\n+new\n",
+			Additions: 1,
+			Deletions: 1,
+		},
+	}
+	handler := newTestHandlerWithExtras(t, config.Config{
+		BaseDomain:           "fascinate.dev",
+		WebSessionCookieName: "fascinate_session",
+	}, &fakeRuntime{}, &fakeMachineManager{}, auth, terminals, nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/terminal/sessions/term-1/git/diff", strings.NewReader(`{"cwd":"/home/ubuntu/project/web","repo_root":"/home/ubuntu/project","path":"web/src/app.tsx","kind":"modified","worktree_status":"M"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(&http.Cookie{Name: "fascinate_session", Value: "session-token"})
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if terminals.userEmail != "dev@example.com" || terminals.sessionID != "term-1" {
+		t.Fatalf("unexpected git diff args %+v", terminals)
+	}
+	if terminals.diffRequest.RepoRoot != "/home/ubuntu/project" || terminals.diffRequest.Path != "web/src/app.tsx" {
+		t.Fatalf("unexpected git diff request %+v", terminals.diffRequest)
+	}
+	if !strings.Contains(rec.Body.String(), `"additions":1`) {
+		t.Fatalf("expected diff stats in response, got %s", rec.Body.String())
 	}
 }

@@ -171,6 +171,123 @@ func TestExpectedSessionEndErrorTreatsNormalWebsocketCloseAsClean(t *testing.T) 
 	}
 }
 
+func TestParseGitRepoStatusOutputParsesTrackedUntrackedAndRenamedFiles(t *testing.T) {
+	t.Parallel()
+
+	output := strings.Join([]string{
+		"/home/ubuntu/project",
+		"main",
+	}, "\n") + "\x00" +
+		"1 .M N... 100644 100644 100644 abcdef1 abcdef1 web/src/app.tsx\x00" +
+		"2 R. N... 100644 100644 100644 abcdef1 abcdef2 R100 web/src/new.tsx\x00web/src/old.tsx\x00" +
+		"? README.md\x00"
+
+	status, err := parseGitRepoStatusOutput(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.State != gitRepoStatusReady || status.RepoRoot != "/home/ubuntu/project" || status.Branch != "main" {
+		t.Fatalf("unexpected status %+v", status)
+	}
+	if len(status.Files) != 3 {
+		t.Fatalf("expected 3 files, got %+v", status.Files)
+	}
+	if status.Files[0].Path != "web/src/app.tsx" || status.Files[0].Kind != "modified" || status.Files[0].WorktreeStatus != "M" {
+		t.Fatalf("unexpected modified file %+v", status.Files[0])
+	}
+	if status.Files[1].Path != "web/src/new.tsx" || status.Files[1].PreviousPath != "web/src/old.tsx" || status.Files[1].Kind != "renamed" {
+		t.Fatalf("unexpected rename file %+v", status.Files[1])
+	}
+	if status.Files[2].Path != "README.md" || status.Files[2].Kind != "untracked" {
+		t.Fatalf("unexpected untracked file %+v", status.Files[2])
+	}
+}
+
+func TestDiffStatsFromPatchIgnoresHeaders(t *testing.T) {
+	t.Parallel()
+
+	patch := strings.Join([]string{
+		"diff --git a/web/src/app.tsx b/web/src/app.tsx",
+		"--- a/web/src/app.tsx",
+		"+++ b/web/src/app.tsx",
+		"@@ -1,2 +1,2 @@",
+		"-old value",
+		"+new value",
+		" unchanged",
+	}, "\n")
+
+	additions, deletions := diffStatsFromPatch(patch)
+	if additions != 1 || deletions != 1 {
+		t.Fatalf("unexpected diff stats additions=%d deletions=%d", additions, deletions)
+	}
+}
+
+func TestBinaryAndLargeDiffDetection(t *testing.T) {
+	t.Parallel()
+
+	if !isBinaryDiff("Binary files a/foo and b/foo differ\n") {
+		t.Fatalf("expected binary diff to be detected")
+	}
+	largePatch := strings.Repeat("+line\n", gitDiffMaxLines+1)
+	if !diffTooLarge(largePatch) {
+		t.Fatalf("expected oversized diff to be detected")
+	}
+}
+
+func TestNormalizeGuestCwd(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		cwd       string
+		guestUser string
+		want      string
+	}{
+		{
+			name:      "absolute path is unchanged",
+			cwd:       "/home/ubuntu/react-recall",
+			guestUser: "ubuntu",
+			want:      "/home/ubuntu/react-recall",
+		},
+		{
+			name:      "tilde expands to guest home",
+			cwd:       "~",
+			guestUser: "ubuntu",
+			want:      "/home/ubuntu",
+		},
+		{
+			name:      "tilde child path expands to guest home",
+			cwd:       "~/react-recall",
+			guestUser: "ubuntu",
+			want:      "/home/ubuntu/react-recall",
+		},
+		{
+			name:      "blank guest user falls back to ubuntu",
+			cwd:       "~/project",
+			guestUser: "",
+			want:      "/home/ubuntu/project",
+		},
+		{
+			name:      "whitespace is trimmed",
+			cwd:       "  ~/project/web  ",
+			guestUser: "devuser",
+			want:      "/home/devuser/project/web",
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := normalizeGuestCwd(tt.cwd, tt.guestUser)
+			if got != tt.want {
+				t.Fatalf("normalizeGuestCwd(%q, %q) = %q, want %q", tt.cwd, tt.guestUser, got, tt.want)
+			}
+		})
+	}
+}
+
 func terminalToken(t *testing.T, attachURL string) string {
 	t.Helper()
 	parsed, err := url.Parse(attachURL)

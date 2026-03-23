@@ -35,11 +35,46 @@ export type MachineEnv = {
 };
 
 export type TerminalSession = {
-  id: string;
-  machine_name: string;
-  host_id: string;
-  attach_url: string;
-  expires_at: string;
+ id: string;
+ machine_name: string;
+ host_id: string;
+ attach_url: string;
+ expires_at: string;
+};
+
+export type GitChangedFile = {
+  path: string;
+  previous_path?: string;
+  kind: string;
+  index_status?: string;
+  worktree_status?: string;
+};
+
+export type GitRepoStatus = {
+  state: string;
+  repo_root?: string;
+  branch?: string;
+  files?: GitChangedFile[];
+};
+
+export type GitDiffRequest = {
+  cwd: string;
+  repo_root: string;
+  path: string;
+  previous_path?: string;
+  kind?: string;
+  index_status?: string;
+  worktree_status?: string;
+};
+
+export type GitFileDiff = {
+  state: string;
+  path: string;
+  previous_path?: string;
+  patch?: string;
+  additions?: number;
+  deletions?: number;
+  message?: string;
 };
 
 export type WorkspaceLayout = {
@@ -229,6 +264,20 @@ export async function attachTerminalSession(sessionId: string, cols: number, row
 export async function deleteTerminalSession(sessionId: string) {
   return request<void>("/v1/terminal/sessions/" + encodeURIComponent(sessionId), {
     method: "DELETE",
+  });
+}
+
+export async function getTerminalGitStatus(sessionId: string, cwd: string) {
+  return request<GitRepoStatus>("/v1/terminal/sessions/" + encodeURIComponent(sessionId) + "/git/status", {
+    method: "POST",
+    body: JSON.stringify({ cwd }),
+  });
+}
+
+export async function getTerminalGitDiff(sessionId: string, diffRequest: GitDiffRequest) {
+  return request<GitFileDiff>("/v1/terminal/sessions/" + encodeURIComponent(sessionId) + "/git/diff", {
+    method: "POST",
+    body: JSON.stringify(diffRequest),
   });
 }
 

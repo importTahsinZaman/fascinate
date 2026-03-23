@@ -52,6 +52,41 @@ type SessionInit struct {
 	ExpiresAt   string `json:"expires_at"`
 }
 
+type GitRepoStatus struct {
+	State    string           `json:"state"`
+	RepoRoot string           `json:"repo_root,omitempty"`
+	Branch   string           `json:"branch,omitempty"`
+	Files    []GitChangedFile `json:"files,omitempty"`
+}
+
+type GitChangedFile struct {
+	Path           string `json:"path"`
+	PreviousPath   string `json:"previous_path,omitempty"`
+	Kind           string `json:"kind"`
+	IndexStatus    string `json:"index_status,omitempty"`
+	WorktreeStatus string `json:"worktree_status,omitempty"`
+}
+
+type GitDiffRequest struct {
+	RepoRoot       string `json:"repo_root"`
+	Cwd            string `json:"cwd"`
+	Path           string `json:"path"`
+	PreviousPath   string `json:"previous_path,omitempty"`
+	Kind           string `json:"kind,omitempty"`
+	IndexStatus    string `json:"index_status,omitempty"`
+	WorktreeStatus string `json:"worktree_status,omitempty"`
+}
+
+type GitFileDiff struct {
+	State        string `json:"state"`
+	Path         string `json:"path"`
+	PreviousPath string `json:"previous_path,omitempty"`
+	Patch        string `json:"patch,omitempty"`
+	Additions    int    `json:"additions,omitempty"`
+	Deletions    int    `json:"deletions,omitempty"`
+	Message      string `json:"message,omitempty"`
+}
+
 type Diagnostics struct {
 	ActiveSessions      int               `json:"active_sessions"`
 	TotalCreated        int               `json:"total_created"`
@@ -96,6 +131,17 @@ type controlMessage struct {
 	Status int    `json:"status,omitempty"`
 	Error  string `json:"error,omitempty"`
 }
+
+const (
+	gitRepoStatusReady   = "ready"
+	gitRepoStatusNotRepo = "not_repo"
+	gitDiffStateReady    = "ready"
+	gitDiffStateBinary   = "binary"
+	gitDiffStateTooLarge = "too_large"
+	gitDiffMaxBytes      = 200_000
+	gitDiffMaxLines      = 4_000
+	gitNotRepoSentinel   = "__FASCINATE_NOT_REPO__"
+)
 
 func New(cfg config.Config, machines machineManager) *Manager {
 	localHostID := strings.TrimSpace(cfg.HostID)
@@ -251,6 +297,99 @@ func (m *Manager) CloseSession(ctx context.Context, userEmail, sessionID string)
 	}
 	_ = m.destroyRemoteSession(ctx, sess)
 	return nil
+}
+
+func (m *Manager) GetGitStatus(ctx context.Context, userEmail, sessionID, cwd string) (GitRepoStatus, error) {
+	sess, err := m.loadSession(sessionID, userEmail)
+	if err != nil {
+		return GitRepoStatus{}, err
+	}
+	machine, err := m.resolveSessionMachine(ctx, sess)
+	if err != nil {
+		return GitRepoStatus{}, err
+	}
+	guestUser := guestUserForMachine(machine)
+	cwd = normalizeGuestCwd(cwd, guestUser)
+	if cwd == "" {
+		return GitRepoStatus{}, fmt.Errorf("cwd is required")
+	}
+
+	script := strings.Join([]string{
+		fmt.Sprintf("cwd=%s", shellLiteral(cwd)),
+		`repo_root=$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null || true)`,
+		`if [ -z "$repo_root" ]; then`,
+		fmt.Sprintf("  printf %s", shellLiteral(gitNotRepoSentinel)),
+		"  exit 0",
+		"fi",
+		`branch=$(git -C "$repo_root" rev-parse --abbrev-ref HEAD 2>/dev/null || true)`,
+		`printf '%s\n%s\000' "$repo_root" "$branch"`,
+		`git -C "$repo_root" -c color.ui=false status --porcelain=v2 -z --untracked-files=all`,
+	}, "\n")
+
+	output, err := m.runGuestCommand(ctx, machine, script)
+	if err != nil {
+		return GitRepoStatus{}, err
+	}
+	if strings.TrimSpace(output) == gitNotRepoSentinel {
+		m.touchSession(sess.id)
+		return GitRepoStatus{State: gitRepoStatusNotRepo}, nil
+	}
+	status, err := parseGitRepoStatusOutput(output)
+	if err != nil {
+		return GitRepoStatus{}, err
+	}
+	m.touchSession(sess.id)
+	return status, nil
+}
+
+func (m *Manager) GetGitDiff(ctx context.Context, userEmail, sessionID string, req GitDiffRequest) (GitFileDiff, error) {
+	sess, err := m.loadSession(sessionID, userEmail)
+	if err != nil {
+		return GitFileDiff{}, err
+	}
+	machine, err := m.resolveSessionMachine(ctx, sess)
+	if err != nil {
+		return GitFileDiff{}, err
+	}
+
+	req.Cwd = normalizeGuestCwd(req.Cwd, guestUserForMachine(machine))
+	req.Path = strings.TrimSpace(req.Path)
+	req.RepoRoot = strings.TrimSpace(req.RepoRoot)
+	if req.Cwd == "" {
+		return GitFileDiff{}, fmt.Errorf("cwd is required")
+	}
+	if req.Path == "" {
+		return GitFileDiff{}, fmt.Errorf("path is required")
+	}
+	if req.RepoRoot == "" {
+		return GitFileDiff{}, fmt.Errorf("repo root is required")
+	}
+
+	patch, err := m.runGuestCommandAllowExitCodes(ctx, machine, gitDiffShellCommand(req), 1)
+	if err != nil {
+		return GitFileDiff{}, err
+	}
+
+	diff := GitFileDiff{
+		State:        gitDiffStateReady,
+		Path:         req.Path,
+		PreviousPath: strings.TrimSpace(req.PreviousPath),
+	}
+	diff.Additions, diff.Deletions = diffStatsFromPatch(patch)
+
+	switch {
+	case isBinaryDiff(patch):
+		diff.State = gitDiffStateBinary
+		diff.Message = "Binary files are not rendered in the browser diff sidebar."
+	case diffTooLarge(patch):
+		diff.State = gitDiffStateTooLarge
+		diff.Message = "Diff is too large to render inline. Use git in the shell for the full patch."
+	default:
+		diff.Patch = patch
+	}
+
+	m.touchSession(sess.id)
+	return diff, nil
 }
 
 func (m *Manager) StreamSession(w http.ResponseWriter, r *http.Request, id string) error {
@@ -450,19 +589,27 @@ func (m *Manager) nextExpiry() time.Time {
 }
 
 func (m *Manager) sessionMachineName(sessionID, userEmail string) (string, error) {
+	sess, err := m.loadSession(sessionID, userEmail)
+	if err != nil {
+		return "", err
+	}
+	return sess.machineName, nil
+}
+
+func (m *Manager) loadSession(sessionID, userEmail string) (session, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	sess, ok := m.sessions[strings.TrimSpace(sessionID)]
 	if !ok || sess.userEmail != strings.TrimSpace(userEmail) {
-		return "", fmt.Errorf("terminal session not found")
+		return session{}, fmt.Errorf("terminal session not found")
 	}
 	if time.Now().UTC().After(sess.expiresAt) {
 		delete(m.sessions, sess.id)
 		m.totalAttachFailures++
-		return "", fmt.Errorf("terminal session expired")
+		return session{}, fmt.Errorf("terminal session expired")
 	}
-	return sess.machineName, nil
+	return cloneSession(sess), nil
 }
 
 func (m *Manager) resolveSessionMachine(ctx context.Context, sess session) (controlplane.Machine, error) {
@@ -609,10 +756,7 @@ func (m *Manager) startGuestShell(ctx context.Context, sess session, machine con
 	if targetHost == "" || targetPort <= 0 {
 		return nil, nil, fmt.Errorf("machine %q does not have a reachable guest shell endpoint", machine.Name)
 	}
-	guestUser := strings.TrimSpace(machine.Runtime.GuestUser)
-	if guestUser == "" {
-		guestUser = "ubuntu"
-	}
+	guestUser := guestUserForMachine(machine)
 	if err := m.waitForGuestAccess(ctx, machine, targetHost, targetPort, guestUser); err != nil {
 		return nil, nil, err
 	}
@@ -644,10 +788,7 @@ func (m *Manager) destroyRemoteSession(ctx context.Context, sess session) error 
 	if targetHost == "" || targetPort <= 0 {
 		return nil
 	}
-	guestUser := strings.TrimSpace(machine.Runtime.GuestUser)
-	if guestUser == "" {
-		guestUser = "ubuntu"
-	}
+	guestUser := guestUserForMachine(machine)
 	command := fmt.Sprintf(
 		"if command -v tmux >/dev/null 2>&1; then tmux kill-session -t %s 2>/dev/null || true; fi",
 		shellLiteral(strings.TrimSpace(sess.tmuxSession)),
@@ -701,6 +842,47 @@ func (m *Manager) probeGuestAccess(ctx context.Context, targetHost string, targe
 	return nil
 }
 
+func (m *Manager) runGuestCommand(ctx context.Context, machine controlplane.Machine, shellCommand string) (string, error) {
+	return m.runGuestCommandAllowExitCodes(ctx, machine, shellCommand)
+}
+
+func (m *Manager) runGuestCommandAllowExitCodes(ctx context.Context, machine controlplane.Machine, shellCommand string, allowedExitCodes ...int) (string, error) {
+	if machine.Runtime == nil {
+		return "", fmt.Errorf("machine %q is not available", machine.Name)
+	}
+	targetHost := strings.TrimSpace(machine.Runtime.SSHHost)
+	targetPort := machine.Runtime.SSHPort
+	if targetHost == "" || targetPort <= 0 {
+		return "", fmt.Errorf("machine %q does not have a reachable guest shell endpoint", machine.Name)
+	}
+	guestUser := guestUserForMachine(machine)
+	if err := m.waitForGuestAccess(ctx, machine, targetHost, targetPort, guestUser); err != nil {
+		return "", err
+	}
+
+	args := append(m.guestSSHArgs(guestUser, targetHost, targetPort), guestSSHRemoteCommand("xterm-256color", shellCommand))
+	cmd := exec.CommandContext(ctx, m.sshClientBinary, args...)
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		return string(output), nil
+	}
+
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		for _, allowed := range allowedExitCodes {
+			if exitErr.ExitCode() == allowed {
+				return string(output), nil
+			}
+		}
+	}
+
+	text := strings.TrimSpace(string(output))
+	if text == "" {
+		return "", err
+	}
+	return "", fmt.Errorf("%w: %s", err, text)
+}
+
 func (m *Manager) guestSSHArgs(guestUser, targetHost string, targetPort int) []string {
 	return []string{
 		"-i", m.guestSSHKeyPath,
@@ -711,6 +893,37 @@ func (m *Manager) guestSSHArgs(guestUser, targetHost string, targetPort int) []s
 		"-o", "ConnectTimeout=5",
 		"-p", strconv.Itoa(targetPort),
 		fmt.Sprintf("%s@%s", guestUser, targetHost),
+	}
+}
+
+func guestUserForMachine(machine controlplane.Machine) string {
+	if machine.Runtime == nil {
+		return "ubuntu"
+	}
+	guestUser := strings.TrimSpace(machine.Runtime.GuestUser)
+	if guestUser == "" {
+		return "ubuntu"
+	}
+	return guestUser
+}
+
+func normalizeGuestCwd(cwd, guestUser string) string {
+	cwd = strings.TrimSpace(cwd)
+	if cwd == "" {
+		return ""
+	}
+	guestUser = strings.TrimSpace(guestUser)
+	if guestUser == "" {
+		guestUser = "ubuntu"
+	}
+	homeDir := "/home/" + guestUser
+	switch {
+	case cwd == "~":
+		return homeDir
+	case strings.HasPrefix(cwd, "~/"):
+		return homeDir + strings.TrimPrefix(cwd, "~")
+	default:
+		return cwd
 	}
 }
 
@@ -762,6 +975,189 @@ func shellLiteral(value string) string {
 
 func shellQuoteSingle(value string) string {
 	return strings.ReplaceAll(value, `'`, `'\''`)
+}
+
+func parseGitRepoStatusOutput(output string) (GitRepoStatus, error) {
+	separator := strings.IndexByte(output, 0)
+	if separator == -1 {
+		return GitRepoStatus{}, fmt.Errorf("git status response missing header separator")
+	}
+
+	header := strings.SplitN(output[:separator], "\n", 2)
+	if len(header) == 0 || strings.TrimSpace(header[0]) == "" {
+		return GitRepoStatus{}, fmt.Errorf("git status response missing repo root")
+	}
+	status := GitRepoStatus{
+		State:    gitRepoStatusReady,
+		RepoRoot: strings.TrimSpace(header[0]),
+	}
+	if len(header) > 1 {
+		status.Branch = strings.TrimSpace(header[1])
+	}
+
+	files, err := parseGitChangedFiles(output[separator+1:])
+	if err != nil {
+		return GitRepoStatus{}, err
+	}
+	status.Files = files
+	return status, nil
+}
+
+func parseGitChangedFiles(output string) ([]GitChangedFile, error) {
+	if output == "" {
+		return nil, nil
+	}
+
+	records := strings.Split(output, "\x00")
+	files := make([]GitChangedFile, 0, len(records))
+	for index := 0; index < len(records); index++ {
+		record := records[index]
+		if record == "" {
+			continue
+		}
+		switch {
+		case strings.HasPrefix(record, "? "):
+			path := strings.TrimSpace(record[2:])
+			if path == "" {
+				return nil, fmt.Errorf("git status response contained empty untracked path")
+			}
+			files = append(files, GitChangedFile{
+				Path:           path,
+				Kind:           "untracked",
+				IndexStatus:    "?",
+				WorktreeStatus: "?",
+			})
+		case strings.HasPrefix(record, "1 "), strings.HasPrefix(record, "u "):
+			fields := strings.SplitN(record, " ", 9)
+			if len(fields) < 9 {
+				return nil, fmt.Errorf("invalid git status entry %q", record)
+			}
+			indexStatus, worktreeStatus := parseGitStatusPair(fields[1])
+			files = append(files, GitChangedFile{
+				Path:           fields[8],
+				Kind:           gitChangeKind(indexStatus, worktreeStatus),
+				IndexStatus:    indexStatus,
+				WorktreeStatus: worktreeStatus,
+			})
+		case strings.HasPrefix(record, "2 "):
+			fields := strings.SplitN(record, " ", 10)
+			if len(fields) < 10 {
+				return nil, fmt.Errorf("invalid git rename entry %q", record)
+			}
+			if index+1 >= len(records) {
+				return nil, fmt.Errorf("git rename entry %q missing previous path", record)
+			}
+			indexStatus, worktreeStatus := parseGitStatusPair(fields[1])
+			index++
+			files = append(files, GitChangedFile{
+				Path:           fields[9],
+				PreviousPath:   records[index],
+				Kind:           gitChangeKind(indexStatus, worktreeStatus),
+				IndexStatus:    indexStatus,
+				WorktreeStatus: worktreeStatus,
+			})
+		}
+	}
+	return files, nil
+}
+
+func parseGitStatusPair(pair string) (string, string) {
+	value := []rune(strings.TrimSpace(pair))
+	if len(value) < 2 {
+		return "", ""
+	}
+	return gitStatusRune(value[0]), gitStatusRune(value[1])
+}
+
+func gitStatusRune(value rune) string {
+	if value == '.' || value == ' ' {
+		return ""
+	}
+	return string(value)
+}
+
+func gitChangeKind(indexStatus, worktreeStatus string) string {
+	for _, status := range []string{indexStatus, worktreeStatus} {
+		switch status {
+		case "R":
+			return "renamed"
+		case "C":
+			return "copied"
+		case "A":
+			return "added"
+		case "D":
+			return "deleted"
+		case "T":
+			return "typechange"
+		case "U":
+			return "conflicted"
+		case "?":
+			return "untracked"
+		case "M":
+			return "modified"
+		}
+	}
+	return "modified"
+}
+
+func gitDiffShellCommand(req GitDiffRequest) string {
+	lines := []string{
+		fmt.Sprintf("repo_root=%s", shellLiteral(strings.TrimSpace(req.RepoRoot))),
+		fmt.Sprintf("path=%s", shellLiteral(strings.TrimSpace(req.Path))),
+		`if [ -z "$repo_root" ] || [ -z "$path" ]; then`,
+		`  printf 'repo root and path are required' >&2`,
+		"  exit 2",
+		"fi",
+	}
+
+	if req.Kind == "untracked" || req.IndexStatus == "?" || req.WorktreeStatus == "?" {
+		lines = append(lines,
+			`abs_path="$repo_root/$path"`,
+			`if [ ! -e "$abs_path" ]; then`,
+			`  printf 'path not found: %s' "$path" >&2`,
+			"  exit 2",
+			"fi",
+			`git -c color.ui=false --no-pager diff --no-index --no-ext-diff --unified=999999 -- /dev/null "$abs_path"`,
+		)
+		return strings.Join(lines, "\n")
+	}
+
+	lines = append(lines,
+		`if git -C "$repo_root" rev-parse --verify HEAD >/dev/null 2>&1; then`,
+		`  git -C "$repo_root" -c color.ui=false --no-pager diff --no-ext-diff --find-renames --submodule=short --unified=999999 HEAD -- "$path"`,
+		"else",
+		`  git -C "$repo_root" -c color.ui=false --no-pager diff --no-ext-diff --find-renames --submodule=short --unified=999999 --cached -- "$path"`,
+		`  git -C "$repo_root" -c color.ui=false --no-pager diff --no-ext-diff --find-renames --submodule=short --unified=999999 -- "$path"`,
+		"fi",
+	)
+	return strings.Join(lines, "\n")
+}
+
+func diffStatsFromPatch(patch string) (int, int) {
+	additions := 0
+	deletions := 0
+	for _, line := range strings.Split(patch, "\n") {
+		switch {
+		case strings.HasPrefix(line, "+++"), strings.HasPrefix(line, "---"), strings.HasPrefix(line, "@@"):
+			continue
+		case strings.HasPrefix(line, "+"):
+			additions++
+		case strings.HasPrefix(line, "-"):
+			deletions++
+		}
+	}
+	return additions, deletions
+}
+
+func diffTooLarge(patch string) bool {
+	if len(patch) > gitDiffMaxBytes {
+		return true
+	}
+	return strings.Count(patch, "\n") > gitDiffMaxLines
+}
+
+func isBinaryDiff(patch string) bool {
+	return strings.Contains(patch, "GIT binary patch") || strings.Contains(patch, "Binary files ")
 }
 
 func isRetryableGuestAccessError(err error) bool {
