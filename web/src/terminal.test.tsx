@@ -154,6 +154,18 @@ describe("TerminalView", () => {
   beforeEach(() => {
     vi.stubGlobal("ResizeObserver", MockResizeObserver);
     vi.stubGlobal("WebSocket", MockWebSocket);
+    Object.defineProperty(globalThis, "navigator", {
+      configurable: true,
+      value: {
+        clipboard: {
+          writeText: vi.fn().mockResolvedValue(undefined),
+        },
+      },
+    });
+    Object.defineProperty(globalThis, "isSecureContext", {
+      configurable: true,
+      value: true,
+    });
     terminalInstances.length = 0;
     MockWebSocket.instances.length = 0;
     MockWebglAddon.instances.length = 0;
@@ -254,6 +266,78 @@ describe("TerminalView", () => {
 
     expect(onCwdChange).toHaveBeenNthCalledWith(1, "/home/ubuntu/space-shooter");
     expect(onCwdChange).toHaveBeenNthCalledWith(2, "~/space-shooter");
+  });
+
+  it("copies OSC 52 clipboard writes to the local browser clipboard", async () => {
+    const onSessionId = vi.fn();
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(globalThis, "navigator", {
+      configurable: true,
+      value: {
+        clipboard: {
+          writeText,
+        },
+      },
+    });
+
+    render(<TerminalView machineName="m-1" title="m-1 shell" onSessionId={onSessionId} />);
+
+    await waitFor(() => {
+      expect(createTerminalSession).toHaveBeenCalledWith("m-1", 120, 40);
+    });
+
+    await act(async () => {
+      MockWebSocket.instances[0].emit("open");
+    });
+
+    const url = "https://claude.ai/oauth/authorize?code=true";
+    const encoded = btoa(url);
+
+    await act(async () => {
+      MockWebSocket.instances[0].emit("message", {
+        data: new TextEncoder().encode(`\u001b]52;c;${encoded}\u0007`).buffer,
+      });
+    });
+
+    await waitFor(() => {
+      expect(writeText).toHaveBeenCalledWith(url);
+    });
+    expect(await screen.findByText("Copied to your local clipboard.")).toBeTruthy();
+  });
+
+  it("shows a visible notice when the browser blocks clipboard access", async () => {
+    const onSessionId = vi.fn();
+    const writeText = vi.fn().mockRejectedValue(new Error("blocked"));
+    Object.defineProperty(globalThis, "navigator", {
+      configurable: true,
+      value: {
+        clipboard: {
+          writeText,
+        },
+      },
+    });
+    Object.defineProperty(globalThis, "isSecureContext", {
+      configurable: true,
+      value: true,
+    });
+
+    render(<TerminalView machineName="m-1" title="m-1 shell" onSessionId={onSessionId} />);
+
+    await waitFor(() => {
+      expect(createTerminalSession).toHaveBeenCalledWith("m-1", 120, 40);
+    });
+
+    await act(async () => {
+      MockWebSocket.instances[0].emit("open");
+    });
+
+    await act(async () => {
+      MockWebSocket.instances[0].emit("message", {
+        data: new TextEncoder().encode(`\u001b]52;c;${btoa("copy me")}\u0007`).buffer,
+      });
+    });
+
+    expect(await screen.findByText("Clipboard access was blocked by the browser.")).toBeTruthy();
   });
 
   it("shows a retry overlay when the terminal websocket fails", async () => {

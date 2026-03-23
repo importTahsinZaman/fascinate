@@ -1262,6 +1262,32 @@ a {
   height: 100%;
 }
 
+.terminal-notice {
+  position: absolute;
+  top: 18px;
+  right: 18px;
+  z-index: 3;
+  max-width: min(320px, calc(100% - 36px));
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(24, 24, 24, 0.94);
+  color: var(--text-primary);
+  box-shadow: 0 16px 32px rgba(0, 0, 0, 0.34);
+  font-size: 12px;
+  line-height: 16px;
+}
+
+.terminal-notice[data-tone="success"] {
+  border-color: rgba(24, 227, 125, 0.24);
+  color: #baf2d1;
+}
+
+.terminal-notice[data-tone="error"] {
+  border-color: rgba(245, 162, 143, 0.24);
+  color: #ffd3c8;
+}
+
 .terminal-overlay {
   position: absolute;
   inset: 0;

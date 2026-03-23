@@ -37,6 +37,7 @@ Fascinate currently gives us:
   - authenticate browser users through emailed verification codes and DB-backed sessions
   - issue browser terminal sessions and stream PTY traffic over dedicated WebSockets
   - inspect shell-scoped git working trees in a right-side split diff overlay without resizing the workspace canvas
+  - bridge terminal-driven clipboard copy requests into the browser's local clipboard when supported
   - persist per-user workspace layouts for the browser terminal canvas
 
 Current browser HTTP API:

@@ -21,8 +21,15 @@ type TerminalStats = {
 };
 
 const cwdSequencePrefix = "\u001b]1337;FascinateCwd=";
+const osc52SequencePrefix = "\u001b]52;";
 const ansiSequencePattern = /\u001b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|[ -/]*[@-~])/g;
 const promptPathPattern = /^[^\s@]+@[^:\s]+:(.+?)[#$]\s?$/;
+const clipboardNoticeDurationMs = 2_400;
+
+type ClipboardNotice = {
+  tone: "success" | "error";
+  message: string;
+};
 
 export function TerminalView({ machineName, title, sessionId, onSessionId, onCwdChange }: Props) {
   const hostRef = useRef<HTMLDivElement | null>(null);
@@ -37,12 +44,14 @@ export function TerminalView({ machineName, title, sessionId, onSessionId, onCwd
   const decoderRef = useRef<TextDecoder | null>(null);
   const pendingMetadataRef = useRef("");
   const promptLineRef = useRef("");
+  const clipboardNoticeTimerRef = useRef<number | null>(null);
   const [connectionAttempt, setConnectionAttempt] = useState(0);
   const [stats, setStats] = useState<TerminalStats>({
     status: "connecting",
     phase: sessionId ? "reconnecting" : "connecting",
     error: null,
   });
+  const [clipboardNotice, setClipboardNotice] = useState<ClipboardNotice | null>(null);
 
   const label = useMemo(() => `${title} (${machineName})`, [machineName, title]);
   const persistSessionId = useEffectEvent((value: string) => {
@@ -50,6 +59,40 @@ export function TerminalView({ machineName, title, sessionId, onSessionId, onCwd
   });
   const persistCwd = useEffectEvent((value: string) => {
     onCwdChange?.(value);
+  });
+  const showClipboardNotice = useEffectEvent((notice: ClipboardNotice) => {
+    setClipboardNotice(notice);
+    if (clipboardNoticeTimerRef.current) {
+      window.clearTimeout(clipboardNoticeTimerRef.current);
+    }
+    clipboardNoticeTimerRef.current = window.setTimeout(() => {
+      setClipboardNotice(null);
+      clipboardNoticeTimerRef.current = null;
+    }, clipboardNoticeDurationMs);
+  });
+  const copyToLocalClipboard = useEffectEvent(async (value: string) => {
+    if (typeof navigator === "undefined" || typeof navigator.clipboard?.writeText !== "function") {
+      showClipboardNotice({
+        tone: "error",
+        message: "Clipboard copy is unavailable in this browser terminal.",
+      });
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(value);
+      showClipboardNotice({
+        tone: "success",
+        message: "Copied to your local clipboard.",
+      });
+    } catch {
+      showClipboardNotice({
+        tone: "error",
+        message: globalThis.isSecureContext
+          ? "Clipboard access was blocked by the browser."
+          : "Clipboard copy requires a secure browser context.",
+      });
+    }
   });
   const retryConnection = useEffectEvent((mode: "reuse" | "new") => {
     if (mode === "new") {
@@ -120,6 +163,9 @@ export function TerminalView({ machineName, title, sessionId, onSessionId, onCwd
       webglContextLossRef.current?.dispose();
       webglAddonRef.current?.dispose();
       socketRef.current?.close();
+      if (clipboardNoticeTimerRef.current) {
+        window.clearTimeout(clipboardNoticeTimerRef.current);
+      }
       terminal.dispose();
       terminalRef.current = null;
       fitRef.current = null;
@@ -130,6 +176,7 @@ export function TerminalView({ machineName, title, sessionId, onSessionId, onCwd
       decoderRef.current = null;
       pendingMetadataRef.current = "";
       promptLineRef.current = "";
+      clipboardNoticeTimerRef.current = null;
     };
   }, []);
 
@@ -223,6 +270,9 @@ export function TerminalView({ machineName, title, sessionId, onSessionId, onCwd
           if (parsedChunk.cwd) {
             persistCwd(parsedChunk.cwd);
           }
+          for (const clipboardWrite of parsedChunk.clipboardWrites) {
+            void copyToLocalClipboard(clipboardWrite);
+          }
           if (parsedChunk.output !== "") {
             terminalRef.current?.write(parsedChunk.output);
             const promptMetadata = detectPromptPath(promptLineRef.current, parsedChunk.output);
@@ -282,6 +332,11 @@ export function TerminalView({ machineName, title, sessionId, onSessionId, onCwd
   return (
     <div className="terminal-shell">
       <div className="terminal-host" ref={hostRef} />
+      {clipboardNotice ? (
+        <div className="terminal-notice" data-tone={clipboardNotice.tone} role="status" aria-live="polite">
+          {clipboardNotice.message}
+        </div>
+      ) : null}
       {overlay ? (
         <div className="terminal-overlay" data-state={overlay.tone} role="status" aria-live="polite">
           <div className="terminal-overlay-card">
@@ -335,13 +390,14 @@ function getTerminalOverlay(stats: TerminalStats) {
 function parseTerminalMetadata(chunk: string) {
   let output = "";
   let cwd: string | undefined;
+  const clipboardWrites: string[] = [];
   let index = 0;
 
   while (index < chunk.length) {
     const nextSequence = findNextMetadataSequence(chunk, index);
     if (!nextSequence) {
       output += chunk.slice(index);
-      return { output, pending: "", cwd };
+      return { output, pending: "", cwd, clipboardWrites };
     }
 
     output += chunk.slice(index, nextSequence.start);
@@ -360,25 +416,53 @@ function parseTerminalMetadata(chunk: string) {
     }
 
     if (sequenceEnd === -1) {
-      return { output, pending: chunk.slice(nextSequence.start), cwd };
+      return { output, pending: chunk.slice(nextSequence.start), cwd, clipboardWrites };
     }
 
-    const value = chunk.slice(contentStart, sequenceEnd).trim();
+    const value = chunk.slice(contentStart, sequenceEnd);
     if (nextSequence.prefix === cwdSequencePrefix) {
-      cwd = value;
+      cwd = value.trim();
+    }
+    if (nextSequence.prefix === osc52SequencePrefix) {
+      const clipboardValue = decodeOsc52Write(value);
+      if (clipboardValue !== null) {
+        clipboardWrites.push(clipboardValue);
+      }
     }
     index = sequenceEnd + terminatorLength;
   }
 
-  return { output, pending: "", cwd };
+  return { output, pending: "", cwd, clipboardWrites };
 }
 
 function findNextMetadataSequence(chunk: string, index: number) {
-  const cwdStart = chunk.indexOf(cwdSequencePrefix, index);
-  if (cwdStart === -1) {
+  const sequenceStarts = [cwdSequencePrefix, osc52SequencePrefix]
+    .map((prefix) => ({ prefix, start: chunk.indexOf(prefix, index) }))
+    .filter((entry) => entry.start !== -1)
+    .sort((left, right) => left.start - right.start);
+
+  if (sequenceStarts.length === 0) {
     return null;
   }
-  return { start: cwdStart, prefix: cwdSequencePrefix };
+  return sequenceStarts[0];
+}
+
+function decodeOsc52Write(value: string) {
+  const separatorIndex = value.indexOf(";");
+  if (separatorIndex === -1) {
+    return null;
+  }
+  const encoded = value.slice(separatorIndex + 1).trim();
+  if (!encoded || encoded === "?") {
+    return null;
+  }
+  try {
+    const binary = globalThis.atob(encoded);
+    const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+    return new TextDecoder().decode(bytes);
+  } catch {
+    return null;
+  }
 }
 
 function detectPromptPath(previousLine: string, output: string) {
