@@ -234,6 +234,60 @@ func TestBinaryAndLargeDiffDetection(t *testing.T) {
 	}
 }
 
+func TestNormalizeGuestCwd(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		cwd       string
+		guestUser string
+		want      string
+	}{
+		{
+			name:      "absolute path is unchanged",
+			cwd:       "/home/ubuntu/react-recall",
+			guestUser: "ubuntu",
+			want:      "/home/ubuntu/react-recall",
+		},
+		{
+			name:      "tilde expands to guest home",
+			cwd:       "~",
+			guestUser: "ubuntu",
+			want:      "/home/ubuntu",
+		},
+		{
+			name:      "tilde child path expands to guest home",
+			cwd:       "~/react-recall",
+			guestUser: "ubuntu",
+			want:      "/home/ubuntu/react-recall",
+		},
+		{
+			name:      "blank guest user falls back to ubuntu",
+			cwd:       "~/project",
+			guestUser: "",
+			want:      "/home/ubuntu/project",
+		},
+		{
+			name:      "whitespace is trimmed",
+			cwd:       "  ~/project/web  ",
+			guestUser: "devuser",
+			want:      "/home/devuser/project/web",
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := normalizeGuestCwd(tt.cwd, tt.guestUser)
+			if got != tt.want {
+				t.Fatalf("normalizeGuestCwd(%q, %q) = %q, want %q", tt.cwd, tt.guestUser, got, tt.want)
+			}
+		})
+	}
+}
+
 func terminalToken(t *testing.T, attachURL string) string {
 	t.Helper()
 	parsed, err := url.Parse(attachURL)

@@ -308,7 +308,8 @@ func (m *Manager) GetGitStatus(ctx context.Context, userEmail, sessionID, cwd st
 	if err != nil {
 		return GitRepoStatus{}, err
 	}
-	cwd = strings.TrimSpace(cwd)
+	guestUser := guestUserForMachine(machine)
+	cwd = normalizeGuestCwd(cwd, guestUser)
 	if cwd == "" {
 		return GitRepoStatus{}, fmt.Errorf("cwd is required")
 	}
@@ -351,7 +352,7 @@ func (m *Manager) GetGitDiff(ctx context.Context, userEmail, sessionID string, r
 		return GitFileDiff{}, err
 	}
 
-	req.Cwd = strings.TrimSpace(req.Cwd)
+	req.Cwd = normalizeGuestCwd(req.Cwd, guestUserForMachine(machine))
 	req.Path = strings.TrimSpace(req.Path)
 	req.RepoRoot = strings.TrimSpace(req.RepoRoot)
 	if req.Cwd == "" {
@@ -755,10 +756,7 @@ func (m *Manager) startGuestShell(ctx context.Context, sess session, machine con
 	if targetHost == "" || targetPort <= 0 {
 		return nil, nil, fmt.Errorf("machine %q does not have a reachable guest shell endpoint", machine.Name)
 	}
-	guestUser := strings.TrimSpace(machine.Runtime.GuestUser)
-	if guestUser == "" {
-		guestUser = "ubuntu"
-	}
+	guestUser := guestUserForMachine(machine)
 	if err := m.waitForGuestAccess(ctx, machine, targetHost, targetPort, guestUser); err != nil {
 		return nil, nil, err
 	}
@@ -790,10 +788,7 @@ func (m *Manager) destroyRemoteSession(ctx context.Context, sess session) error 
 	if targetHost == "" || targetPort <= 0 {
 		return nil
 	}
-	guestUser := strings.TrimSpace(machine.Runtime.GuestUser)
-	if guestUser == "" {
-		guestUser = "ubuntu"
-	}
+	guestUser := guestUserForMachine(machine)
 	command := fmt.Sprintf(
 		"if command -v tmux >/dev/null 2>&1; then tmux kill-session -t %s 2>/dev/null || true; fi",
 		shellLiteral(strings.TrimSpace(sess.tmuxSession)),
@@ -860,10 +855,7 @@ func (m *Manager) runGuestCommandAllowExitCodes(ctx context.Context, machine con
 	if targetHost == "" || targetPort <= 0 {
 		return "", fmt.Errorf("machine %q does not have a reachable guest shell endpoint", machine.Name)
 	}
-	guestUser := strings.TrimSpace(machine.Runtime.GuestUser)
-	if guestUser == "" {
-		guestUser = "ubuntu"
-	}
+	guestUser := guestUserForMachine(machine)
 	if err := m.waitForGuestAccess(ctx, machine, targetHost, targetPort, guestUser); err != nil {
 		return "", err
 	}
@@ -901,6 +893,37 @@ func (m *Manager) guestSSHArgs(guestUser, targetHost string, targetPort int) []s
 		"-o", "ConnectTimeout=5",
 		"-p", strconv.Itoa(targetPort),
 		fmt.Sprintf("%s@%s", guestUser, targetHost),
+	}
+}
+
+func guestUserForMachine(machine controlplane.Machine) string {
+	if machine.Runtime == nil {
+		return "ubuntu"
+	}
+	guestUser := strings.TrimSpace(machine.Runtime.GuestUser)
+	if guestUser == "" {
+		return "ubuntu"
+	}
+	return guestUser
+}
+
+func normalizeGuestCwd(cwd, guestUser string) string {
+	cwd = strings.TrimSpace(cwd)
+	if cwd == "" {
+		return ""
+	}
+	guestUser = strings.TrimSpace(guestUser)
+	if guestUser == "" {
+		guestUser = "ubuntu"
+	}
+	homeDir := "/home/" + guestUser
+	switch {
+	case cwd == "~":
+		return homeDir
+	case strings.HasPrefix(cwd, "~/"):
+		return homeDir + strings.TrimPrefix(cwd, "~")
+	default:
+		return cwd
 	}
 }
 
