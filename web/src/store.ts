@@ -1,16 +1,27 @@
 import { create } from "zustand";
 import type { WorkspaceLayout, WorkspaceViewport, WorkspaceWindow } from "./api";
 
+type GitDiffSidebarState = {
+  windowID: string | null;
+  selectedPath: string | null;
+  selectedPreviousPath?: string;
+};
+
 type WorkspaceState = {
   windows: WorkspaceWindow[];
   windowCwds: Record<string, string>;
   viewport: WorkspaceViewport;
   viewportFocusRequest: { windowID: string; requestID: string } | null;
+  gitDiffSidebar: GitDiffSidebarState;
   hydrated: boolean;
   hydrate: (layout: WorkspaceLayout) => void;
   openTerminal: (machineName: string, title?: string) => void;
   setWindowSession: (id: string, sessionId: string) => void;
   setWindowCwd: (id: string, cwd: string) => void;
+  openGitDiffSidebar: (windowID: string) => void;
+  closeGitDiffSidebar: () => void;
+  selectGitDiffSidebarFile: (path: string, previousPath?: string) => void;
+  clearGitDiffSidebarFile: () => void;
   closeWindow: (id: string) => void;
   focusWindow: (id: string) => void;
   requestViewportFocus: (id: string) => void;
@@ -23,12 +34,17 @@ type WorkspaceState = {
 const defaultViewport: WorkspaceViewport = { x: 120, y: 96, scale: 1 };
 const defaultWindowSize = { width: 1297, height: 907 };
 const windowMargin = 36;
+const defaultGitDiffSidebarState: GitDiffSidebarState = {
+  windowID: null,
+  selectedPath: null,
+};
 
 export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   windows: [],
   windowCwds: {},
   viewport: defaultViewport,
   viewportFocusRequest: null,
+  gitDiffSidebar: defaultGitDiffSidebarState,
   hydrated: false,
   hydrate: (layout) =>
     set((state) => {
@@ -57,6 +73,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         windowCwds: {},
         viewport: normalizeViewport(layout.viewport),
         viewportFocusRequest: null,
+        gitDiffSidebar: defaultGitDiffSidebarState,
         hydrated: true,
       };
     }),
@@ -108,6 +125,46 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         },
       };
     }),
+  openGitDiffSidebar: (windowID) =>
+    set((state) => {
+      if (state.gitDiffSidebar.windowID === windowID) {
+        return state;
+      }
+      return {
+        gitDiffSidebar: {
+          windowID,
+          selectedPath: null,
+        },
+      };
+    }),
+  closeGitDiffSidebar: () =>
+    set((state) => (state.gitDiffSidebar.windowID ? { gitDiffSidebar: defaultGitDiffSidebarState } : state)),
+  selectGitDiffSidebarFile: (path, previousPath) =>
+    set((state) => {
+      if (state.gitDiffSidebar.selectedPath === path && state.gitDiffSidebar.selectedPreviousPath === previousPath) {
+        return state;
+      }
+      return {
+        gitDiffSidebar: {
+          ...state.gitDiffSidebar,
+          selectedPath: path,
+          selectedPreviousPath: previousPath,
+        },
+      };
+    }),
+  clearGitDiffSidebarFile: () =>
+    set((state) => {
+      if (state.gitDiffSidebar.selectedPath === null && state.gitDiffSidebar.selectedPreviousPath === undefined) {
+        return state;
+      }
+      return {
+        gitDiffSidebar: {
+          ...state.gitDiffSidebar,
+          selectedPath: null,
+          selectedPreviousPath: undefined,
+        },
+      };
+    }),
   closeWindow: (id) =>
     set((state) => {
       const windowCwds = { ...state.windowCwds };
@@ -117,6 +174,8 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         windowCwds,
         viewportFocusRequest:
           state.viewportFocusRequest?.windowID === id ? null : state.viewportFocusRequest,
+        gitDiffSidebar:
+          state.gitDiffSidebar.windowID === id ? defaultGitDiffSidebarState : state.gitDiffSidebar,
       };
     }),
   focusWindow: (id) =>

@@ -53,6 +53,57 @@ function rect(width: number, height: number): DOMRect {
   } as DOMRect;
 }
 
+type AppFetchOverride = (path: string, init?: RequestInit) => Response | Promise<Response> | undefined;
+
+function createAuthenticatedFetchMock(override?: AppFetchOverride) {
+  return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const path = String(input);
+    const overridden = override?.(path, init);
+    if (overridden !== undefined) {
+      return overridden;
+    }
+    if (path === "/v1/auth/session") {
+      return jsonResponse({ user: { id: "user-1", email: "dev@example.com", is_admin: false } });
+    }
+    if (path === "/v1/machines") {
+      return jsonResponse({
+        machines: [
+          {
+            id: "machine-1",
+            name: "m-1",
+            state: "RUNNING",
+            primary_port: 3000,
+            created_at: "2026-03-22T00:00:00Z",
+            updated_at: "2026-03-22T00:00:00Z",
+          },
+        ],
+      });
+    }
+    if (path === "/v1/snapshots") {
+      return jsonResponse({ snapshots: [] });
+    }
+    if (path === "/v1/env-vars") {
+      return jsonResponse({ env_vars: [] });
+    }
+    if (path === "/v1/workspaces/default") {
+      if (init?.method === "PUT") {
+        const body = JSON.parse(String(init.body)) as { layout: unknown };
+        return jsonResponse({ name: "default", layout: body.layout });
+      }
+      return jsonResponse({ name: "default", layout: { version: 2, windows: [], viewport: { x: 120, y: 96, scale: 1 } } });
+    }
+    throw new Error(`unexpected request ${path}`);
+  });
+}
+
+async function seedShellSession(windowIndex: number, sessionId: string, cwd: string) {
+  const windowId = useWorkspaceStore.getState().windows[windowIndex].id;
+  await act(async () => {
+    useWorkspaceStore.getState().setWindowSession(windowId, sessionId);
+    useWorkspaceStore.getState().setWindowCwd(windowId, cwd);
+  });
+}
+
 describe("App", () => {
   beforeEach(() => {
     useWorkspaceStore.setState({
@@ -60,12 +111,14 @@ describe("App", () => {
       windowCwds: {},
       viewport: { x: 120, y: 96, scale: 1 },
       viewportFocusRequest: null,
+      gitDiffSidebar: { windowID: null, selectedPath: null },
       hydrated: false,
     });
   });
 
   afterEach(() => {
     cleanup();
+    vi.useRealTimers();
     vi.restoreAllMocks();
   });
 
@@ -600,5 +653,204 @@ describe("App", () => {
       expect(useWorkspaceStore.getState().viewport.scale).toBeGreaterThan(1);
     });
     expect(useWorkspaceStore.getState().viewportFocusRequest).toBeNull();
+  });
+
+  it("loads git status from the active shell cwd and renders a split diff with collapsed context", async () => {
+    const fetchMock = createAuthenticatedFetchMock((path, init) => {
+      if (path === "/v1/terminal/sessions/term-1/git/status") {
+        expect(JSON.parse(String(init?.body))).toEqual({ cwd: "/home/ubuntu/repo" });
+        return jsonResponse({
+          state: "ready",
+          repo_root: "/home/ubuntu/repo",
+          branch: "main",
+          files: [{ path: "web/src/app.tsx", kind: "modified", index_status: "M", worktree_status: "M" }],
+        });
+      }
+      if (path === "/v1/terminal/sessions/term-1/git/diff") {
+        expect(JSON.parse(String(init?.body))).toMatchObject({
+          cwd: "/home/ubuntu/repo",
+          repo_root: "/home/ubuntu/repo",
+          path: "web/src/app.tsx",
+        });
+        return jsonResponse({
+          state: "ready",
+          path: "web/src/app.tsx",
+          additions: 1,
+          deletions: 1,
+          patch: `diff --git a/web/src/app.tsx b/web/src/app.tsx
+index 1111111..2222222 100644
+--- a/web/src/app.tsx
++++ b/web/src/app.tsx
+@@ -1,20 +1,20 @@
+ line 1
+ line 2
+ line 3
+ line 4
+ line 5
+ line 6
+-old alpha
++new alpha
+ line 8
+ line 9
+ line 10
+ line 11
+ line 12
+ line 13
+ line 14
+ line 15
+-old omega
++new omega
+ line 17
+ line 18
+ line 19
+ line 20
+`,
+        });
+      }
+      return undefined;
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderApp();
+
+    fireEvent.click(await screen.findByRole("button", { name: "New shell" }));
+    expect(await screen.findByTestId("terminal-m-1")).toBeTruthy();
+
+    await seedShellSession(0, "term-1", "/home/ubuntu/repo");
+    fireEvent.click(screen.getByRole("button", { name: "Open git diff for m-1 shell" }));
+
+    expect(await screen.findByRole("heading", { name: "m-1 shell" })).toBeTruthy();
+    expect((await screen.findAllByText("web/src/app.tsx")).length).toBeGreaterThan(0);
+    expect(await screen.findByText("new alpha")).toBeTruthy();
+    expect(screen.getByText("Show 2 unchanged lines")).toBeTruthy();
+
+    fireEvent.click(screen.getByText("Show 2 unchanged lines"));
+    expect((await screen.findAllByText("line 11")).length).toBeGreaterThan(0);
+  });
+
+  it("rebinds the git diff sidebar to another shell window", async () => {
+    const fetchMock = createAuthenticatedFetchMock((path) => {
+      if (path === "/v1/terminal/sessions/term-1/git/status") {
+        return jsonResponse({
+          state: "ready",
+          repo_root: "/home/ubuntu/repo-one",
+          branch: "main",
+          files: [{ path: "web/src/app.tsx", kind: "modified" }],
+        });
+      }
+      if (path === "/v1/terminal/sessions/term-1/git/diff") {
+        return jsonResponse({
+          state: "ready",
+          path: "web/src/app.tsx",
+          additions: 1,
+          deletions: 1,
+          patch: `diff --git a/web/src/app.tsx b/web/src/app.tsx
+@@ -1 +1 @@
+-first
++second
+`,
+        });
+      }
+      if (path === "/v1/terminal/sessions/term-2/git/status") {
+        return jsonResponse({
+          state: "ready",
+          repo_root: "/home/ubuntu/repo-two",
+          branch: "feature",
+          files: [{ path: "web/src/store.ts", kind: "modified" }],
+        });
+      }
+      if (path === "/v1/terminal/sessions/term-2/git/diff") {
+        return jsonResponse({
+          state: "ready",
+          path: "web/src/store.ts",
+          additions: 1,
+          deletions: 0,
+          patch: `diff --git a/web/src/store.ts b/web/src/store.ts
+@@ -1,0 +1 @@
++store state
+`,
+        });
+      }
+      return undefined;
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderApp();
+
+    fireEvent.click(await screen.findByRole("button", { name: "New shell" }));
+    fireEvent.click(await screen.findByRole("button", { name: "New shell" }));
+
+    await seedShellSession(0, "term-1", "/home/ubuntu/repo-one");
+    await seedShellSession(1, "term-2", "/home/ubuntu/repo-two");
+
+    fireEvent.click(screen.getByRole("button", { name: "Open git diff for m-1 shell" }));
+    expect((await screen.findAllByText("web/src/app.tsx")).length).toBeGreaterThan(0);
+
+    fireEvent.click(screen.getByRole("button", { name: "Open git diff for m-1 shell 2" }));
+
+    expect(await screen.findByRole("heading", { name: "m-1 shell 2" })).toBeTruthy();
+    expect((await screen.findAllByText("web/src/store.ts")).length).toBeGreaterThan(0);
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/v1/terminal/sessions/term-2/git/status",
+        expect.objectContaining({ method: "POST" }),
+      );
+    });
+  });
+
+  it("polls repo status while the sidebar is open and shows the non-repository state", async () => {
+    const fetchMock = createAuthenticatedFetchMock((path) => {
+      if (path === "/v1/terminal/sessions/term-1/git/status") {
+        return jsonResponse({ state: "not_repo" });
+      }
+      return undefined;
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderApp();
+
+    fireEvent.click(await screen.findByRole("button", { name: "New shell" }));
+    await seedShellSession(0, "term-1", "/home/ubuntu");
+
+    fireEvent.click(screen.getByRole("button", { name: "Open git diff for m-1 shell" }));
+    expect(await screen.findByText("This shell is not in a git repository")).toBeTruthy();
+
+    await waitFor(() => {
+      expect(
+        fetchMock.mock.calls.filter(([input]) => String(input) === "/v1/terminal/sessions/term-1/git/status"),
+      ).toHaveLength(2);
+    }, { timeout: 6_000 });
+  }, 10_000);
+
+  it("shows an explicit fallback when a file diff cannot be rendered inline", async () => {
+    const fetchMock = createAuthenticatedFetchMock((path) => {
+      if (path === "/v1/terminal/sessions/term-1/git/status") {
+        return jsonResponse({
+          state: "ready",
+          repo_root: "/home/ubuntu/repo",
+          branch: "main",
+          files: [{ path: "web/src/app.tsx", kind: "modified" }],
+        });
+      }
+      if (path === "/v1/terminal/sessions/term-1/git/diff") {
+        return jsonResponse({
+          state: "too_large",
+          path: "web/src/app.tsx",
+          message: "Patch exceeds the inline rendering limit.",
+        });
+      }
+      return undefined;
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderApp();
+
+    fireEvent.click(await screen.findByRole("button", { name: "New shell" }));
+    await seedShellSession(0, "term-1", "/home/ubuntu/repo");
+
+    fireEvent.click(screen.getByRole("button", { name: "Open git diff for m-1 shell" }));
+
+    expect(await screen.findByText("Inline diff unavailable")).toBeTruthy();
+    expect(screen.getByText("Patch exceeds the inline rendering limit.")).toBeTruthy();
   });
 });

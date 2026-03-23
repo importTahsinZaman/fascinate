@@ -53,6 +53,8 @@ type terminalManager interface {
 	CreateSession(context.Context, string, string, int, int) (browserterm.SessionInit, error)
 	ReattachSession(context.Context, string, string, int, int) (browserterm.SessionInit, error)
 	CloseSession(context.Context, string, string) error
+	GetGitStatus(context.Context, string, string, string) (browserterm.GitRepoStatus, error)
+	GetGitDiff(context.Context, string, string, browserterm.GitDiffRequest) (browserterm.GitFileDiff, error)
 	StreamSession(http.ResponseWriter, *http.Request, string) error
 	Diagnostics() browserterm.Diagnostics
 }
@@ -299,6 +301,58 @@ func New(cfg config.Config, store *database.Store, runtime runtimeChecker, machi
 			if err := terminals.StreamSession(w, r, parts[0]); err != nil {
 				writeServiceError(w, err)
 			}
+			return
+		}
+		if len(parts) == 3 && parts[1] == "git" && parts[2] == "status" {
+			if r.Method != http.MethodPost {
+				writeMethodNotAllowed(w, http.MethodPost)
+				return
+			}
+			ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+			defer cancel()
+			session, err := requireBrowserSession(ctx, r, cfg, auth)
+			if err != nil {
+				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
+				return
+			}
+			var body struct {
+				Cwd string `json:"cwd"`
+			}
+			if err := decodeJSON(r, &body); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
+			status, err := terminals.GetGitStatus(ctx, session.User.Email, parts[0], body.Cwd)
+			if err != nil {
+				writeServiceError(w, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, status)
+			return
+		}
+		if len(parts) == 3 && parts[1] == "git" && parts[2] == "diff" {
+			if r.Method != http.MethodPost {
+				writeMethodNotAllowed(w, http.MethodPost)
+				return
+			}
+			ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+			defer cancel()
+			session, err := requireBrowserSession(ctx, r, cfg, auth)
+			if err != nil {
+				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
+				return
+			}
+			var body browserterm.GitDiffRequest
+			if err := decodeJSON(r, &body); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
+			diff, err := terminals.GetGitDiff(ctx, session.User.Email, parts[0], body)
+			if err != nil {
+				writeServiceError(w, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, diff)
 			return
 		}
 		if len(parts) == 2 && parts[1] == "attach" {

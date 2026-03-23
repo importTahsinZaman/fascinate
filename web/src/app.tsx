@@ -24,6 +24,7 @@ import {
   type WorkspaceViewport,
   type WorkspaceWindow,
 } from "./api";
+import { GitDiffSidebar } from "./git-diff-sidebar";
 import { getMachineColorStyle, getMachineColorStyles } from "./machine-colors";
 import { useWorkspaceStore } from "./store";
 
@@ -570,6 +571,7 @@ function CommandCenter() {
           closingShellIDs={closingShellIDs}
           onCloseShell={(window) => closeShellWindow(window)}
         />
+        <GitDiffSidebar />
       </div>
       <aside className="control-sidebar" aria-label="Workspace controls">
         <div className="control-sidebar-scroll">
@@ -808,6 +810,8 @@ function WorkspaceCanvas({
   const moveWindow = useWorkspaceStore((state) => state.moveWindow);
   const setWindowSession = useWorkspaceStore((state) => state.setWindowSession);
   const setWindowCwd = useWorkspaceStore((state) => state.setWindowCwd);
+  const openGitDiffSidebar = useWorkspaceStore((state) => state.openGitDiffSidebar);
+  const gitDiffSidebarWindowID = useWorkspaceStore((state) => state.gitDiffSidebar.windowID);
 
   const workspaceViewportRef = useRef<HTMLDivElement | null>(null);
   const viewportRef = useRef(viewport);
@@ -1117,6 +1121,11 @@ function WorkspaceCanvas({
                 requestViewportFocus(window.id);
               }}
               onMove={(x, y) => moveWindow(window.id, x, y)}
+              onOpenGitDiff={() => {
+                focusWindow(window.id);
+                openGitDiffSidebar(window.id);
+              }}
+              isGitDiffActive={gitDiffSidebarWindowID === window.id}
               toCanvasPoint={getCanvasPointFromClient}
             >
               <Suspense fallback={<div className="terminal-loading">Opening terminal…</div>}>
@@ -1152,6 +1161,8 @@ function WindowFrame({
   onFocus,
   onRequestViewportFocus,
   onMove,
+  onOpenGitDiff,
+  isGitDiffActive,
   toCanvasPoint,
 }: {
   window: WorkspaceWindow;
@@ -1162,6 +1173,8 @@ function WindowFrame({
   onFocus: () => void;
   onRequestViewportFocus: () => void;
   onMove: (x: number, y: number) => void;
+  onOpenGitDiff: () => void;
+  isGitDiffActive: boolean;
   toCanvasPoint: (clientX: number, clientY: number) => { x: number; y: number };
 }) {
   const dragOffsetRef = useRef<{ x: number; y: number } | null>(null);
@@ -1230,7 +1243,20 @@ function WindowFrame({
             <strong>{layoutWindow.title}</strong>
           </div>
         </div>
-        <div className="window-header-actions window-header-actions-end" aria-hidden="true" />
+        <div className="window-header-actions window-header-actions-end">
+          <button
+            className="window-header-button"
+            type="button"
+            aria-label={`Open git diff for ${layoutWindow.title}`}
+            title={`Open git diff for ${layoutWindow.title}`}
+            data-active={isGitDiffActive ? "true" : "false"}
+            onPointerDown={(event) => event.stopPropagation()}
+            onDoubleClick={(event) => event.stopPropagation()}
+            onClick={onOpenGitDiff}
+          >
+            Diff
+          </button>
+        </div>
       </header>
       <div className="window-body">{children}</div>
     </div>

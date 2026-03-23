@@ -15,7 +15,13 @@ function overlaps(
 
 describe("workspace store", () => {
   beforeEach(() => {
-    useWorkspaceStore.setState({ windows: [], windowCwds: {}, viewportFocusRequest: null, hydrated: false });
+    useWorkspaceStore.setState({
+      windows: [],
+      windowCwds: {},
+      viewportFocusRequest: null,
+      gitDiffSidebar: { windowID: null, selectedPath: null },
+      hydrated: false,
+    });
   });
 
   it("opens terminals as distinct windows", () => {
@@ -83,6 +89,25 @@ describe("workspace store", () => {
     useWorkspaceStore.getState().closeWindow(windowId);
 
     expect(useWorkspaceStore.getState().windowCwds[windowId]).toBeUndefined();
+  });
+
+  it("keeps git diff sidebar state out of persisted layouts and clears it when the shell closes", () => {
+    useWorkspaceStore.getState().openTerminal("m-1");
+    const windowId = useWorkspaceStore.getState().windows[0].id;
+
+    useWorkspaceStore.getState().openGitDiffSidebar(windowId);
+    useWorkspaceStore.getState().selectGitDiffSidebarFile("web/src/app.tsx");
+
+    expect(useWorkspaceStore.getState().gitDiffSidebar).toEqual({
+      windowID: windowId,
+      selectedPath: "web/src/app.tsx",
+      selectedPreviousPath: undefined,
+    });
+    expect(useWorkspaceStore.getState().serialize()).not.toHaveProperty("gitDiffSidebar");
+
+    useWorkspaceStore.getState().closeWindow(windowId);
+
+    expect(useWorkspaceStore.getState().gitDiffSidebar).toEqual({ windowID: null, selectedPath: null });
   });
 
   it("persists canvas viewport state", () => {
