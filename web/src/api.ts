@@ -54,6 +54,8 @@ export type GitRepoStatus = {
   state: string;
   repo_root?: string;
   branch?: string;
+  additions?: number;
+  deletions?: number;
   files?: GitChangedFile[];
 };
 

@@ -1,4 +1,5 @@
 import {
+  Fragment,
   startTransition,
   useDeferredValue,
   useEffect,
@@ -6,6 +7,18 @@ import {
   useRef,
   useState,
 } from "react";
+import {
+  ArrowDown,
+  ArrowUp,
+  ArrowsClockwise,
+  ArrowsVertical,
+  CaretDown,
+  CaretRight,
+  Check,
+  CopySimple,
+  GitBranch,
+  X,
+} from "@phosphor-icons/react";
 import { useQuery } from "@tanstack/react-query";
 import {
   getTerminalGitDiff,
@@ -16,7 +29,6 @@ import {
 import {
   parseUnifiedDiff,
   type ParsedGitDiff,
-  type UnifiedDiffCollapsedRow,
   type UnifiedDiffLineRow,
 } from "./git-diff";
 import { highlightDiffRows, type HighlightedDiffLineMap } from "./shiki-highlight";
@@ -26,6 +38,7 @@ const statusPollIntervalMs = 4_000;
 const initialDiffPageSize = 2;
 const diffPageStep = 3;
 const diffPagePreloadThresholdPx = 720;
+const collapsedRevealStep = 5;
 
 export function GitDiffSidebar() {
   const windows = useWorkspaceStore((state) => state.windows);
@@ -50,6 +63,8 @@ export function GitDiffSidebar() {
   });
 
   const files = statusQuery.data?.state === "ready" ? statusQuery.data.files ?? [] : [];
+  const totalAdditions = statusQuery.data?.state === "ready" ? statusQuery.data.additions ?? 0 : null;
+  const totalDeletions = statusQuery.data?.state === "ready" ? statusQuery.data.deletions ?? 0 : null;
   const deferredFiles = useDeferredValue(files);
   const [visibleFileCount, setVisibleFileCount] = useState(initialDiffPageSize);
   const streamRef = useRef<HTMLDivElement | null>(null);
@@ -106,29 +121,57 @@ export function GitDiffSidebar() {
     <aside className="git-diff-sidebar" aria-label="Git diff sidebar">
       <header className="git-diff-sidebar-header">
         <div className="git-diff-sidebar-header-copy">
-          <h2>{activeWindow.machineName}</h2>
-          <div className="git-diff-sidebar-header-meta">
+          <div className="git-diff-sidebar-header-primary">
+            <h2>{activeWindow.machineName}</h2>
             <span
               className="git-diff-sidebar-header-cwd"
               title={cwd || "Waiting for shell context from the active terminal session."}
             >
               {cwd || "Waiting for shell context from the active terminal session."}
             </span>
-            {statusQuery.data?.branch ? (
-              <span className="git-diff-sidebar-header-branch">{statusQuery.data.branch}</span>
+          </div>
+          <div className="git-diff-sidebar-header-meta">
+            {statusQuery.data?.state === "ready" && statusQuery.data.branch ? (
+              <span className="git-diff-sidebar-header-branch" title={statusQuery.data.branch}>
+                <GitBranch size={12} weight="bold" aria-hidden="true" />
+                {statusQuery.data.branch}
+              </span>
+            ) : null}
+            {statusQuery.data?.state === "ready" ? (
+              <span className="git-diff-sidebar-header-file-count">
+                {formatChangedFilesLabel(files.length)}
+              </span>
             ) : null}
           </div>
         </div>
         <div className="git-diff-sidebar-header-actions">
+          {totalAdditions !== null && totalDeletions !== null ? (
+            <div className="git-diff-sidebar-header-totals" aria-label="Overall changed lines">
+              <span className="git-diff-stat git-diff-stat-added">+{totalAdditions}</span>
+              <span className="git-diff-stat git-diff-stat-deleted">-{totalDeletions}</span>
+            </div>
+          ) : null}
           <button
+            className="git-diff-sidebar-action"
             type="button"
             onClick={() => void statusQuery.refetch()}
             disabled={!sessionId || !cwd || statusQuery.isFetching}
+            aria-label={statusQuery.isFetching ? "Refreshing diff" : "Refresh diff"}
+            title={statusQuery.isFetching ? "Refreshing diff" : "Refresh diff"}
           >
-            {statusQuery.isFetching ? "Refreshing…" : "Refresh"}
+            <ArrowsClockwise
+              className={`icon-svg${statusQuery.isFetching ? " git-diff-sidebar-action-icon-spinning" : ""}`}
+              weight="regular"
+            />
           </button>
-          <button type="button" onClick={closeGitDiffSidebar}>
-            Close
+          <button
+            className="git-diff-sidebar-action"
+            type="button"
+            onClick={closeGitDiffSidebar}
+            aria-label="Close diff sidebar"
+            title="Close diff sidebar"
+          >
+            <X className="icon-svg" weight="regular" />
           </button>
         </div>
       </header>
@@ -184,14 +227,6 @@ export function GitDiffSidebar() {
             className="git-diff-stream"
             aria-label="Git file diffs"
           >
-            <div className="git-diff-stream-summary">
-              <div>
-                <strong>
-                  {files.length} changed file{files.length === 1 ? "" : "s"}
-                </strong>
-              </div>
-            </div>
-
             {visibleFiles.map((file) => (
               <GitDiffFileCard
                 key={`${file.previous_path ?? ""}:${file.path}`}
@@ -237,6 +272,7 @@ function GitDiffFileCard({
 }) {
   const cardRef = useRef<HTMLElement | null>(null);
   const [shouldFetchDiff, setShouldFetchDiff] = useState(false);
+  const [isCollapsed, setIsCollapsed] = useState(false);
 
   useEffect(() => {
     if (shouldFetchDiff) {
@@ -299,76 +335,139 @@ function GitDiffFileCard({
   }, [diffQuery.data]);
 
   return (
-    <article ref={cardRef} className="git-diff-file-card">
-      <FilePanelHeader diff={diffQuery.data} file={file} />
+    <article ref={cardRef} className="git-diff-file-card" data-collapsed={isCollapsed ? "true" : "false"}>
+      <div className="git-diff-file-header-shell">
+        <FilePanelHeader
+          collapsed={isCollapsed}
+          diff={diffQuery.data}
+          file={file}
+          onToggleCollapse={() => setIsCollapsed((current) => !current)}
+        />
+      </div>
 
-      {!shouldFetchDiff ? (
-        <SidebarStateCard
-          title="Diff queued"
-          description="Scroll this file into view to load its unified patch."
-          compact
-        />
-      ) : diffQuery.isPending ? (
-        <SidebarStateCard title="Loading file diff" description="Fetching this file patch." compact />
-      ) : diffQuery.error ? (
-        <SidebarStateCard
-          title="Unable to load this file diff"
-          description={
-            diffQuery.error instanceof Error
-              ? diffQuery.error.message
-              : "The selected file patch could not be loaded."
-          }
-          actionLabel="Retry"
-          onAction={() => void diffQuery.refetch()}
-          compact
-        />
-      ) : !diffQuery.data ? (
-        <SidebarStateCard
-          title="Diff unavailable"
-          description="Fascinate could not load this file patch."
-          compact
-        />
-      ) : diffQuery.data.state !== "ready" ? (
-        <div className="git-diff-nonrenderable">
-          <strong>Inline diff unavailable</strong>
-          <p>{diffQuery.data.message ?? "Fascinate cannot render this file as inline text."}</p>
+      {!isCollapsed ? (
+        <div className="git-diff-file-body">
+          {!shouldFetchDiff ? (
+            <SidebarStateCard
+              title="Diff queued"
+              description="Scroll this file into view to load its unified patch."
+              compact
+            />
+          ) : diffQuery.isPending ? (
+            <SidebarStateCard title="Loading file diff" description="Fetching this file patch." compact />
+          ) : diffQuery.error ? (
+            <SidebarStateCard
+              title="Unable to load this file diff"
+              description={
+                diffQuery.error instanceof Error
+                  ? diffQuery.error.message
+                  : "The selected file patch could not be loaded."
+              }
+              actionLabel="Retry"
+              onAction={() => void diffQuery.refetch()}
+              compact
+            />
+          ) : !diffQuery.data ? (
+            <SidebarStateCard
+              title="Diff unavailable"
+              description="Fascinate could not load this file patch."
+              compact
+            />
+          ) : diffQuery.data.state !== "ready" ? (
+            <div className="git-diff-nonrenderable">
+              <strong>Inline diff unavailable</strong>
+              <p>{diffQuery.data.message ?? "Fascinate cannot render this file as inline text."}</p>
+            </div>
+          ) : parsedDiff && parsedDiff.rows.length > 0 ? (
+            <UnifiedDiffRows path={file.path} rows={parsedDiff.rows} />
+          ) : (
+            <div className="git-diff-nonrenderable">
+              <strong>No inline hunks available</strong>
+              <p>This file has no textual hunks to render in the unified diff view.</p>
+            </div>
+          )}
         </div>
-      ) : parsedDiff && parsedDiff.rows.length > 0 ? (
-        <UnifiedDiffRows path={file.path} rows={parsedDiff.rows} />
-      ) : (
-        <div className="git-diff-nonrenderable">
-          <strong>No inline hunks available</strong>
-          <p>This file has no textual hunks to render in the unified diff view.</p>
-        </div>
-      )}
+      ) : null}
     </article>
   );
 }
 
 function FilePanelHeader({
+  collapsed,
   diff,
   file,
+  onToggleCollapse,
 }: {
+  collapsed: boolean;
   diff?: GitFileDiff;
   file: GitChangedFile;
+  onToggleCollapse: () => void;
 }) {
   const displayName = useMemo(() => file.path.split("/").at(-1) ?? file.path, [file.path]);
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    if (!copied) {
+      return;
+    }
+    const timeoutID = globalThis.setTimeout(() => {
+      setCopied(false);
+    }, 1200);
+    return () => globalThis.clearTimeout(timeoutID);
+  }, [copied]);
+
+  const copyFilePath = () => {
+    if (typeof navigator === "undefined" || typeof navigator.clipboard?.writeText !== "function") {
+      return;
+    }
+    void navigator.clipboard.writeText(file.path)
+      .then(() => {
+        setCopied(true);
+      })
+      .catch(() => {
+        setCopied(false);
+      });
+  };
 
   return (
-    <div className="git-diff-file-header">
-      <div className="git-diff-file-header-copy">
-        <div className="git-diff-file-header-title">
-        <strong>{displayName}</strong>
-        <span title={file.path}>{file.path}</span>
+    <div className={`git-diff-file-header${collapsed ? " git-diff-file-header-collapsed" : ""}`}>
+      <div className="git-diff-file-header-main">
+        <button
+          type="button"
+          className="git-diff-file-icon-button"
+          onClick={onToggleCollapse}
+          aria-label={`${collapsed ? "Expand" : "Collapse"} file`}
+        >
+          {collapsed ? <CaretRight size={18} weight="bold" /> : <CaretDown size={18} weight="bold" />}
+        </button>
+        <div className="git-diff-file-header-copy">
+          <div className="git-diff-file-header-title">
+            <strong>{displayName}</strong>
+            <div className="git-diff-file-header-path-row">
+              <span className="git-diff-file-path" title={file.path}>
+                {file.path}
+              </span>
+              <button
+                type="button"
+                className="git-diff-file-copy-button"
+                onClick={copyFilePath}
+                data-copied={copied ? "true" : "false"}
+                aria-label={`${copied ? "Copied" : "Copy"} path ${file.path}`}
+                title={`${copied ? "Copied" : "Copy"} path ${file.path}`}
+              >
+                {copied ? <Check size={14} weight="bold" /> : <CopySimple size={16} />}
+              </button>
+            </div>
+          </div>
         </div>
-      </div>
-      <div className="git-diff-file-header-meta">
-        {typeof diff?.additions === "number" ? (
-          <span className="git-diff-stat git-diff-stat-added">+{diff.additions}</span>
-        ) : null}
-        {typeof diff?.deletions === "number" ? (
-          <span className="git-diff-stat git-diff-stat-deleted">-{diff.deletions}</span>
-        ) : null}
+        <div className="git-diff-file-header-meta">
+          {typeof diff?.additions === "number" ? (
+            <span className="git-diff-stat git-diff-stat-added">+{diff.additions}</span>
+          ) : null}
+          {typeof diff?.deletions === "number" ? (
+            <span className="git-diff-stat git-diff-stat-deleted">-{diff.deletions}</span>
+          ) : null}
+        </div>
       </div>
     </div>
   );
@@ -381,12 +480,14 @@ function UnifiedDiffRows({
   path: string;
   rows: ParsedGitDiff["rows"];
 }) {
-  const [expandedRows, setExpandedRows] = useState<Record<string, boolean>>({});
+  const [collapsedRowState, setCollapsedRowState] = useState<Record<string, { head: number; tail: number; expanded: boolean }>>(
+    {},
+  );
   const [highlightedLines, setHighlightedLines] = useState<HighlightedDiffLineMap>({});
   const lineRows = useMemo(() => collectLineRows(rows), [rows]);
 
   useEffect(() => {
-    setExpandedRows({});
+    setCollapsedRowState({});
   }, [rows]);
 
   useEffect(() => {
@@ -415,21 +516,63 @@ function UnifiedDiffRows({
 
   return (
     <div className="git-diff-unified" role="table" aria-label="Unified diff">
-      {rows.map((row) =>
-        row.type === "collapsed" ? (
-          expandedRows[row.id] ? (
-            <ExpandedContextRows key={row.id} highlightedLines={highlightedLines} rows={row.rows} />
-          ) : (
+      {rows.map((row) => {
+        if (row.type !== "collapsed") {
+          return <UnifiedDiffLine key={row.id} highlightedLine={highlightedLines[row.id]} row={row} />;
+        }
+
+        const collapsedState = collapsedRowState[row.id] ?? { head: 0, tail: 0, expanded: false };
+        const remainingHiddenCount = Math.max(0, row.rows.length - collapsedState.head - collapsedState.tail);
+        if (collapsedState.expanded || remainingHiddenCount === 0) {
+          return <ExpandedContextRows key={row.id} highlightedLines={highlightedLines} rows={row.rows} />;
+        }
+
+        const visibleHeadRows = collapsedState.head > 0 ? row.rows.slice(0, collapsedState.head) : [];
+        const visibleTailRows = collapsedState.tail > 0 ? row.rows.slice(row.rows.length - collapsedState.tail) : [];
+
+        return (
+          <Fragment key={row.id}>
+            <ExpandedContextRows highlightedLines={highlightedLines} rows={visibleHeadRows} />
             <CollapsedContextRow
-              key={row.id}
-              row={row}
-              onExpand={() => setExpandedRows((current) => ({ ...current, [row.id]: true }))}
+              hiddenCount={remainingHiddenCount}
+              showEdgeControls={row.rows.length > collapsedRevealStep * 2 || collapsedState.head > 0 || collapsedState.tail > 0}
+              topCount={Math.min(collapsedRevealStep, remainingHiddenCount)}
+              bottomCount={Math.min(collapsedRevealStep, remainingHiddenCount)}
+              onExpandAll={() =>
+                setCollapsedRowState((current) => ({
+                  ...current,
+                  [row.id]: { head: row.rows.length, tail: 0, expanded: true },
+                }))
+              }
+              onExpandHead={() =>
+                setCollapsedRowState((current) => {
+                  const nextState = current[row.id] ?? { head: 0, tail: 0, expanded: false };
+                  return {
+                    ...current,
+                    [row.id]: {
+                      ...nextState,
+                      head: Math.min(row.rows.length - nextState.tail, nextState.head + collapsedRevealStep),
+                    },
+                  };
+                })
+              }
+              onExpandTail={() =>
+                setCollapsedRowState((current) => {
+                  const nextState = current[row.id] ?? { head: 0, tail: 0, expanded: false };
+                  return {
+                    ...current,
+                    [row.id]: {
+                      ...nextState,
+                      tail: Math.min(row.rows.length - nextState.head, nextState.tail + collapsedRevealStep),
+                    },
+                  };
+                })
+              }
             />
-          )
-        ) : (
-          <UnifiedDiffLine key={row.id} highlightedLine={highlightedLines[row.id]} row={row} />
-        ),
-      )}
+            <ExpandedContextRows highlightedLines={highlightedLines} rows={visibleTailRows} />
+          </Fragment>
+        );
+      })}
     </div>
   );
 }
@@ -451,21 +594,71 @@ function ExpandedContextRows({
 }
 
 function CollapsedContextRow({
-  row,
-  onExpand,
+  hiddenCount,
+  showEdgeControls,
+  topCount,
+  bottomCount,
+  onExpandAll,
+  onExpandHead,
+  onExpandTail,
 }: {
-  row: UnifiedDiffCollapsedRow;
-  onExpand: () => void;
+  hiddenCount: number;
+  showEdgeControls: boolean;
+  topCount: number;
+  bottomCount: number;
+  onExpandAll: () => void;
+  onExpandHead: () => void;
+  onExpandTail: () => void;
 }) {
   return (
-    <button
-      type="button"
-      className="git-diff-collapsed"
-      onClick={onExpand}
-      aria-label={`Expand ${row.hiddenCount} unchanged line${row.hiddenCount === 1 ? "" : "s"}`}
-    >
-      <span>All {row.hiddenCount} line{row.hiddenCount === 1 ? "" : "s"}</span>
-    </button>
+    <div className="git-diff-collapsed" role="group" aria-label={`${hiddenCount} hidden unchanged lines`}>
+      <div className="git-diff-collapsed-inner">
+        <div className="git-diff-collapsed-copy">
+          <span className="git-diff-collapsed-actions">
+            {showEdgeControls ? (
+              <button
+                type="button"
+                className="git-diff-collapsed-button"
+                onClick={onExpandHead}
+                aria-label={`Reveal ${topCount} earlier unchanged line${topCount === 1 ? "" : "s"}`}
+                title={`Expand ${topCount} lines up`}
+              >
+                <ArrowUp size={12} />
+                <span>
+                  {topCount} line{topCount === 1 ? "" : "s"}
+                </span>
+              </button>
+            ) : null}
+            <button
+              type="button"
+              className="git-diff-collapsed-button"
+              onClick={onExpandAll}
+              aria-label={`Expand all ${hiddenCount} unchanged line${hiddenCount === 1 ? "" : "s"}`}
+              title="Expand all lines"
+            >
+              <ArrowsVertical size={12} />
+              <span>
+                All {hiddenCount} line{hiddenCount === 1 ? "" : "s"}
+              </span>
+            </button>
+            {showEdgeControls ? (
+              <button
+                type="button"
+                className="git-diff-collapsed-button"
+                onClick={onExpandTail}
+                aria-label={`Reveal ${bottomCount} later unchanged line${bottomCount === 1 ? "" : "s"}`}
+                title={`Expand ${bottomCount} lines down`}
+              >
+                <ArrowDown size={12} />
+                <span>
+                  {bottomCount} line{bottomCount === 1 ? "" : "s"}
+                </span>
+              </button>
+            ) : null}
+          </span>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -536,6 +729,10 @@ function collectLineRows(rows: ParsedGitDiff["rows"]) {
     lineRows.push(...row.rows);
   }
   return lineRows;
+}
+
+function formatChangedFilesLabel(count: number) {
+  return `${count} file${count === 1 ? "" : "s"} changed`;
 }
 
 function tokenStyle(fontStyle: number | undefined, color: string | undefined) {

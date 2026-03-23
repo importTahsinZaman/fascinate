@@ -36,7 +36,7 @@ Fascinate currently gives us:
   - serve the browser command center on the primary Fascinate origin
   - authenticate browser users through emailed verification codes and DB-backed sessions
   - issue browser terminal sessions and stream PTY traffic over dedicated WebSockets
-  - inspect shell-scoped git working trees in a unified review overlay above the control sidebar with scroll-batched file loading, Shiki syntax highlighting, and without resizing the workspace canvas
+  - inspect shell-scoped git working trees in a unified review overlay above the control sidebar with a repo-summary header, branch-chip and animated refresh chrome, sticky stacked file cards, full-width collapsed-context bars with quiet static link chrome, compact review-grade diff chrome, inline path copy affordances with visible copy feedback, scroll-batched file loading, Shiki syntax highlighting, and without resizing the workspace canvas
   - bridge terminal-driven clipboard copy requests into the browser's local clipboard when supported
   - persist per-user workspace layouts for the browser terminal canvas
 

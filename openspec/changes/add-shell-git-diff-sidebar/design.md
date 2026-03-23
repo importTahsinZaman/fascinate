@@ -2,7 +2,7 @@
 
 Fascinate's browser workspace already gives each terminal window a persistent session ID, a window header, and client-side current-working-directory metadata derived from the terminal stream. That is enough to anchor a shell-scoped git inspection feature without changing the VM/runtime model or inventing a second session primitive.
 
-The current browser terminal surface stops at raw shell access. Users can keep many shells open, but they cannot inspect a working tree in a review-friendly way without dropping into manual `git status` / `git diff` commands or leaving the product for another tool. The requested UX is a dark, elevated, unified diff presentation that opens from the shell header as an overlay above the control sidebar and does not push or resize the canvas.
+The current browser terminal surface stops at raw shell access. Users can keep many shells open, but they cannot inspect a working tree in a review-friendly way without dropping into manual `git status` / `git diff` commands or leaving the product for another tool. The requested UX is a dark, elevated, unified diff presentation that opens from the shell header as an overlay above the control sidebar and does not push or resize the canvas. The review surface should feel like a purpose-built hosted diff tool, with compact stacked cards, sticky split file headers, and restrained blue/red/green banding rather than generic terminal-themed panels.
 
 Relevant constraints:
 - The diff surface must stay browser-first and must not reintroduce terminal-first product assumptions.
@@ -18,7 +18,7 @@ Relevant constraints:
 - Resolve repository context from the selected shell's latest known cwd, including shells opened in nested directories inside a repo.
 - Fetch git status and file diffs through explicit shell-scoped backend APIs that run outside the interactive PTY path.
 - Keep the sidebar reasonably current while open through bounded polling rather than prompt hooks or long-lived file watchers.
-- Render changed files in a review-style unified diff UI with sticky file headers, change counts, gutters, expandable collapsed context, and a continuous stacked file stream.
+- Render changed files in a review-style unified diff UI with a repo-summary header, branch-chip and animated panel chrome, inline copy-path affordances with visible acknowledgment, sticky file headers, change counts, gutters, full-width expandable collapsed context, quiet static collapsed-link chrome, and a continuous stacked file stream.
 - Keep diff state ephemeral to the browser session so workspace layout persistence remains unchanged.
 
 **Non-Goals:**

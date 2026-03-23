@@ -177,6 +177,8 @@ func TestParseGitRepoStatusOutputParsesTrackedUntrackedAndRenamedFiles(t *testin
 	output := strings.Join([]string{
 		"/home/ubuntu/project",
 		"main",
+		"2",
+		"1",
 	}, "\n") + "\x00" +
 		"1 .M N... 100644 100644 100644 abcdef1 abcdef1 web/src/app.tsx\x00" +
 		"2 R. N... 100644 100644 100644 abcdef1 abcdef2 R100 web/src/new.tsx\x00web/src/old.tsx\x00" +
@@ -188,6 +190,9 @@ func TestParseGitRepoStatusOutputParsesTrackedUntrackedAndRenamedFiles(t *testin
 	}
 	if status.State != gitRepoStatusReady || status.RepoRoot != "/home/ubuntu/project" || status.Branch != "main" {
 		t.Fatalf("unexpected status %+v", status)
+	}
+	if status.Additions != 2 || status.Deletions != 1 {
+		t.Fatalf("unexpected status totals %+v", status)
 	}
 	if len(status.Files) != 3 {
 		t.Fatalf("expected 3 files, got %+v", status.Files)

@@ -1168,9 +1168,11 @@ func TestTerminalGitStatusUsesBrowserSession(t *testing.T) {
 	}
 	terminals := &fakeTerminalManager{
 		gitStatus: browserterm.GitRepoStatus{
-			State:    "ready",
-			RepoRoot: "/home/ubuntu/project",
-			Branch:   "main",
+			State:     "ready",
+			RepoRoot:  "/home/ubuntu/project",
+			Branch:    "main",
+			Additions: 7,
+			Deletions: 3,
 			Files: []browserterm.GitChangedFile{
 				{Path: "web/src/app.tsx", Kind: "modified", WorktreeStatus: "M"},
 			},
@@ -1195,6 +1197,9 @@ func TestTerminalGitStatusUsesBrowserSession(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), `"repo_root":"/home/ubuntu/project"`) {
 		t.Fatalf("expected repo root in response, got %s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"additions":7`) || !strings.Contains(rec.Body.String(), `"deletions":3`) {
+		t.Fatalf("expected repo totals in response, got %s", rec.Body.String())
 	}
 }
 

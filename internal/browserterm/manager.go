@@ -53,10 +53,12 @@ type SessionInit struct {
 }
 
 type GitRepoStatus struct {
-	State    string           `json:"state"`
-	RepoRoot string           `json:"repo_root,omitempty"`
-	Branch   string           `json:"branch,omitempty"`
-	Files    []GitChangedFile `json:"files,omitempty"`
+	State     string           `json:"state"`
+	RepoRoot  string           `json:"repo_root,omitempty"`
+	Branch    string           `json:"branch,omitempty"`
+	Additions int              `json:"additions,omitempty"`
+	Deletions int              `json:"deletions,omitempty"`
+	Files     []GitChangedFile `json:"files,omitempty"`
 }
 
 type GitChangedFile struct {
@@ -322,7 +324,32 @@ func (m *Manager) GetGitStatus(ctx context.Context, userEmail, sessionID, cwd st
 		"  exit 0",
 		"fi",
 		`branch=$(git -C "$repo_root" rev-parse --abbrev-ref HEAD 2>/dev/null || true)`,
-		`printf '%s\n%s\000' "$repo_root" "$branch"`,
+		`additions=0`,
+		`deletions=0`,
+		`numstat_totals() {`,
+		`  awk 'NF >= 2 { if ($1 != "-") add += $1; if ($2 != "-") del += $2 } END { printf "%d %d\n", add + 0, del + 0 }'`,
+		`}`,
+		`merge_totals() {`,
+		`  totals=$1`,
+		`  set -- $totals`,
+		`  additions=$((additions + ${1:-0}))`,
+		`  deletions=$((deletions + ${2:-0}))`,
+		`}`,
+		`if git -C "$repo_root" rev-parse --verify HEAD >/dev/null 2>&1; then`,
+		`  merge_totals "$(git -C "$repo_root" -c color.ui=false --no-pager diff --numstat --find-renames --submodule=short HEAD -- | numstat_totals)"`,
+		`else`,
+		`  merge_totals "$(git -C "$repo_root" -c color.ui=false --no-pager diff --numstat --find-renames --submodule=short --cached -- | numstat_totals)"`,
+		`  merge_totals "$(git -C "$repo_root" -c color.ui=false --no-pager diff --numstat --find-renames --submodule=short -- | numstat_totals)"`,
+		`fi`,
+		`while IFS= read -r untracked_path; do`,
+		`  if [ -z "$untracked_path" ]; then`,
+		`    continue`,
+		`  fi`,
+		`  merge_totals "$(git -c color.ui=false --no-pager diff --no-index --numstat -- /dev/null "$repo_root/$untracked_path" 2>/dev/null | numstat_totals)"`,
+		`done <<EOF_UNTRACKED`,
+		`$(git -C "$repo_root" ls-files --others --exclude-standard)`,
+		`EOF_UNTRACKED`,
+		`printf '%s\n%s\n%d\n%d\000' "$repo_root" "$branch" "$additions" "$deletions"`,
 		`git -C "$repo_root" -c color.ui=false status --porcelain=v2 -z --untracked-files=all`,
 	}, "\n")
 
@@ -983,7 +1010,7 @@ func parseGitRepoStatusOutput(output string) (GitRepoStatus, error) {
 		return GitRepoStatus{}, fmt.Errorf("git status response missing header separator")
 	}
 
-	header := strings.SplitN(output[:separator], "\n", 2)
+	header := strings.Split(output[:separator], "\n")
 	if len(header) == 0 || strings.TrimSpace(header[0]) == "" {
 		return GitRepoStatus{}, fmt.Errorf("git status response missing repo root")
 	}
@@ -993,6 +1020,20 @@ func parseGitRepoStatusOutput(output string) (GitRepoStatus, error) {
 	}
 	if len(header) > 1 {
 		status.Branch = strings.TrimSpace(header[1])
+	}
+	if len(header) > 2 {
+		additions, err := parseGitStatusCount(header[2])
+		if err != nil {
+			return GitRepoStatus{}, err
+		}
+		status.Additions = additions
+	}
+	if len(header) > 3 {
+		deletions, err := parseGitStatusCount(header[3])
+		if err != nil {
+			return GitRepoStatus{}, err
+		}
+		status.Deletions = deletions
 	}
 
 	files, err := parseGitChangedFiles(output[separator+1:])
@@ -1059,6 +1100,18 @@ func parseGitChangedFiles(output string) ([]GitChangedFile, error) {
 		}
 	}
 	return files, nil
+}
+
+func parseGitStatusCount(value string) (int, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0, nil
+	}
+	count, err := strconv.Atoi(value)
+	if err != nil {
+		return 0, fmt.Errorf("invalid git status count %q", value)
+	}
+	return count, nil
 }
 
 func parseGitStatusPair(pair string) (string, string) {
