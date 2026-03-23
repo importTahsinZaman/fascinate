@@ -870,17 +870,17 @@ a {
 
 .git-diff-sidebar {
   position: absolute;
-  top: 12px;
+  top: 0;
   right: 0;
-  bottom: 12px;
-  width: min(784px, calc(100% - 48px));
+  bottom: 0;
+  width: min(706px, calc(100% - 48px));
   z-index: 120;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
   border-left: 1px solid var(--border-subtle);
   border-top: 1px solid rgba(255, 255, 255, 0.06);
   border-bottom: 1px solid rgba(255, 255, 255, 0.04);
-  border-radius: 18px 0 0 18px;
+  border-radius: 0;
   background: #171717;
   box-shadow: -32px 0 88px rgba(0, 0, 0, 0.5);
   backdrop-filter: blur(10px);
