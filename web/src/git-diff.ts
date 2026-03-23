@@ -1,29 +1,25 @@
-export type SplitDiffCellKind = "context" | "delete" | "add";
+export type UnifiedDiffLineKind = "context" | "delete" | "add";
 
-export type SplitDiffCell = {
-  lineNumber: number;
-  text: string;
-  kind: SplitDiffCellKind;
-};
-
-export type SplitDiffLineRow = {
+export type UnifiedDiffLineRow = {
   type: "line";
   id: string;
-  left?: SplitDiffCell;
-  right?: SplitDiffCell;
+  kind: UnifiedDiffLineKind;
+  oldLineNumber?: number;
+  newLineNumber?: number;
+  text: string;
 };
 
-export type SplitDiffCollapsedRow = {
+export type UnifiedDiffCollapsedRow = {
   type: "collapsed";
   id: string;
   hiddenCount: number;
-  rows: SplitDiffLineRow[];
+  rows: UnifiedDiffLineRow[];
 };
 
-export type SplitDiffRow = SplitDiffLineRow | SplitDiffCollapsedRow;
+export type UnifiedDiffRow = UnifiedDiffLineRow | UnifiedDiffCollapsedRow;
 
 export type ParsedGitDiff = {
-  rows: SplitDiffRow[];
+  rows: UnifiedDiffRow[];
 };
 
 type HunkHeader = {
@@ -35,7 +31,7 @@ const visibleContextLines = 3;
 
 export function parseUnifiedDiff(patch: string): ParsedGitDiff {
   const lines = patch.split("\n").map((line) => line.replace(/\r$/, ""));
-  const rows: SplitDiffLineRow[] = [];
+  const rows: UnifiedDiffLineRow[] = [];
   let rowID = 0;
 
   for (let index = 0; index < lines.length; ) {
@@ -61,63 +57,49 @@ export function parseUnifiedDiff(patch: string): ParsedGitDiff {
         rows.push({
           type: "line",
           id: `line-${rowID++}`,
-          left: { lineNumber: leftLine++, text: line.slice(1), kind: "context" },
-          right: { lineNumber: rightLine++, text: line.slice(1), kind: "context" },
+          kind: "context",
+          oldLineNumber: leftLine++,
+          newLineNumber: rightLine++,
+          text: line.slice(1),
         });
         index += 1;
         continue;
       }
 
       if (line.startsWith("-")) {
-        const deleted: SplitDiffCell[] = [];
         while (index < lines.length && lines[index].startsWith("-")) {
-          deleted.push({
-            lineNumber: leftLine++,
-            text: lines[index].slice(1),
-            kind: "delete",
-          });
-          index += 1;
-        }
-
-        const added: SplitDiffCell[] = [];
-        while (index < lines.length && lines[index].startsWith("+")) {
-          added.push({
-            lineNumber: rightLine++,
-            text: lines[index].slice(1),
-            kind: "add",
-          });
-          index += 1;
-        }
-
-        const pairCount = Math.max(deleted.length, added.length);
-        for (let pairIndex = 0; pairIndex < pairCount; pairIndex += 1) {
           rows.push({
             type: "line",
             id: `line-${rowID++}`,
-            left: deleted[pairIndex],
-            right: added[pairIndex],
+            kind: "delete",
+            oldLineNumber: leftLine++,
+            text: lines[index].slice(1),
           });
+          index += 1;
+        }
+        while (index < lines.length && lines[index].startsWith("+")) {
+          rows.push({
+            type: "line",
+            id: `line-${rowID++}`,
+            kind: "add",
+            newLineNumber: rightLine++,
+            text: lines[index].slice(1),
+          });
+          index += 1;
         }
         continue;
       }
 
       if (line.startsWith("+")) {
-        const added: SplitDiffCell[] = [];
         while (index < lines.length && lines[index].startsWith("+")) {
-          added.push({
-            lineNumber: rightLine++,
-            text: lines[index].slice(1),
-            kind: "add",
-          });
-          index += 1;
-        }
-
-        for (const entry of added) {
           rows.push({
             type: "line",
             id: `line-${rowID++}`,
-            right: entry,
+            kind: "add",
+            newLineNumber: rightLine++,
+            text: lines[index].slice(1),
           });
+          index += 1;
         }
         continue;
       }
@@ -142,9 +124,9 @@ function parseHunkHeader(line: string): HunkHeader | null {
   };
 }
 
-function collapseContextRows(rows: SplitDiffLineRow[]): SplitDiffRow[] {
-  const collapsed: SplitDiffRow[] = [];
-  const contextBuffer: SplitDiffLineRow[] = [];
+function collapseContextRows(rows: UnifiedDiffLineRow[]): UnifiedDiffRow[] {
+  const collapsed: UnifiedDiffRow[] = [];
+  const contextBuffer: UnifiedDiffLineRow[] = [];
   let collapsedID = 0;
 
   const flushContextBuffer = () => {
@@ -178,6 +160,6 @@ function collapseContextRows(rows: SplitDiffLineRow[]): SplitDiffRow[] {
   return collapsed;
 }
 
-function isContextRow(row: SplitDiffLineRow) {
-  return row.left?.kind === "context" && row.right?.kind === "context";
+function isContextRow(row: UnifiedDiffLineRow) {
+  return row.kind === "context";
 }

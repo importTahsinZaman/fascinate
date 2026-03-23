@@ -655,7 +655,7 @@ describe("App", () => {
     expect(useWorkspaceStore.getState().viewportFocusRequest).toBeNull();
   });
 
-  it("streams file diffs inline and loads more as the panel scrolls", async () => {
+  it("streams unified file diffs inline and keeps wheel scroll inside the panel", async () => {
     const fetchMock = createAuthenticatedFetchMock((path, init) => {
       if (path === "/v1/terminal/sessions/term-1/git/status") {
         expect(JSON.parse(String(init?.body))).toEqual({ cwd: "/home/ubuntu/repo" });
@@ -756,16 +756,18 @@ line 20
     expect((await screen.findAllByText("web/src/store.ts")).length).toBeGreaterThan(0);
     expect(await screen.findByText("new alpha")).toBeTruthy();
     expect(await screen.findByText("new store")).toBeTruthy();
-    expect(screen.getByText("Show 2 unchanged lines")).toBeTruthy();
+    expect(screen.getByText("All 2 lines")).toBeTruthy();
     expect(screen.getByText("More file diffs load as you scroll.")).toBeTruthy();
     expect(screen.queryByText("stacked diff panel")).toBeNull();
 
-    fireEvent.click(screen.getByText("Show 2 unchanged lines"));
+    fireEvent.click(screen.getByText("All 2 lines"));
     expect((await screen.findAllByText("line 11")).length).toBeGreaterThan(0);
 
     const stream = document.querySelector(".git-diff-stream") as HTMLElement | null;
     expect(stream).toBeTruthy();
     const scrollContainer = stream!;
+    fireEvent.wheel(scrollContainer, { deltaY: 120, clientX: 640, clientY: 240 });
+    expect(useWorkspaceStore.getState().viewport).toMatchObject({ x: 120, y: 96, scale: 1 });
     Object.defineProperty(scrollContainer, "clientHeight", { configurable: true, value: 640 });
     Object.defineProperty(scrollContainer, "scrollHeight", { configurable: true, value: 1800 });
     Object.defineProperty(scrollContainer, "scrollTop", { configurable: true, value: 1320 });

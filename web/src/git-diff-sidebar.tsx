@@ -1,4 +1,12 @@
-import { useDeferredValue, useEffect, useMemo, useRef, useState, type UIEvent } from "react";
+import {
+  startTransition,
+  useDeferredValue,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type UIEvent,
+} from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   getTerminalGitDiff,
@@ -9,8 +17,8 @@ import {
 import {
   parseUnifiedDiff,
   type ParsedGitDiff,
-  type SplitDiffCollapsedRow,
-  type SplitDiffLineRow,
+  type UnifiedDiffCollapsedRow,
+  type UnifiedDiffLineRow,
 } from "./git-diff";
 import { useWorkspaceStore } from "./store";
 
@@ -59,7 +67,9 @@ export function GitDiffSidebar() {
       return;
     }
     if (container.scrollHeight <= container.clientHeight + diffPagePreloadThresholdPx / 2) {
-      setVisibleFileCount((current) => Math.min(deferredFiles.length, current + diffPageStep));
+      startTransition(() => {
+        setVisibleFileCount((current) => Math.min(deferredFiles.length, current + diffPageStep));
+      });
     }
   }, [deferredFiles.length, statusQuery.data?.state, visibleFileCount]);
 
@@ -73,7 +83,9 @@ export function GitDiffSidebar() {
     if (scrollTop + clientHeight < scrollHeight - diffPagePreloadThresholdPx) {
       return;
     }
-    setVisibleFileCount((current) => Math.min(deferredFiles.length, current + diffPageStep));
+    startTransition(() => {
+      setVisibleFileCount((current) => Math.min(deferredFiles.length, current + diffPageStep));
+    });
   };
 
   if (!gitDiffSidebar.windowID || !activeWindow) {
@@ -163,7 +175,7 @@ export function GitDiffSidebar() {
                 </span>
               </div>
               <span className="git-diff-stream-summary-note">
-                Loading diffs in scroll batches for faster rendering.
+                Unified file diffs load in scroll batches for faster rendering.
               </span>
             </div>
 
@@ -271,11 +283,11 @@ function GitDiffFileCard({
           <p>{diffQuery.data.message ?? "Fascinate cannot render this file as inline text."}</p>
         </div>
       ) : parsedDiff && parsedDiff.rows.length > 0 ? (
-        <SplitDiffRows rows={parsedDiff.rows} />
+        <UnifiedDiffRows rows={parsedDiff.rows} />
       ) : (
         <div className="git-diff-nonrenderable">
           <strong>No inline hunks available</strong>
-          <p>This file has no textual hunks to render in the split diff view.</p>
+          <p>This file has no textual hunks to render in the unified diff view.</p>
         </div>
       )}
     </article>
@@ -293,13 +305,13 @@ function FilePanelHeader({
   file: GitChangedFile;
   repoRoot: string;
 }) {
+  const displayName = useMemo(() => file.path.split("/").at(-1) ?? file.path, [file.path]);
+
   return (
     <div className="git-diff-file-header">
       <div className="git-diff-file-header-copy">
-        <strong>{file.path}</strong>
-        <span title={repoRoot}>
-          {file.previous_path ? `${file.previous_path} -> ${file.path}` : repoRoot}
-        </span>
+        <strong>{displayName}</strong>
+        <span title={file.path}>{file.path}</span>
       </div>
       <div className="git-diff-file-header-meta">
         <span className={`git-diff-file-kind git-diff-file-kind-${file.kind}`}>
@@ -312,12 +324,15 @@ function FilePanelHeader({
         {typeof diff?.deletions === "number" ? (
           <span className="git-diff-stat git-diff-stat-deleted">-{diff.deletions}</span>
         ) : null}
+        <span className="git-diff-file-context" title={repoRoot}>
+          {file.previous_path ? `${file.previous_path} -> ${file.path}` : repoRoot}
+        </span>
       </div>
     </div>
   );
 }
 
-function SplitDiffRows({ rows }: { rows: ParsedGitDiff["rows"] }) {
+function UnifiedDiffRows({ rows }: { rows: ParsedGitDiff["rows"] }) {
   const [expandedRows, setExpandedRows] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
@@ -325,7 +340,7 @@ function SplitDiffRows({ rows }: { rows: ParsedGitDiff["rows"] }) {
   }, [rows]);
 
   return (
-    <div className="git-diff-grid" role="table" aria-label="Split diff">
+    <div className="git-diff-unified" role="table" aria-label="Unified diff">
       {rows.map((row) =>
         row.type === "collapsed" ? (
           expandedRows[row.id] ? (
@@ -338,18 +353,18 @@ function SplitDiffRows({ rows }: { rows: ParsedGitDiff["rows"] }) {
             />
           )
         ) : (
-          <SplitDiffLine key={row.id} row={row} />
+          <UnifiedDiffLine key={row.id} row={row} />
         ),
       )}
     </div>
   );
 }
 
-function ExpandedContextRows({ rows }: { rows: SplitDiffLineRow[] }) {
+function ExpandedContextRows({ rows }: { rows: UnifiedDiffLineRow[] }) {
   return (
     <>
       {rows.map((row) => (
-        <SplitDiffLine key={row.id} row={row} />
+        <UnifiedDiffLine key={row.id} row={row} />
       ))}
     </>
   );
@@ -359,29 +374,29 @@ function CollapsedContextRow({
   row,
   onExpand,
 }: {
-  row: SplitDiffCollapsedRow;
+  row: UnifiedDiffCollapsedRow;
   onExpand: () => void;
 }) {
   return (
-    <button type="button" className="git-diff-collapsed" onClick={onExpand}>
-      Show {row.hiddenCount} unchanged line{row.hiddenCount === 1 ? "" : "s"}
+    <button
+      type="button"
+      className="git-diff-collapsed"
+      onClick={onExpand}
+      aria-label={`Expand ${row.hiddenCount} unchanged line${row.hiddenCount === 1 ? "" : "s"}`}
+    >
+      <span>All {row.hiddenCount} line{row.hiddenCount === 1 ? "" : "s"}</span>
     </button>
   );
 }
 
-function SplitDiffLine({ row }: { row: SplitDiffLineRow }) {
-  const leftKind = row.left?.kind ?? "empty";
-  const rightKind = row.right?.kind ?? "empty";
+function UnifiedDiffLine({ row }: { row: UnifiedDiffLineRow }) {
+  const lineNumber = row.kind === "delete" ? row.oldLineNumber : row.newLineNumber ?? row.oldLineNumber;
 
   return (
-    <div className="git-diff-row" role="row">
-      <div className={`git-diff-gutter git-diff-gutter-${leftKind}`}>{row.left?.lineNumber ?? ""}</div>
-      <div className={`git-diff-code git-diff-code-left git-diff-code-${leftKind}`}>
-        <code>{row.left?.text ?? ""}</code>
-      </div>
-      <div className={`git-diff-gutter git-diff-gutter-${rightKind}`}>{row.right?.lineNumber ?? ""}</div>
-      <div className={`git-diff-code git-diff-code-right git-diff-code-${rightKind}`}>
-        <code>{row.right?.text ?? ""}</code>
+    <div className={`git-diff-unified-row git-diff-unified-row-${row.kind}`} role="row">
+      <div className="git-diff-unified-gutter">{lineNumber ?? ""}</div>
+      <div className="git-diff-unified-code">
+        <code>{row.text}</code>
       </div>
     </div>
   );

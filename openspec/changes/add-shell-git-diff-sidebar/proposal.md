@@ -16,7 +16,7 @@ The terminal workspace already tracks shell session IDs and current working dire
 ## Capabilities
 
 ### New Capabilities
-- `browser-shell-git-diffs`: shell-scoped git repository detection, stacked file-stream diff browsing, and split diff rendering inside the browser workspace
+- `browser-shell-git-diffs`: shell-scoped git repository detection, stacked file-stream diff browsing, and unified diff rendering inside the browser workspace
 
 ### Modified Capabilities
 

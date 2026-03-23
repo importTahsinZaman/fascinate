@@ -2,7 +2,7 @@
 
 Fascinate's browser workspace already gives each terminal window a persistent session ID, a window header, and client-side current-working-directory metadata derived from the terminal stream. That is enough to anchor a shell-scoped git inspection feature without changing the VM/runtime model or inventing a second session primitive.
 
-The current browser terminal surface stops at raw shell access. Users can keep many shells open, but they cannot inspect a working tree in a review-friendly way without dropping into manual `git status` / `git diff` commands or leaving the product for another tool. The requested UX is a dark, elevated, split diff presentation that opens from the shell header as an overlay above the control sidebar and does not push or resize the canvas.
+The current browser terminal surface stops at raw shell access. Users can keep many shells open, but they cannot inspect a working tree in a review-friendly way without dropping into manual `git status` / `git diff` commands or leaving the product for another tool. The requested UX is a dark, elevated, unified diff presentation that opens from the shell header as an overlay above the control sidebar and does not push or resize the canvas.
 
 Relevant constraints:
 - The diff surface must stay browser-first and must not reintroduce terminal-first product assumptions.
@@ -18,7 +18,7 @@ Relevant constraints:
 - Resolve repository context from the selected shell's latest known cwd, including shells opened in nested directories inside a repo.
 - Fetch git status and file diffs through explicit shell-scoped backend APIs that run outside the interactive PTY path.
 - Keep the sidebar reasonably current while open through bounded polling rather than prompt hooks or long-lived file watchers.
-- Render changed files in a review-style split diff UI with sticky file headers, change counts, gutters, expandable collapsed context, and a continuous stacked file stream.
+- Render changed files in a review-style unified diff UI with sticky file headers, change counts, gutters, expandable collapsed context, and a continuous stacked file stream.
 - Keep diff state ephemeral to the browser session so workspace layout persistence remains unchanged.
 
 **Non-Goals:**
@@ -113,11 +113,11 @@ Alternatives considered:
 - Build a true push-based repository watcher.
   - Rejected because it adds host/guest complexity with limited product benefit for the first delivery.
 
-### 5. Use machine-readable git status on the backend and a frontend parser for split diff rendering
+### 5. Use machine-readable git status on the backend and a frontend parser for unified diff rendering
 
 Repo status will be collected with a machine-readable git command such as `git status --porcelain=v2 -z` so the backend can return a stable file list with staged/unstaged/untracked metadata, branch information, and repo-root resolution.
 
-Per-file patch retrieval will return raw unified diff text plus file metadata. The frontend will parse that patch into a split diff model and render:
+Per-file patch retrieval will return raw unified diff text plus file metadata. The frontend will parse that patch into a unified diff model and render:
 - sticky per-file headers
 - filename/path plus add/remove counts
 - left/right line gutters
@@ -166,7 +166,7 @@ Alternatives considered:
 1. Extend the browser terminal manager and HTTP API with shell-scoped read-only git inspection endpoints.
 2. Add frontend API bindings and ephemeral sidebar state for the selected shell/session/cwd.
 3. Add a shell-header git diff action and the command-center overlay container.
-4. Implement repo status polling, per-file diff fetching, and the split diff renderer.
+4. Implement repo status polling, per-file diff fetching, and the unified diff renderer.
 5. Add tests for backend git inspection, frontend diff parsing, and sidebar interaction states.
 6. Deploy as a normal web + backend release with no data migration.
 
@@ -177,4 +177,4 @@ Rollback:
 ## Open Questions
 
 - What byte/line threshold gives the best balance between readable large diffs and safe browser performance for Fascinate's typical repos?
-- Should the first release include inline word-diff highlighting for paired changed lines, or should that land immediately after the base split diff if parser complexity proves higher than expected?
+- Should the first release include inline word-diff highlighting for paired changed lines, or should that land immediately after the base unified diff if parser complexity proves higher than expected?

@@ -929,6 +929,10 @@ function WorkspaceCanvas({
       return target instanceof HTMLElement ? Boolean(target.closest(".window-header")) : false;
     };
 
+    const isGitDiffTarget = (target: EventTarget | null) => {
+      return target instanceof HTMLElement ? Boolean(target.closest(".git-diff-sidebar")) : false;
+    };
+
     const applyZoomFromClientPoint = (
       baseViewport: WorkspaceViewport,
       nextScale: number,
@@ -966,6 +970,10 @@ function WorkspaceCanvas({
     const handleWheel = (event: WheelEvent) => {
       const currentViewport = viewportRef.current;
 
+      if (isGitDiffTarget(event.target)) {
+        return;
+      }
+
       if (event.ctrlKey || event.metaKey) {
         event.preventDefault();
         event.stopPropagation();
@@ -994,6 +1002,9 @@ function WorkspaceCanvas({
     };
 
     const handleGestureStart = (event: Event) => {
+      if (isGitDiffTarget(event.target)) {
+        return;
+      }
       gestureZoomRef.current = {
         viewport: viewportRef.current,
         scale: viewportRef.current.scale,
@@ -1003,6 +1014,9 @@ function WorkspaceCanvas({
     };
 
     const handleGestureChange = (event: Event) => {
+      if (isGitDiffTarget(event.target)) {
+        return;
+      }
       const gesture = event as Event & { scale?: number; clientX?: number; clientY?: number };
       const state = gestureZoomRef.current;
       if (!state) {
@@ -1022,6 +1036,9 @@ function WorkspaceCanvas({
     };
 
     const handleGestureEnd = (event: Event) => {
+      if (isGitDiffTarget(event.target)) {
+        return;
+      }
       gestureZoomRef.current = null;
       event.preventDefault();
       event.stopPropagation();
