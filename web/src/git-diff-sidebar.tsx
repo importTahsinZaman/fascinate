@@ -106,10 +106,18 @@ export function GitDiffSidebar() {
       <header className="git-diff-sidebar-header">
         <div className="git-diff-sidebar-header-copy">
           <div className="eyebrow">Git Diff</div>
-          <h2>{activeWindow.title}</h2>
-          <p title={cwd || "Waiting for shell context"}>
-            {cwd || "Waiting for shell context from the active terminal session."}
-          </p>
+          <h2>{activeWindow.machineName}</h2>
+          <div className="git-diff-sidebar-header-meta">
+            <span
+              className="git-diff-sidebar-header-cwd"
+              title={cwd || "Waiting for shell context from the active terminal session."}
+            >
+              {cwd || "Waiting for shell context from the active terminal session."}
+            </span>
+            {statusQuery.data?.branch ? (
+              <span className="git-diff-sidebar-header-branch">{statusQuery.data.branch}</span>
+            ) : null}
+          </div>
         </div>
         <div className="git-diff-sidebar-header-actions">
           <button
@@ -181,19 +189,12 @@ export function GitDiffSidebar() {
                 <strong>
                   {files.length} changed file{files.length === 1 ? "" : "s"}
                 </strong>
-                <span>
-                  {statusQuery.data.branch ? `Branch ${statusQuery.data.branch}` : "Working tree"}
-                </span>
               </div>
-              <span className="git-diff-stream-summary-note">
-                Unified file diffs load in scroll batches for faster rendering.
-              </span>
             </div>
 
             {visibleFiles.map((file) => (
               <GitDiffFileCard
                 key={`${file.previous_path ?? ""}:${file.path}`}
-                branch={statusQuery.data.branch}
                 cwd={cwd}
                 file={file}
                 repoRoot={statusQuery.data.repo_root ?? ""}
@@ -222,14 +223,12 @@ export function GitDiffSidebar() {
 }
 
 function GitDiffFileCard({
-  branch,
   cwd,
   file,
   repoRoot,
   sessionId,
   scrollRoot,
 }: {
-  branch?: string;
   cwd: string;
   file: GitChangedFile;
   repoRoot: string;
@@ -301,7 +300,7 @@ function GitDiffFileCard({
 
   return (
     <article ref={cardRef} className="git-diff-file-card">
-      <FilePanelHeader branch={branch} diff={diffQuery.data} file={file} repoRoot={repoRoot} />
+      <FilePanelHeader diff={diffQuery.data} file={file} repoRoot={repoRoot} />
 
       {!shouldFetchDiff ? (
         <SidebarStateCard
@@ -347,12 +346,10 @@ function GitDiffFileCard({
 }
 
 function FilePanelHeader({
-  branch,
   diff,
   file,
   repoRoot,
 }: {
-  branch?: string;
   diff?: GitFileDiff;
   file: GitChangedFile;
   repoRoot: string;
@@ -369,7 +366,6 @@ function FilePanelHeader({
         <span className={`git-diff-file-kind git-diff-file-kind-${file.kind}`}>
           {formatFileKind(file.kind)}
         </span>
-        {branch ? <span className="inline-chip">{branch}</span> : null}
         {typeof diff?.additions === "number" ? (
           <span className="git-diff-stat git-diff-stat-added">+{diff.additions}</span>
         ) : null}

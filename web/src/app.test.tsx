@@ -751,7 +751,8 @@ line 20
     await seedShellSession(0, "term-1", "/home/ubuntu/repo");
     fireEvent.click(screen.getByRole("button", { name: "Open git diff for m-1 shell" }));
 
-    expect(await screen.findByRole("heading", { name: "m-1 shell" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "m-1" })).toBeTruthy();
+    expect(await screen.findByText("main")).toBeTruthy();
     expect((await screen.findAllByText("web/src/app.tsx")).length).toBeGreaterThan(0);
     expect((await screen.findAllByText("web/src/store.ts")).length).toBeGreaterThan(0);
     expect(await screen.findByText("new alpha")).toBeTruthy();
@@ -836,7 +837,8 @@ line 20
 
     fireEvent.click(screen.getByRole("button", { name: "Open git diff for m-1 shell 2" }));
 
-    expect(await screen.findByRole("heading", { name: "m-1 shell 2" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "m-1" })).toBeTruthy();
+    expect(await screen.findByText("feature")).toBeTruthy();
     expect((await screen.findAllByText("web/src/store.ts")).length).toBeGreaterThan(0);
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(
