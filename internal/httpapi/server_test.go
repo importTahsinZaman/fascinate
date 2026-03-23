@@ -57,9 +57,9 @@ type fakeMachineManager struct {
 	deleteName          string
 	deleteOwner         string
 	deleteErr           error
-	forkInput          controlplane.ForkMachineInput
-	forkResult         controlplane.Machine
-	forkErr            error
+	forkInput           controlplane.ForkMachineInput
+	forkResult          controlplane.Machine
+	forkErr             error
 	listSnapshotsOwner  string
 	listSnapshotsResult []controlplane.Snapshot
 	listSnapshotsErr    error
@@ -360,6 +360,73 @@ func TestListMachinesEndpointRequiresOwnerEmail(t *testing.T) {
 
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401, got %d", rec.Code)
+	}
+}
+
+func TestListMachinesEndpointUsesBrowserSessionOwnerWithoutOwnerEmail(t *testing.T) {
+	t.Parallel()
+
+	auth := &fakeBrowserAuth{
+		token: "session-token",
+		session: browserauth.Session{
+			User: database.User{ID: "user-1", Email: "dev@example.com"},
+			Record: database.WebSessionRecord{
+				ID:        "session-1",
+				UserID:    "user-1",
+				UserEmail: "dev@example.com",
+			},
+		},
+	}
+	manager := &fakeMachineManager{
+		listResult: []controlplane.Machine{{Name: "habits"}},
+	}
+	handler := newTestHandlerWithExtras(t, config.Config{
+		BaseDomain:           "fascinate.dev",
+		WebSessionCookieName: "fascinate_session",
+	}, &fakeRuntime{}, manager, auth, nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/machines", nil)
+	req.AddCookie(&http.Cookie{Name: "fascinate_session", Value: "session-token"})
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if manager.listOwnerEmail != "dev@example.com" {
+		t.Fatalf("expected session owner email, got %q", manager.listOwnerEmail)
+	}
+}
+
+func TestListMachinesEndpointRejectsMismatchedOwnerEmailForBrowserSession(t *testing.T) {
+	t.Parallel()
+
+	auth := &fakeBrowserAuth{
+		token: "session-token",
+		session: browserauth.Session{
+			User: database.User{ID: "user-1", Email: "dev@example.com"},
+			Record: database.WebSessionRecord{
+				ID:        "session-1",
+				UserID:    "user-1",
+				UserEmail: "dev@example.com",
+			},
+		},
+	}
+	handler := newTestHandlerWithExtras(t, config.Config{
+		BaseDomain:           "fascinate.dev",
+		WebSessionCookieName: "fascinate_session",
+	}, &fakeRuntime{}, &fakeMachineManager{}, auth, nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/machines?owner_email=other@example.com", nil)
+	req.AddCookie(&http.Cookie{Name: "fascinate_session", Value: "session-token"})
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "owner email does not match") {
+		t.Fatalf("expected owner mismatch error, got %s", rec.Body.String())
 	}
 }
 

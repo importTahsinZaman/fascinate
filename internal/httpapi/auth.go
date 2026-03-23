@@ -13,6 +13,9 @@ import (
 	"fascinate/internal/database"
 )
 
+var errAuthenticationRequired = errors.New("authentication required")
+var errOwnerEmailMismatch = errors.New("owner email does not match authenticated session")
+
 type browserAuthService interface {
 	Enabled() bool
 	RequestCode(context.Context, string) error
@@ -45,14 +48,24 @@ func readSessionFromRequest(ctx context.Context, r *http.Request, cfg config.Con
 }
 
 func ownerEmailForRequest(ctx context.Context, r *http.Request, cfg config.Config, auth browserAuthService, explicit string) (string, error) {
-	explicit = strings.TrimSpace(explicit)
+	explicit = normalizeEmail(explicit)
 	if explicit != "" {
+		session, err := readSessionFromRequest(ctx, r, cfg, auth)
+		if err == nil {
+			if !session.User.IsAdmin && normalizeEmail(session.User.Email) != explicit {
+				return "", errOwnerEmailMismatch
+			}
+			return explicit, nil
+		}
+		if !errors.Is(err, database.ErrNotFound) {
+			return "", err
+		}
 		return explicit, nil
 	}
 	session, err := readSessionFromRequest(ctx, r, cfg, auth)
 	if err != nil {
 		if errors.Is(err, database.ErrNotFound) {
-			return "", errors.New("authentication required")
+			return "", errAuthenticationRequired
 		}
 		return "", err
 	}
@@ -63,7 +76,7 @@ func requireBrowserSession(ctx context.Context, r *http.Request, cfg config.Conf
 	session, err := readSessionFromRequest(ctx, r, cfg, auth)
 	if err != nil {
 		if errors.Is(err, database.ErrNotFound) {
-			return nil, errors.New("authentication required")
+			return nil, errAuthenticationRequired
 		}
 		return nil, err
 	}
@@ -107,4 +120,8 @@ func requestIPAddress(r *http.Request) string {
 		return host
 	}
 	return strings.TrimSpace(r.RemoteAddr)
+}
+
+func normalizeEmail(value string) string {
+	return strings.ToLower(strings.TrimSpace(value))
 }

@@ -5,6 +5,7 @@ type WorkspaceState = {
   windows: WorkspaceWindow[];
   windowCwds: Record<string, string>;
   viewport: WorkspaceViewport;
+  viewportFocusRequest: { windowID: string; requestID: string } | null;
   hydrated: boolean;
   hydrate: (layout: WorkspaceLayout) => void;
   openTerminal: (machineName: string, title?: string) => void;
@@ -12,6 +13,8 @@ type WorkspaceState = {
   setWindowCwd: (id: string, cwd: string) => void;
   closeWindow: (id: string) => void;
   focusWindow: (id: string) => void;
+  requestViewportFocus: (id: string) => void;
+  clearViewportFocusRequest: () => void;
   moveWindow: (id: string, x: number, y: number) => void;
   setViewport: (viewport: WorkspaceViewport) => void;
   serialize: () => WorkspaceLayout;
@@ -25,6 +28,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   windows: [],
   windowCwds: {},
   viewport: defaultViewport,
+  viewportFocusRequest: null,
   hydrated: false,
   hydrate: (layout) =>
     set((state) => {
@@ -52,6 +56,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         windows,
         windowCwds: {},
         viewport: normalizeViewport(layout.viewport),
+        viewportFocusRequest: null,
         hydrated: true,
       };
     }),
@@ -110,6 +115,8 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       return {
         windows: state.windows.filter((item) => item.id !== id),
         windowCwds,
+        viewportFocusRequest:
+          state.viewportFocusRequest?.windowID === id ? null : state.viewportFocusRequest,
       };
     }),
   focusWindow: (id) =>
@@ -126,6 +133,14 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         ),
       };
     }),
+  requestViewportFocus: (id) =>
+    set({
+      viewportFocusRequest: {
+        windowID: id,
+        requestID: crypto.randomUUID(),
+      },
+    }),
+  clearViewportFocusRequest: () => set({ viewportFocusRequest: null }),
   moveWindow: (id, x, y) =>
     set((state) => ({
       windows: state.windows.map((item) => {

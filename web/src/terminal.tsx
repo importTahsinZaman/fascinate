@@ -12,12 +12,12 @@ type Props = {
   onCwdChange?: (cwd: string) => void;
 };
 
+type ConnectionPhase = "connecting" | "reconnecting";
+
 type TerminalStats = {
   status: "connecting" | "ready" | "closed" | "error";
-  attachMs: number | null;
-  rttMs: number | null;
+  phase: ConnectionPhase;
   error: string | null;
-  note: string | null;
 };
 
 const cwdSequencePrefix = "\u001b]1337;FascinateCwd=";
@@ -37,12 +37,11 @@ export function TerminalView({ machineName, title, sessionId, onSessionId, onCwd
   const decoderRef = useRef<TextDecoder | null>(null);
   const pendingMetadataRef = useRef("");
   const promptLineRef = useRef("");
+  const [connectionAttempt, setConnectionAttempt] = useState(0);
   const [stats, setStats] = useState<TerminalStats>({
     status: "connecting",
-    attachMs: null,
-    rttMs: null,
+    phase: sessionId ? "reconnecting" : "connecting",
     error: null,
-    note: null,
   });
 
   const label = useMemo(() => `${title} (${machineName})`, [machineName, title]);
@@ -51,6 +50,18 @@ export function TerminalView({ machineName, title, sessionId, onSessionId, onCwd
   });
   const persistCwd = useEffectEvent((value: string) => {
     onCwdChange?.(value);
+  });
+  const retryConnection = useEffectEvent((mode: "reuse" | "new") => {
+    if (mode === "new") {
+      sessionIdRef.current = "";
+      persistCwd("");
+    }
+    setStats({
+      status: "connecting",
+      phase: mode === "reuse" && sessionIdRef.current !== "" ? "reconnecting" : "connecting",
+      error: null,
+    });
+    setConnectionAttempt((current) => current + 1);
   });
 
   useEffect(() => {
@@ -92,10 +103,6 @@ export function TerminalView({ machineName, title, sessionId, onSessionId, onCwd
         }
         terminal.write("\r\n\x1b[90mrenderer fallback enabled after graphics context reset\x1b[0m\r\n");
         terminal.refresh(0, Math.max(0, terminal.rows - 1));
-        setStats((current) => ({
-          ...current,
-          note: "renderer fallback enabled",
-        }));
       });
     } catch {
       // fall back to default renderer
@@ -129,9 +136,6 @@ export function TerminalView({ machineName, title, sessionId, onSessionId, onCwd
       return;
     }
 
-    const startedAt = performance.now();
-    let firstOutput = false;
-    let pingHandle: number | undefined;
     let resizeObserver: ResizeObserver | undefined;
     let disposed = false;
 
@@ -140,6 +144,11 @@ export function TerminalView({ machineName, title, sessionId, onSessionId, onCwd
         const cols = terminalRef.current?.cols ?? 120;
         const rows = terminalRef.current?.rows ?? 40;
         const existingSessionId = sessionIdRef.current;
+        setStats({
+          status: "connecting",
+          phase: existingSessionId !== "" ? "reconnecting" : "connecting",
+          error: null,
+        });
         const init =
           existingSessionId !== ""
             ? await attachTerminalSession(existingSessionId, cols, rows).catch(async (error) => {
@@ -175,15 +184,7 @@ export function TerminalView({ machineName, title, sessionId, onSessionId, onCwd
           resizeListenerRef.current = terminalRef.current.onResize(({ cols, rows }) => {
             socket.send(JSON.stringify({ type: "resize", cols, rows }));
           });
-          setStats((current) => ({
-            ...current,
-            status: "ready",
-            error: null,
-            note: existingSessionId !== "" ? "restored" : current.note,
-          }));
-          pingHandle = window.setInterval(() => {
-            socket.send(JSON.stringify({ type: "ping", sent_at: Date.now() }));
-          }, 10_000);
+          setStats((current) => ({ ...current, status: "ready", error: null }));
         });
 
         socket.addEventListener("message", (event) => {
@@ -191,16 +192,8 @@ export function TerminalView({ machineName, title, sessionId, onSessionId, onCwd
             try {
               const body = JSON.parse(event.data) as {
                 type: string;
-                sent_at?: number;
                 error?: string;
               };
-              const sentAt = body.sent_at;
-              if (body.type === "pong" && typeof sentAt === "number") {
-                setStats((current) => ({
-                  ...current,
-                  rttMs: Math.max(0, Date.now() - sentAt),
-                }));
-              }
               if (body.type === "exit") {
                 setStats((current) => ({
                   ...current,
@@ -220,13 +213,6 @@ export function TerminalView({ machineName, title, sessionId, onSessionId, onCwd
             return;
           }
 
-          if (!firstOutput) {
-            firstOutput = true;
-            setStats((current) => ({
-              ...current,
-              attachMs: Math.round(performance.now() - startedAt),
-            }));
-          }
           const decoder = decoderRef.current ?? new TextDecoder();
           decoderRef.current = decoder;
           const decodedChunk = decoder.decode(new Uint8Array(event.data as ArrayBuffer), { stream: true });
@@ -262,10 +248,8 @@ export function TerminalView({ machineName, title, sessionId, onSessionId, onCwd
       } catch (error) {
         setStats({
           status: "error",
-          attachMs: null,
-          rttMs: null,
+          phase: sessionIdRef.current !== "" ? "reconnecting" : "connecting",
           error: error instanceof Error ? error.message : "failed to create terminal session",
-          note: null,
         });
       }
     };
@@ -281,9 +265,6 @@ export function TerminalView({ machineName, title, sessionId, onSessionId, onCwd
 
     return () => {
       disposed = true;
-      if (pingHandle) {
-        window.clearInterval(pingHandle);
-      }
       dataListenerRef.current?.dispose();
       resizeListenerRef.current?.dispose();
       dataListenerRef.current = null;
@@ -292,24 +273,61 @@ export function TerminalView({ machineName, title, sessionId, onSessionId, onCwd
       socketRef.current?.close();
       socketRef.current = null;
     };
-  }, [label, machineName]);
+  }, [connectionAttempt, label, machineName]);
+
+  const overlay = getTerminalOverlay(stats);
 
   return (
     <div className="terminal-shell">
-      <div className="terminal-meta">
-        <div className="terminal-meta-group">
-          <span className={`terminal-pill terminal-pill-${stats.status}`}>{stats.status}</span>
-          {stats.note ? <span className="terminal-pill terminal-pill-note">{stats.note}</span> : null}
-          {stats.error ? <span className="terminal-pill terminal-pill-error">{stats.error}</span> : null}
-        </div>
-        <div className="terminal-meta-group terminal-meta-group-end">
-          {stats.attachMs !== null ? <span className="terminal-pill terminal-pill-metric">{stats.attachMs}ms attach</span> : null}
-          {stats.rttMs !== null ? <span className="terminal-pill terminal-pill-metric">{stats.rttMs}ms rtt</span> : null}
-        </div>
-      </div>
       <div className="terminal-host" ref={hostRef} />
+      {overlay ? (
+        <div className="terminal-overlay" data-state={overlay.tone} role="status" aria-live="polite">
+          <div className="terminal-overlay-card">
+            <p className="terminal-overlay-title">{overlay.title}</p>
+            {overlay.description ? <p className="terminal-overlay-description">{overlay.description}</p> : null}
+            {overlay.action ? (
+              <button
+                type="button"
+                className="terminal-overlay-action"
+                onClick={() => retryConnection(overlay.action)}
+              >
+                {overlay.actionLabel}
+              </button>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
     </div>
   );
+}
+
+function getTerminalOverlay(stats: TerminalStats) {
+  if (stats.status === "ready") {
+    return null;
+  }
+  if (stats.status === "connecting") {
+    return {
+      title: stats.phase === "reconnecting" ? "Reconnecting…" : "Connecting…",
+      description: stats.phase === "reconnecting" ? "Restoring your shell session." : "Starting a fresh shell session.",
+      tone: "connecting" as const,
+    };
+  }
+  if (stats.status === "closed") {
+    return {
+      title: "Shell disconnected",
+      description: "Reconnect to continue working in this shell.",
+      action: "reuse" as const,
+      actionLabel: "Reconnect",
+      tone: "closed" as const,
+    };
+  }
+  return {
+    title: "Connection failed",
+    description: stats.error ?? "The shell could not be opened.",
+    action: "reuse" as const,
+    actionLabel: "Retry",
+    tone: "error" as const,
+  };
 }
 
 function parseTerminalMetadata(chunk: string) {

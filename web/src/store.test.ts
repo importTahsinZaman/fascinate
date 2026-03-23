@@ -15,7 +15,7 @@ function overlaps(
 
 describe("workspace store", () => {
   beforeEach(() => {
-    useWorkspaceStore.setState({ windows: [], windowCwds: {}, hydrated: false });
+    useWorkspaceStore.setState({ windows: [], windowCwds: {}, viewportFocusRequest: null, hydrated: false });
   });
 
   it("opens terminals as distinct windows", () => {
@@ -97,6 +97,20 @@ describe("workspace store", () => {
     useWorkspaceStore.getState().setViewport({ x: 440, y: 360, scale: 0.9 });
 
     expect(useWorkspaceStore.getState().serialize().viewport).toEqual({ x: 440, y: 360, scale: 0.9 });
+  });
+
+  it("stores and clears viewport focus requests separately from persisted layout", () => {
+    useWorkspaceStore.getState().openTerminal("m-1");
+    const windowId = useWorkspaceStore.getState().windows[0].id;
+
+    useWorkspaceStore.getState().requestViewportFocus(windowId);
+
+    expect(useWorkspaceStore.getState().viewportFocusRequest).toMatchObject({ windowID: windowId });
+    expect(useWorkspaceStore.getState().serialize()).not.toHaveProperty("viewportFocusRequest");
+
+    useWorkspaceStore.getState().clearViewportFocusRequest();
+
+    expect(useWorkspaceStore.getState().viewportFocusRequest).toBeNull();
   });
 
   it("prevents windows from overlapping when moved", () => {

@@ -44,10 +44,13 @@ type ModalState =
 
 const workspaceCanvasSize = { width: 9600, height: 6400 };
 const workspaceViewportPadding = 160;
+const workspaceFocusPadding = { horizontal: 56, vertical: 48 };
 const defaultWorkspaceViewport: WorkspaceViewport = { x: 120, y: 96, scale: 1 };
 const minWorkspaceScale = 0.45;
 const maxWorkspaceScale = 2.2;
 const workspaceZoomWheelFactor = 0.006;
+const workspaceWheelPanContinuationMs = 160;
+const workspaceFocusAnimationMs = 240;
 
 export function App() {
   const queryClient = useQueryClient();
@@ -138,6 +141,8 @@ function CommandCenter() {
   const [snapshotName, setSnapshotName] = useState("");
   const [restoreTarget, setRestoreTarget] = useState("");
   const [envForm, setEnvForm] = useState({ key: "", value: "" });
+  const [shellCloseError, setShellCloseError] = useState<unknown>(null);
+  const [closingShellIDs, setClosingShellIDs] = useState<string[]>([]);
 
   const hydrate = useWorkspaceStore((state) => state.hydrate);
   const openTerminal = useWorkspaceStore((state) => state.openTerminal);
@@ -145,6 +150,7 @@ function CommandCenter() {
   const windowCwds = useWorkspaceStore((state) => state.windowCwds);
   const closeWindow = useWorkspaceStore((state) => state.closeWindow);
   const focusWindow = useWorkspaceStore((state) => state.focusWindow);
+  const requestViewportFocus = useWorkspaceStore((state) => state.requestViewportFocus);
 
   const machinesQuery = useQuery({
     queryKey: ["machines"],
@@ -246,9 +252,6 @@ function CommandCenter() {
       items.push(window);
       grouped.set(window.machineName, items);
     }
-    for (const items of grouped.values()) {
-      items.sort((left, right) => left.z - right.z);
-    }
     return grouped;
   }, [windows]);
 
@@ -258,11 +261,25 @@ function CommandCenter() {
     openTerminal(machineName, nextShellNumber === 1 ? `${machineName} shell` : `${machineName} shell ${nextShellNumber}`);
   };
 
-  const closeShellWindow = (window: WorkspaceWindow) => {
-    closeWindow(window.id);
+  const closeShellWindow = async (window: WorkspaceWindow) => {
+    setShellCloseError(null);
     if (window.sessionId) {
-      void deleteTerminalSession(window.sessionId);
+      setClosingShellIDs((current) => (current.includes(window.id) ? current : [...current, window.id]));
+      try {
+        await deleteTerminalSession(window.sessionId);
+      } catch (error) {
+        setShellCloseError(error);
+        return;
+      } finally {
+        setClosingShellIDs((current) => current.filter((id) => id !== window.id));
+      }
     }
+    closeWindow(window.id);
+  };
+
+  const focusShellWindow = (windowID: string) => {
+    focusWindow(windowID);
+    requestViewportFocus(windowID);
   };
 
   const renderModal = () => {
@@ -537,9 +554,15 @@ function CommandCenter() {
 
   return (
     <main className="command-center">
+      <div className="app-brandmark" aria-hidden="true">
+        Fascinate
+      </div>
       <WorkspaceAutosave enabled={workspaceQuery.isSuccess} />
       <div className="command-center-workspace">
-        <WorkspaceCanvas />
+        <WorkspaceCanvas
+          closingShellIDs={closingShellIDs}
+          onCloseShell={(window) => closeShellWindow(window)}
+        />
       </div>
       <aside className="control-sidebar" aria-label="Workspace controls">
         <div className="control-sidebar-scroll">
@@ -614,10 +637,10 @@ function CommandCenter() {
                               const shellLabel = formatShellListLabel(windowCwds[window.id], index + 1);
                               return (
                                 <div key={window.id} className="machine-shell-row">
-                                  <button
+                              <button
                                     type="button"
                                     className="machine-shell-focus"
-                                    onClick={() => focusWindow(window.id)}
+                                    onClick={() => focusShellWindow(window.id)}
                                     title={windowCwds[window.id] ?? shellLabel}
                                   >
                                     <span className="machine-shell-label">{shellLabel}</span>
@@ -627,7 +650,10 @@ function CommandCenter() {
                                     className="machine-shell-delete"
                                     aria-label={`Delete ${shellLabel}`}
                                     title={`Delete ${shellLabel}`}
-                                    onClick={() => closeShellWindow(window)}
+                                    onClick={() => {
+                                      void closeShellWindow(window);
+                                    }}
+                                    disabled={closingShellIDs.includes(window.id)}
                                   >
                                     <X className="icon-svg" weight="regular" />
                                   </button>
@@ -647,6 +673,7 @@ function CommandCenter() {
                 })}
               </div>
             )}
+            <StatusError mutationError={shellCloseError} />
             <StatusError mutationError={deleteMachineMutation.error} />
           </section>
         </div>
@@ -749,12 +776,21 @@ function WorkspaceAutosave({ enabled }: { enabled: boolean }) {
   return null;
 }
 
-function WorkspaceCanvas() {
+function WorkspaceCanvas({
+  closingShellIDs,
+  onCloseShell,
+}: {
+  closingShellIDs: string[];
+  onCloseShell: (window: WorkspaceWindow) => Promise<void>;
+}) {
   const windows = useWorkspaceStore((state) => state.windows);
   const viewport = useWorkspaceStore((state) => state.viewport);
   const setViewport = useWorkspaceStore((state) => state.setViewport);
   const closeWindow = useWorkspaceStore((state) => state.closeWindow);
   const focusWindow = useWorkspaceStore((state) => state.focusWindow);
+  const viewportFocusRequest = useWorkspaceStore((state) => state.viewportFocusRequest);
+  const clearViewportFocusRequest = useWorkspaceStore((state) => state.clearViewportFocusRequest);
+  const requestViewportFocus = useWorkspaceStore((state) => state.requestViewportFocus);
   const moveWindow = useWorkspaceStore((state) => state.moveWindow);
   const setWindowSession = useWorkspaceStore((state) => state.setWindowSession);
   const setWindowCwd = useWorkspaceStore((state) => state.setWindowCwd);
@@ -772,8 +808,11 @@ function WorkspaceCanvas() {
     viewport: WorkspaceViewport;
     scale: number;
   } | null>(null);
+  const wheelPanUntilRef = useRef(0);
   const [workspaceBounds, setWorkspaceBounds] = useState<WorkspaceBounds>({ width: 0, height: 0 });
   const [isPanning, setIsPanning] = useState(false);
+  const [isFocusAnimating, setIsFocusAnimating] = useState(false);
+  const focusAnimationTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     viewportRef.current = viewport;
@@ -782,6 +821,14 @@ function WorkspaceCanvas() {
   useEffect(() => {
     boundsRef.current = workspaceBounds;
   }, [workspaceBounds]);
+
+  useEffect(() => {
+    return () => {
+      if (focusAnimationTimerRef.current) {
+        window.clearTimeout(focusAnimationTimerRef.current);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     const node = workspaceViewportRef.current;
@@ -808,6 +855,47 @@ function WorkspaceCanvas() {
   const applyViewport = (nextViewport: WorkspaceViewport) => {
     setViewport(clampViewport(nextViewport, boundsRef.current));
   };
+
+  useEffect(() => {
+    if (!viewportFocusRequest || !workspaceBounds.width || !workspaceBounds.height) {
+      return;
+    }
+
+    const targetWindow = windows.find((window) => window.id === viewportFocusRequest.windowID);
+    if (!targetWindow) {
+      clearViewportFocusRequest();
+      return;
+    }
+
+    const nextScale = clamp(
+      Math.min(
+        (workspaceBounds.width - workspaceFocusPadding.horizontal * 2) / targetWindow.width,
+        (workspaceBounds.height - workspaceFocusPadding.vertical * 2) / targetWindow.height,
+      ),
+      minWorkspaceScale,
+      maxWorkspaceScale,
+    );
+
+    setViewport(
+      clampViewport(
+        {
+          x: (workspaceBounds.width - targetWindow.width * nextScale) / 2 - targetWindow.x * nextScale,
+          y: (workspaceBounds.height - targetWindow.height * nextScale) / 2 - targetWindow.y * nextScale,
+          scale: nextScale,
+        },
+        workspaceBounds,
+      ),
+    );
+    if (focusAnimationTimerRef.current) {
+      window.clearTimeout(focusAnimationTimerRef.current);
+    }
+    setIsFocusAnimating(true);
+    focusAnimationTimerRef.current = window.setTimeout(() => {
+      setIsFocusAnimating(false);
+      focusAnimationTimerRef.current = null;
+    }, workspaceFocusAnimationMs);
+    clearViewportFocusRequest();
+  }, [clearViewportFocusRequest, setViewport, viewportFocusRequest, windows, workspaceBounds]);
 
   useEffect(() => {
     const node = workspaceViewportRef.current;
@@ -844,6 +932,7 @@ function WorkspaceCanvas() {
     const panViewportFromWheel = (event: WheelEvent, currentViewport: WorkspaceViewport) => {
       event.preventDefault();
       event.stopPropagation();
+      wheelPanUntilRef.current = performance.now() + workspaceWheelPanContinuationMs;
       setViewport(
         clampViewport(
           {
@@ -877,6 +966,9 @@ function WorkspaceCanvas() {
       }
 
       if (isWindowTarget(event.target)) {
+        if (performance.now() < wheelPanUntilRef.current) {
+          panViewportFromWheel(event, currentViewport);
+        }
         return;
       }
 
@@ -989,6 +1081,7 @@ function WorkspaceCanvas() {
       >
         <div
           className="workspace-stage"
+          data-focus-animating={isFocusAnimating ? "true" : "false"}
           style={{
             width: workspaceCanvasSize.width,
             height: workspaceCanvasSize.height,
@@ -1000,12 +1093,14 @@ function WorkspaceCanvas() {
               key={window.id}
               window={window}
               onClose={() => {
-                closeWindow(window.id);
-                if (window.sessionId) {
-                  void deleteTerminalSession(window.sessionId);
-                }
+                void onCloseShell(window);
               }}
+              isClosing={closingShellIDs.includes(window.id)}
               onFocus={() => focusWindow(window.id)}
+              onRequestViewportFocus={() => {
+                focusWindow(window.id);
+                requestViewportFocus(window.id);
+              }}
               onMove={(x, y) => moveWindow(window.id, x, y)}
               toCanvasPoint={getCanvasPointFromClient}
             >
@@ -1037,14 +1132,18 @@ function WindowFrame({
   window: layoutWindow,
   children,
   onClose,
+  isClosing,
   onFocus,
+  onRequestViewportFocus,
   onMove,
   toCanvasPoint,
 }: {
   window: WorkspaceWindow;
   children: ReactNode;
   onClose: () => void;
+  isClosing: boolean;
   onFocus: () => void;
+  onRequestViewportFocus: () => void;
   onMove: (x: number, y: number) => void;
   toCanvasPoint: (clientX: number, clientY: number) => { x: number; y: number };
 }) {
@@ -1090,17 +1189,32 @@ function WindowFrame({
           };
         }}
       >
-        <strong>{layoutWindow.title}</strong>
-        <div className="actions">
+        <div className="window-header-actions window-header-actions-start">
           <button
-            className="icon-action-button danger"
+            className="window-header-button window-header-button-danger"
             type="button"
             aria-label="Close shell"
             title="Close shell"
             onPointerDown={(event) => event.stopPropagation()}
             onClick={onClose}
+            disabled={isClosing}
           >
-            <X className="icon-svg" weight="regular" />
+            Close
+          </button>
+        </div>
+        <div className="window-header-title">
+          <strong>{layoutWindow.title}</strong>
+        </div>
+        <div className="window-header-actions window-header-actions-end">
+          <button
+            className="window-header-button window-header-button-focus"
+            type="button"
+            aria-label="Focus shell"
+            title="Focus shell"
+            onPointerDown={(event) => event.stopPropagation()}
+            onClick={onRequestViewportFocus}
+          >
+            Focus
           </button>
         </div>
       </header>

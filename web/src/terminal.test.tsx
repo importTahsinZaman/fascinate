@@ -188,7 +188,6 @@ describe("TerminalView", () => {
     expect(terminalInstances[0].write).toHaveBeenCalledWith(
       "\r\n\x1b[90mrenderer fallback enabled after graphics context reset\x1b[0m\r\n",
     );
-    expect(await screen.findByText("renderer fallback enabled")).toBeTruthy();
   });
 
   it("reattaches to an existing terminal session", async () => {
@@ -203,6 +202,7 @@ describe("TerminalView", () => {
     });
     expect(createTerminalSession).not.toHaveBeenCalled();
     expect(onSessionId).toHaveBeenCalledWith("term-existing");
+    expect(screen.getByText("Reconnecting…")).toBeTruthy();
   });
 
   it("creates a fresh session when the saved session can no longer be reattached", async () => {
@@ -254,5 +254,46 @@ describe("TerminalView", () => {
 
     expect(onCwdChange).toHaveBeenNthCalledWith(1, "/home/ubuntu/space-shooter");
     expect(onCwdChange).toHaveBeenNthCalledWith(2, "~/space-shooter");
+  });
+
+  it("shows a retry overlay when the terminal websocket fails", async () => {
+    const onSessionId = vi.fn();
+
+    render(<TerminalView machineName="m-1" title="m-1 shell" onSessionId={onSessionId} />);
+
+    await waitFor(() => {
+      expect(createTerminalSession).toHaveBeenCalledTimes(1);
+    });
+
+    await act(async () => {
+      MockWebSocket.instances[0].emit("error");
+    });
+
+    expect(screen.getByText("Connection failed")).toBeTruthy();
+
+    await act(async () => {
+      screen.getByRole("button", { name: "Retry" }).click();
+    });
+
+    await waitFor(() => {
+      expect(attachTerminalSession).toHaveBeenCalledWith("term-1", 120, 40);
+    });
+  });
+
+  it("shows a reconnect overlay when the shell closes", async () => {
+    const onSessionId = vi.fn();
+
+    render(<TerminalView machineName="m-1" title="m-1 shell" onSessionId={onSessionId} />);
+
+    await waitFor(() => {
+      expect(createTerminalSession).toHaveBeenCalledTimes(1);
+    });
+
+    await act(async () => {
+      MockWebSocket.instances[0].emit("close");
+    });
+
+    expect(screen.getByText("Shell disconnected")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Reconnect" })).toBeTruthy();
   });
 });
