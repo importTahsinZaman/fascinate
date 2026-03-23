@@ -1,5 +1,5 @@
 import { Suspense, lazy, startTransition, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
-import { Camera, GitFork, Trash, X } from "@phosphor-icons/react";
+import { Camera, Diamond, GitFork, Trash, X } from "@phosphor-icons/react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   forkMachine,
@@ -47,7 +47,7 @@ const workspaceCanvasSize = { width: 9600, height: 6400 };
 const workspaceViewportPadding = 160;
 const workspaceFocusPadding = { horizontal: 56, vertical: 48 };
 const defaultWorkspaceViewport: WorkspaceViewport = { x: 120, y: 96, scale: 1 };
-const minWorkspaceScale = 0.45;
+const minWorkspaceScale = 0.531;
 const maxWorkspaceScale = 2.2;
 const workspaceZoomWheelFactor = 0.006;
 const workspaceWheelPanContinuationMs = 160;
@@ -560,7 +560,8 @@ function CommandCenter() {
   return (
     <main className="command-center">
       <div className="app-brandmark" aria-hidden="true">
-        Fascinate
+        <Diamond className="app-brandmark-icon" size={18} weight="fill" />
+        <span>Fascinate</span>
       </div>
       <WorkspaceAutosave enabled={workspaceQuery.isSuccess} />
       <div className="command-center-workspace">

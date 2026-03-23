@@ -81,11 +81,13 @@ export function TerminalView({ machineName, title, sessionId, onSessionId, onCwd
       fontSize: 15,
       fontFamily: '"SF Mono", "SFMono-Regular", ui-monospace, Menlo, Consolas, monospace',
       theme: {
-        background: "#121212",
+        background: "#161616",
         foreground: "#f3f1eb",
         cursor: "#f3f1eb",
-        cursorAccent: "#121212",
+        cursorAccent: "#161616",
         selectionBackground: "rgba(255, 255, 255, 0.14)",
+        green: "#18E37D",
+        brightGreen: "#18E37D",
       },
     });
     const fitAddon = new FitAddon();

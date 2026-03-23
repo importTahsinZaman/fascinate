@@ -246,7 +246,7 @@ a {
   place-items: center;
   height: 100%;
   color: var(--text-secondary);
-  background: #121212;
+  background: #161616;
   font-size: 13px;
 }
 
@@ -302,12 +302,20 @@ a {
   top: 18px;
   left: 24px;
   z-index: 70;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   pointer-events: none;
   color: rgba(243, 241, 235, 0.92);
   font-size: 18px;
   line-height: 24px;
   letter-spacing: -0.02em;
   font-weight: 700;
+}
+
+.app-brandmark-icon {
+  color: #18e37d;
+  flex: none;
 }
 
 .command-center-workspace {
@@ -772,7 +780,7 @@ a {
   overflow: hidden;
   border-radius: 14px;
   border: 1px solid var(--border-medium);
-  background: rgba(30, 30, 30, 0.98);
+  background: #1f1f1f;
   box-shadow: 0 18px 40px rgba(0, 0, 0, 0.42);
 }
 
@@ -785,7 +793,7 @@ a {
   gap: var(--space-4);
   padding: 10px 14px;
   border-bottom: 4px solid var(--machine-strong-border, var(--border-subtle));
-  background: rgba(22, 22, 22, 0.96);
+  background: #1f1f1f;
 }
 
 .window-header-title {
@@ -850,7 +858,7 @@ a {
 
 .window-body {
   min-height: 0;
-  background: #121212;
+  background: #161616;
 }
 
 .terminal-shell {
@@ -866,7 +874,7 @@ a {
   flex: 1;
   min-height: 0;
   padding: 0;
-  background: #121212;
+  background: #161616;
 }
 
 .terminal-host .terminal {
