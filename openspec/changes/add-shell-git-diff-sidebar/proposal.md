@@ -6,7 +6,7 @@ The terminal workspace already tracks shell session IDs and current working dire
 
 ## What Changes
 
-- Add a shell-header git diff action that opens a fixed right-side sidebar for the selected shell without resizing or reflowing the workspace canvas.
+- Add a shell-header git diff action that opens a fixed overlay above the control sidebar for the selected shell without resizing or reflowing the workspace canvas.
 - Add repo-aware shell diff behavior that resolves the active repository from the shell's current working directory, even when the shell is nested below the repository root.
 - Add browser-visible git status and file diff retrieval for live shell sessions through explicit backend endpoints rather than the interactive PTY stream.
 - Add near-real-time refresh while the diff sidebar is open so changed files and hunks stay current without requiring prompt hooks or full page reloads.
@@ -16,7 +16,7 @@ The terminal workspace already tracks shell session IDs and current working dire
 ## Capabilities
 
 ### New Capabilities
-- `browser-shell-git-diffs`: shell-scoped git repository detection, sidebar-driven file change browsing, and split diff rendering inside the browser workspace
+- `browser-shell-git-diffs`: shell-scoped git repository detection, stacked file-stream diff browsing, and split diff rendering inside the browser workspace
 
 ### Modified Capabilities
 

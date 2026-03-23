@@ -2,7 +2,7 @@
 
 Fascinate's browser workspace already gives each terminal window a persistent session ID, a window header, and client-side current-working-directory metadata derived from the terminal stream. That is enough to anchor a shell-scoped git inspection feature without changing the VM/runtime model or inventing a second session primitive.
 
-The current browser terminal surface stops at raw shell access. Users can keep many shells open, but they cannot inspect a working tree in a review-friendly way without dropping into manual `git status` / `git diff` commands or leaving the product for another tool. The requested UX is a dark, elevated, split diff presentation that opens from the shell header as a right-side overlay and does not push or resize the canvas.
+The current browser terminal surface stops at raw shell access. Users can keep many shells open, but they cannot inspect a working tree in a review-friendly way without dropping into manual `git status` / `git diff` commands or leaving the product for another tool. The requested UX is a dark, elevated, split diff presentation that opens from the shell header as an overlay above the control sidebar and does not push or resize the canvas.
 
 Relevant constraints:
 - The diff surface must stay browser-first and must not reintroduce terminal-first product assumptions.
@@ -14,11 +14,11 @@ Relevant constraints:
 ## Goals / Non-Goals
 
 **Goals:**
-- Add a shell-header git diff action that opens a fixed right-side overlay without moving canvas windows.
+- Add a shell-header git diff action that opens a fixed overlay above the control sidebar without moving canvas windows.
 - Resolve repository context from the selected shell's latest known cwd, including shells opened in nested directories inside a repo.
 - Fetch git status and file diffs through explicit shell-scoped backend APIs that run outside the interactive PTY path.
 - Keep the sidebar reasonably current while open through bounded polling rather than prompt hooks or long-lived file watchers.
-- Render changed files in a review-style split diff UI with sticky file headers, change counts, gutters, and expandable collapsed context.
+- Render changed files in a review-style split diff UI with sticky file headers, change counts, gutters, expandable collapsed context, and a continuous stacked file stream.
 - Keep diff state ephemeral to the browser session so workspace layout persistence remains unchanged.
 
 **Non-Goals:**
@@ -32,13 +32,13 @@ Relevant constraints:
 
 ### 1. Use a single shell-scoped overlay panel that sits above the existing layout
 
-The git diff UI will be implemented as a dedicated right-side overlay rendered at the command-center level rather than inside the canvas or the terminal body. The panel is opened from a button in the shell window header and is bound to one selected shell window at a time.
+The git diff UI will be implemented as a dedicated overlay rendered at the command-center level rather than inside the canvas or the terminal body. The panel is opened from a button in the shell window header, sits above the standard control sidebar, and is bound to one selected shell window at a time.
 
 The overlay will:
 - sit above the workspace/control-sidebar layout with its own z-layer
 - avoid resizing, docking, or reflowing terminal windows
 - switch context when the user opens diffs from another shell
-- keep its open/selected-file state ephemeral and local to the current browser session
+- keep its open/scroll state ephemeral and local to the current browser session
 
 Why:
 - The user explicitly wants a panel that is "on top" and does not push anything.
@@ -94,17 +94,17 @@ Alternatives considered:
 - Reuse the tmux session directly and run commands through the attached shell.
   - Rejected because it would pollute shell history/state and could race with user input.
 
-### 4. Poll repo status while the sidebar is open, and fetch file patches on demand
+### 4. Poll repo status while the sidebar is open, and page file patches on demand
 
-The sidebar will use bounded polling only while it is open for an active shell. Status polling will refresh the repo/file list on a short interval such as 2 seconds. File patch requests will be fetched on selection and refetched when the selected file's status changes.
+The sidebar will use bounded polling only while it is open for an active shell. Status polling will refresh the repo/file list on a short interval such as 2 seconds. File patch requests will be fetched in small scroll-driven batches and additional file cards will load as the user nears the end of the current batch.
 
 This splits the data flow into:
 - lightweight repo status polling for freshness
-- heavier per-file patch fetches only for the file the user is inspecting
+- heavier per-file patch fetches only for files the user is actively reading in the stacked stream
 
 Why:
 - It gives the user the near-real-time behavior they asked for without always-on background load.
-- It avoids shipping the entire repo patch on every poll.
+- It avoids shipping or rendering the entire repo patch set on every poll.
 - It keeps the PTY and UI responsive even for repos with many modified files.
 
 Alternatives considered:
@@ -123,6 +123,8 @@ Per-file patch retrieval will return raw unified diff text plus file metadata. T
 - left/right line gutters
 - addition/removal backgrounds and paired changed lines
 - collapsed unchanged regions with expand controls
+
+The frontend will no longer show a separate changed-file list. Instead it will render file cards in a stacked scroll stream and page more cards in as the user scrolls.
 
 Why:
 - `git status --porcelain=v2` is robust for summaries and avoids scraping human-readable output.

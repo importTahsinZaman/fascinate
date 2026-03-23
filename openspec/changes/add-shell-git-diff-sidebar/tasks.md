@@ -6,7 +6,7 @@
 
 ## 2. Shell Header And Sidebar State
 
-- [x] 2.1 Extend the web API bindings and workspace-local state to track the active git diff sidebar shell, selected file, latest cwd, loading states, and polling lifecycle without persisting that state in workspace layouts.
+- [x] 2.1 Extend the web API bindings and workspace-local state to track the active git diff sidebar shell, latest cwd, loading states, scroll-paged diff batches, and polling lifecycle without persisting that state in workspace layouts.
 - [x] 2.2 Add a git diff action to the shell window header and render a command-center overlay container that opens on the right side without changing workspace canvas geometry.
 - [x] 2.3 Wire the sidebar to shell switching behavior so opening diffs from another window rebinds the panel to that shell's session and cwd context.
 

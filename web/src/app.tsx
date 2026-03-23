@@ -571,7 +571,6 @@ function CommandCenter() {
           closingShellIDs={closingShellIDs}
           onCloseShell={(window) => closeShellWindow(window)}
         />
-        <GitDiffSidebar />
       </div>
       <aside className="control-sidebar" aria-label="Workspace controls">
         <div className="control-sidebar-scroll">
@@ -716,6 +715,7 @@ function CommandCenter() {
           </div>
         </footer>
       </aside>
+      <GitDiffSidebar />
       {renderModal()}
     </main>
   );

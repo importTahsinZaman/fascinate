@@ -290,6 +290,7 @@ a {
 }
 
 .command-center {
+  position: relative;
   display: grid;
   grid-template-columns: minmax(0, 1fr) 380px;
   width: 100%;
@@ -869,21 +870,19 @@ a {
 
 .git-diff-sidebar {
   position: absolute;
-  top: 18px;
-  right: 18px;
-  bottom: 18px;
-  width: min(880px, calc(100% - 36px));
-  z-index: 90;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(1120px, calc(100% - 48px));
+  z-index: 120;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
-  border-radius: 18px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  background:
-    linear-gradient(180deg, rgba(34, 34, 34, 0.98), rgba(24, 24, 24, 0.98)),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0));
-  box-shadow: 0 28px 80px rgba(0, 0, 0, 0.48);
+  border-left: 1px solid var(--border-subtle);
+  background: #141414;
+  box-shadow: -28px 0 80px rgba(0, 0, 0, 0.52);
   backdrop-filter: blur(10px);
   overflow: hidden;
+  animation: git-diff-sidebar-enter 180ms ease;
 }
 
 .git-diff-sidebar-header {
@@ -891,9 +890,9 @@ a {
   grid-template-columns: minmax(0, 1fr) auto;
   gap: var(--space-5);
   align-items: start;
-  padding: 18px 20px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-  background: rgba(20, 20, 20, 0.86);
+  padding: 20px 22px 18px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: rgba(20, 20, 20, 0.96);
 }
 
 .git-diff-sidebar-header-copy {
@@ -928,72 +927,61 @@ a {
   overflow: hidden;
 }
 
-.git-diff-layout {
-  display: grid;
-  grid-template-columns: 260px minmax(0, 1fr);
-  height: 100%;
+.git-diff-stream {
   min-height: 0;
-}
-
-.git-diff-file-list-pane {
+  overflow: auto;
+  padding: 20px 22px 28px;
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
-  min-height: 0;
-  border-right: 1px solid rgba(255, 255, 255, 0.08);
-  background: rgba(18, 18, 18, 0.88);
+  align-content: start;
+  gap: 18px;
+  scrollbar-color: rgba(255, 255, 255, 0.14) transparent;
+  background:
+    linear-gradient(180deg, rgba(24, 24, 24, 0.96), rgba(18, 18, 18, 0.98)),
+    repeating-linear-gradient(-45deg, rgba(255, 255, 255, 0.015), rgba(255, 255, 255, 0.015) 8px, transparent 8px, transparent 16px);
 }
 
-.git-diff-file-list-header {
-  padding: 16px 16px 14px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+.git-diff-stream-summary {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: var(--space-4);
+  padding: 0 2px;
 }
 
-.git-diff-file-list-header strong,
-.git-diff-file-list-header span {
+.git-diff-stream-summary strong,
+.git-diff-stream-summary span {
   display: block;
 }
 
-.git-diff-file-list-header strong {
+.git-diff-stream-summary strong {
   font-size: 13px;
   line-height: 18px;
 }
 
-.git-diff-file-list-header span {
+.git-diff-stream-summary span {
   margin-top: var(--space-1);
   color: var(--text-secondary);
   font-size: 12px;
   line-height: 16px;
 }
 
-.git-diff-file-list {
-  min-height: 0;
-  overflow: auto;
-  padding: 10px;
+.git-diff-stream-summary-note {
+  margin: 0;
+  max-width: 320px;
+  text-align: right;
+}
+
+.git-diff-file-card {
   display: grid;
-  align-content: start;
-  gap: 8px;
-}
-
-.git-diff-file-row {
-  width: 100%;
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  align-items: start;
-  gap: 10px;
-  padding: 10px 12px;
-  border-radius: 10px;
-  border: 1px solid rgba(255, 255, 255, 0.06);
-  background: rgba(255, 255, 255, 0.02);
-  text-align: left;
-}
-
-.git-diff-file-row:hover {
-  background: rgba(255, 255, 255, 0.05);
-}
-
-.git-diff-file-row[data-selected="true"] {
-  border-color: rgba(25, 227, 125, 0.28);
-  background: rgba(25, 227, 125, 0.08);
+  border-radius: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background:
+    linear-gradient(180deg, rgba(33, 33, 33, 0.98), rgba(20, 20, 20, 0.98)),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0));
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.22);
+  overflow: hidden;
+  content-visibility: auto;
+  contain-intrinsic-size: 960px;
 }
 
 .git-diff-file-kind {
@@ -1031,40 +1019,6 @@ a {
   border-color: rgba(96, 165, 250, 0.2);
 }
 
-.git-diff-file-copy {
-  min-width: 0;
-  display: grid;
-  gap: 4px;
-}
-
-.git-diff-file-copy strong,
-.git-diff-file-copy span {
-  display: block;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.git-diff-file-copy strong {
-  font-size: 13px;
-  line-height: 18px;
-}
-
-.git-diff-file-copy span {
-  color: var(--text-secondary);
-  font-size: 11px;
-  line-height: 16px;
-}
-
-.git-diff-view-pane {
-  min-height: 0;
-  overflow: auto;
-  background:
-    linear-gradient(180deg, rgba(24, 24, 24, 0.96), rgba(18, 18, 18, 0.98)),
-    repeating-linear-gradient(-45deg, rgba(255, 255, 255, 0.015), rgba(255, 255, 255, 0.015) 8px, transparent 8px, transparent 16px);
-}
-
 .git-diff-state,
 .git-diff-nonrenderable {
   margin: 18px;
@@ -1092,10 +1046,6 @@ a {
   color: var(--text-secondary);
   font-size: 13px;
   line-height: 18px;
-}
-
-.git-diff-file-panel {
-  min-height: 100%;
 }
 
 .git-diff-file-header {
@@ -1165,6 +1115,25 @@ a {
 .git-diff-stat-deleted {
   color: var(--text-danger);
   background: rgba(245, 162, 143, 0.14);
+}
+
+.git-diff-more-indicator {
+  display: grid;
+  gap: 4px;
+  margin-top: -2px;
+  padding: 0 2px;
+  color: var(--text-secondary);
+}
+
+.git-diff-more-indicator strong {
+  font-size: 12px;
+  line-height: 16px;
+  font-weight: 600;
+}
+
+.git-diff-more-indicator span {
+  font-size: 12px;
+  line-height: 16px;
 }
 
 .git-diff-grid {
@@ -1357,6 +1326,18 @@ a {
   background: rgba(255, 255, 255, 0.08);
 }
 
+@keyframes git-diff-sidebar-enter {
+  from {
+    opacity: 0;
+    transform: translateX(28px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
 @media (max-width: 720px) {
   .command-center {
     grid-template-columns: 1fr;
@@ -1371,16 +1352,13 @@ a {
   .git-diff-sidebar {
     inset: 12px;
     width: auto;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 16px;
   }
 
-  .git-diff-layout {
-    grid-template-columns: 1fr;
-    grid-template-rows: 200px minmax(0, 1fr);
-  }
-
-  .git-diff-file-list-pane {
-    border-right: 0;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  .git-diff-stream-summary {
+    align-items: start;
+    flex-direction: column;
   }
 
   .git-diff-row {

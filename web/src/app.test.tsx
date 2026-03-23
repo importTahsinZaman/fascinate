@@ -655,7 +655,7 @@ describe("App", () => {
     expect(useWorkspaceStore.getState().viewportFocusRequest).toBeNull();
   });
 
-  it("loads git status from the active shell cwd and renders a split diff with collapsed context", async () => {
+  it("streams file diffs inline and loads more as the panel scrolls", async () => {
     const fetchMock = createAuthenticatedFetchMock((path, init) => {
       if (path === "/v1/terminal/sessions/term-1/git/status") {
         expect(JSON.parse(String(init?.body))).toEqual({ cwd: "/home/ubuntu/repo" });
@@ -663,21 +663,26 @@ describe("App", () => {
           state: "ready",
           repo_root: "/home/ubuntu/repo",
           branch: "main",
-          files: [{ path: "web/src/app.tsx", kind: "modified", index_status: "M", worktree_status: "M" }],
+          files: [
+            { path: "web/src/app.tsx", kind: "modified", index_status: "M", worktree_status: "M" },
+            { path: "web/src/store.ts", kind: "modified", index_status: "M", worktree_status: "M" },
+            { path: "README.md", kind: "modified", index_status: "M", worktree_status: "M" },
+          ],
         });
       }
       if (path === "/v1/terminal/sessions/term-1/git/diff") {
-        expect(JSON.parse(String(init?.body))).toMatchObject({
+        const body = JSON.parse(String(init?.body)) as { path: string };
+        expect(body).toMatchObject({
           cwd: "/home/ubuntu/repo",
           repo_root: "/home/ubuntu/repo",
-          path: "web/src/app.tsx",
         });
-        return jsonResponse({
-          state: "ready",
-          path: "web/src/app.tsx",
-          additions: 1,
-          deletions: 1,
-          patch: `diff --git a/web/src/app.tsx b/web/src/app.tsx
+        if (body.path === "web/src/app.tsx") {
+          return jsonResponse({
+            state: "ready",
+            path: "web/src/app.tsx",
+            additions: 1,
+            deletions: 1,
+            patch: `diff --git a/web/src/app.tsx b/web/src/app.tsx
 index 1111111..2222222 100644
 --- a/web/src/app.tsx
 +++ b/web/src/app.tsx
@@ -701,11 +706,38 @@ index 1111111..2222222 100644
 -old omega
 +new omega
  line 17
- line 18
- line 19
- line 20
+line 18
+line 19
+line 20
 `,
-        });
+          });
+        }
+        if (body.path === "web/src/store.ts") {
+          return jsonResponse({
+            state: "ready",
+            path: "web/src/store.ts",
+            additions: 1,
+            deletions: 1,
+            patch: `diff --git a/web/src/store.ts b/web/src/store.ts
+@@ -1,2 +1,2 @@
+-old store
++new store
+ unchanged
+`,
+          });
+        }
+        if (body.path === "README.md") {
+          return jsonResponse({
+            state: "ready",
+            path: "README.md",
+            additions: 1,
+            deletions: 0,
+            patch: `diff --git a/README.md b/README.md
+@@ -1,0 +1 @@
++stacked diff panel
+`,
+          });
+        }
       }
       return undefined;
     });
@@ -721,11 +753,25 @@ index 1111111..2222222 100644
 
     expect(await screen.findByRole("heading", { name: "m-1 shell" })).toBeTruthy();
     expect((await screen.findAllByText("web/src/app.tsx")).length).toBeGreaterThan(0);
+    expect((await screen.findAllByText("web/src/store.ts")).length).toBeGreaterThan(0);
     expect(await screen.findByText("new alpha")).toBeTruthy();
+    expect(await screen.findByText("new store")).toBeTruthy();
     expect(screen.getByText("Show 2 unchanged lines")).toBeTruthy();
+    expect(screen.getByText("More file diffs load as you scroll.")).toBeTruthy();
+    expect(screen.queryByText("stacked diff panel")).toBeNull();
 
     fireEvent.click(screen.getByText("Show 2 unchanged lines"));
     expect((await screen.findAllByText("line 11")).length).toBeGreaterThan(0);
+
+    const stream = document.querySelector(".git-diff-stream") as HTMLElement | null;
+    expect(stream).toBeTruthy();
+    const scrollContainer = stream!;
+    Object.defineProperty(scrollContainer, "clientHeight", { configurable: true, value: 640 });
+    Object.defineProperty(scrollContainer, "scrollHeight", { configurable: true, value: 1800 });
+    Object.defineProperty(scrollContainer, "scrollTop", { configurable: true, value: 1320 });
+    fireEvent.scroll(scrollContainer);
+
+    expect(await screen.findByText("stacked diff panel")).toBeTruthy();
   });
 
   it("rebinds the git diff sidebar to another shell window", async () => {

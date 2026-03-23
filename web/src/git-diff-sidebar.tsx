@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useDeferredValue, useEffect, useMemo, useRef, useState, type UIEvent } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   getTerminalGitDiff,
@@ -15,14 +15,15 @@ import {
 import { useWorkspaceStore } from "./store";
 
 const statusPollIntervalMs = 4_000;
+const initialDiffPageSize = 2;
+const diffPageStep = 3;
+const diffPagePreloadThresholdPx = 960;
 
 export function GitDiffSidebar() {
   const windows = useWorkspaceStore((state) => state.windows);
   const windowCwds = useWorkspaceStore((state) => state.windowCwds);
   const gitDiffSidebar = useWorkspaceStore((state) => state.gitDiffSidebar);
   const closeGitDiffSidebar = useWorkspaceStore((state) => state.closeGitDiffSidebar);
-  const selectGitDiffSidebarFile = useWorkspaceStore((state) => state.selectGitDiffSidebarFile);
-  const clearGitDiffSidebarFile = useWorkspaceStore((state) => state.clearGitDiffSidebarFile);
 
   const activeWindow = useMemo(
     () => windows.find((window) => window.id === gitDiffSidebar.windowID) ?? null,
@@ -41,77 +42,39 @@ export function GitDiffSidebar() {
   });
 
   const files = statusQuery.data?.state === "ready" ? statusQuery.data.files ?? [] : [];
-  const selectedFile = useMemo(
-    () =>
-      files.find(
-        (file) =>
-          file.path === gitDiffSidebar.selectedPath &&
-          file.previous_path === gitDiffSidebar.selectedPreviousPath,
-      ) ?? null,
-    [files, gitDiffSidebar.selectedPath, gitDiffSidebar.selectedPreviousPath],
-  );
+  const deferredFiles = useDeferredValue(files);
+  const [visibleFileCount, setVisibleFileCount] = useState(initialDiffPageSize);
+  const streamRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
-    if (statusQuery.data?.state !== "ready") {
-      clearGitDiffSidebarFile();
+    setVisibleFileCount(initialDiffPageSize);
+  }, [gitDiffSidebar.windowID, sessionId, cwd, statusQuery.data?.repo_root, deferredFiles.length]);
+
+  useEffect(() => {
+    const container = streamRef.current;
+    if (!container || statusQuery.data?.state !== "ready" || visibleFileCount >= deferredFiles.length) {
       return;
     }
-
-    if (files.length === 0) {
-      clearGitDiffSidebarFile();
+    if (container.clientHeight <= 0 || container.scrollHeight <= 0) {
       return;
     }
-
-    const nextSelection = selectedFile ?? files[0];
-    if (
-      nextSelection.path !== gitDiffSidebar.selectedPath ||
-      nextSelection.previous_path !== gitDiffSidebar.selectedPreviousPath
-    ) {
-      selectGitDiffSidebarFile(nextSelection.path, nextSelection.previous_path);
+    if (container.scrollHeight <= container.clientHeight + diffPagePreloadThresholdPx / 2) {
+      setVisibleFileCount((current) => Math.min(deferredFiles.length, current + diffPageStep));
     }
-  }, [
-    clearGitDiffSidebarFile,
-    files,
-    gitDiffSidebar.selectedPath,
-    gitDiffSidebar.selectedPreviousPath,
-    selectGitDiffSidebarFile,
-    selectedFile,
-    statusQuery.data?.state,
-  ]);
+  }, [deferredFiles.length, statusQuery.data?.state, visibleFileCount]);
 
-  const diffQuery = useQuery({
-    queryKey: [
-      "terminal-git-diff",
-      sessionId,
-      cwd,
-      statusQuery.data?.repo_root,
-      selectedFile?.path,
-      selectedFile?.previous_path,
-      selectedFile?.kind,
-      selectedFile?.index_status,
-      selectedFile?.worktree_status,
-    ],
-    queryFn: () =>
-      getTerminalGitDiff(sessionId, {
-        cwd,
-        repo_root: statusQuery.data?.repo_root ?? "",
-        path: selectedFile?.path ?? "",
-        previous_path: selectedFile?.previous_path,
-        kind: selectedFile?.kind,
-        index_status: selectedFile?.index_status,
-        worktree_status: selectedFile?.worktree_status,
-      }),
-    enabled: Boolean(
-      gitDiffSidebar.windowID &&
-        sessionId &&
-        cwd &&
-        statusQuery.data?.state === "ready" &&
-        statusQuery.data.repo_root &&
-        selectedFile,
-    ),
-    refetchOnWindowFocus: false,
-    retry: false,
-  });
+  const visibleFiles = useMemo(
+    () => deferredFiles.slice(0, visibleFileCount),
+    [deferredFiles, visibleFileCount],
+  );
+
+  const handleStreamScroll = (event: UIEvent<HTMLDivElement>) => {
+    const { clientHeight, scrollHeight, scrollTop } = event.currentTarget;
+    if (scrollTop + clientHeight < scrollHeight - diffPagePreloadThresholdPx) {
+      return;
+    }
+    setVisibleFileCount((current) => Math.min(deferredFiles.length, current + diffPageStep));
+  };
 
   if (!gitDiffSidebar.windowID || !activeWindow) {
     return null;
@@ -128,7 +91,11 @@ export function GitDiffSidebar() {
           </p>
         </div>
         <div className="git-diff-sidebar-header-actions">
-          <button type="button" onClick={() => void statusQuery.refetch()} disabled={!sessionId || !cwd || statusQuery.isFetching}>
+          <button
+            type="button"
+            onClick={() => void statusQuery.refetch()}
+            disabled={!sessionId || !cwd || statusQuery.isFetching}
+          >
             {statusQuery.isFetching ? "Refreshing…" : "Refresh"}
           </button>
           <button type="button" onClick={closeGitDiffSidebar}>
@@ -149,11 +116,18 @@ export function GitDiffSidebar() {
             description="Fascinate is still waiting for the shell to report its current working directory."
           />
         ) : statusQuery.isPending ? (
-          <SidebarStateCard title="Loading repository changes" description="Inspecting the active shell working tree." />
+          <SidebarStateCard
+            title="Loading repository changes"
+            description="Inspecting the active shell working tree."
+          />
         ) : statusQuery.error ? (
           <SidebarStateCard
             title="Unable to load git status"
-            description={statusQuery.error instanceof Error ? statusQuery.error.message : "Git inspection failed for this shell."}
+            description={
+              statusQuery.error instanceof Error
+                ? statusQuery.error.message
+                : "Git inspection failed for this shell."
+            }
             actionLabel="Retry"
             onAction={() => void statusQuery.refetch()}
           />
@@ -163,168 +137,181 @@ export function GitDiffSidebar() {
             description="Move the shell into a repository directory to inspect file changes here."
           />
         ) : statusQuery.data?.state !== "ready" ? (
-          <SidebarStateCard title="Git inspection unavailable" description="Fascinate could not resolve repository state for this shell." />
+          <SidebarStateCard
+            title="Git inspection unavailable"
+            description="Fascinate could not resolve repository state for this shell."
+          />
+        ) : files.length === 0 ? (
+          <SidebarStateCard
+            title="Working tree is clean"
+            description="This repository has no changed files right now."
+          />
         ) : (
-          <div className="git-diff-layout">
-            <section className="git-diff-file-list-pane" aria-label="Changed files">
-              <div className="git-diff-file-list-header">
-                <div>
-                  <strong>{files.length} changed file{files.length === 1 ? "" : "s"}</strong>
-                  <span>{statusQuery.data.branch ? `Branch ${statusQuery.data.branch}` : "Working tree"}</span>
-                </div>
+          <section
+            ref={streamRef}
+            className="git-diff-stream"
+            aria-label="Git file diffs"
+            onScroll={handleStreamScroll}
+          >
+            <div className="git-diff-stream-summary">
+              <div>
+                <strong>
+                  {files.length} changed file{files.length === 1 ? "" : "s"}
+                </strong>
+                <span>
+                  {statusQuery.data.branch ? `Branch ${statusQuery.data.branch}` : "Working tree"}
+                </span>
               </div>
-              {files.length === 0 ? (
-                <SidebarStateCard
-                  title="Working tree is clean"
-                  description="This repository has no changed files right now."
-                  compact
-                />
-              ) : (
-                <div className="git-diff-file-list">
-                  {files.map((file) => {
-                    const isSelected =
-                      file.path === selectedFile?.path && file.previous_path === selectedFile?.previous_path;
-                    return (
-                      <button
-                        key={`${file.previous_path ?? ""}:${file.path}`}
-                        type="button"
-                        className="git-diff-file-row"
-                        data-selected={isSelected ? "true" : "false"}
-                        onClick={() => selectGitDiffSidebarFile(file.path, file.previous_path)}
-                      >
-                        <span className={`git-diff-file-kind git-diff-file-kind-${file.kind}`}>{formatFileKind(file.kind)}</span>
-                        <span className="git-diff-file-copy">
-                          <strong>{file.path}</strong>
-                          {file.previous_path ? <span>{file.previous_path} -&gt; {file.path}</span> : <span>{file.kind}</span>}
-                        </span>
-                      </button>
-                    );
-                  })}
-                </div>
-              )}
-            </section>
+              <span className="git-diff-stream-summary-note">
+                Loading diffs in scroll batches for faster rendering.
+              </span>
+            </div>
 
-            <section className="git-diff-view-pane" aria-label="Selected file diff">
-              {selectedFile ? (
-                <SelectedFileDiff
-                  branch={statusQuery.data.branch}
-                  diff={diffQuery.data}
-                  diffError={diffQuery.error}
-                  diffPending={diffQuery.isPending}
-                  onRetry={() => void diffQuery.refetch()}
-                  repoRoot={statusQuery.data.repo_root ?? ""}
-                  selectedFile={selectedFile}
-                />
-              ) : (
-                <SidebarStateCard
-                  title="Select a changed file"
-                  description="Choose a file from the list to inspect its split diff."
-                />
-              )}
-            </section>
-          </div>
+            {visibleFiles.map((file) => (
+              <GitDiffFileCard
+                key={`${file.previous_path ?? ""}:${file.path}`}
+                branch={statusQuery.data.branch}
+                cwd={cwd}
+                file={file}
+                repoRoot={statusQuery.data.repo_root ?? ""}
+                sessionId={sessionId}
+              />
+            ))}
+
+            {visibleFileCount < deferredFiles.length ? (
+              <div className="git-diff-more-indicator">
+                <strong>More file diffs load as you scroll.</strong>
+                <span>
+                  Showing {visibleFileCount} of {deferredFiles.length} changed file
+                  {deferredFiles.length === 1 ? "" : "s"}.
+                </span>
+              </div>
+            ) : null}
+          </section>
         )}
       </div>
     </aside>
   );
 }
 
-function SelectedFileDiff({
+function GitDiffFileCard({
   branch,
-  diff,
-  diffError,
-  diffPending,
-  onRetry,
+  cwd,
+  file,
   repoRoot,
-  selectedFile,
+  sessionId,
 }: {
   branch?: string;
-  diff?: GitFileDiff;
-  diffError: unknown;
-  diffPending: boolean;
-  onRetry: () => void;
+  cwd: string;
+  file: GitChangedFile;
   repoRoot: string;
-  selectedFile: GitChangedFile;
+  sessionId: string;
 }) {
+  const diffQuery = useQuery({
+    queryKey: [
+      "terminal-git-diff",
+      sessionId,
+      cwd,
+      repoRoot,
+      file.path,
+      file.previous_path,
+      file.kind,
+      file.index_status,
+      file.worktree_status,
+    ],
+    queryFn: () =>
+      getTerminalGitDiff(sessionId, {
+        cwd,
+        repo_root: repoRoot,
+        path: file.path,
+        previous_path: file.previous_path,
+        kind: file.kind,
+        index_status: file.index_status,
+        worktree_status: file.worktree_status,
+      }),
+    enabled: Boolean(sessionId && cwd && repoRoot),
+    refetchOnWindowFocus: false,
+    retry: false,
+  });
+
   const parsedDiff = useMemo<ParsedGitDiff | null>(() => {
-    if (!diff?.patch || diff.state !== "ready") {
+    if (!diffQuery.data?.patch || diffQuery.data.state !== "ready") {
       return null;
     }
-    return parseUnifiedDiff(diff.patch);
-  }, [diff]);
-
-  if (diffPending) {
-    return <SidebarStateCard title="Loading file diff" description="Fetching the selected file patch." />;
-  }
-
-  if (diffError) {
-    return (
-      <SidebarStateCard
-        title="Unable to load this file diff"
-        description={diffError instanceof Error ? diffError.message : "The selected file patch could not be loaded."}
-        actionLabel="Retry"
-        onAction={onRetry}
-      />
-    );
-  }
-
-  if (!diff) {
-    return <SidebarStateCard title="Select a changed file" description="Choose a file from the list to inspect its split diff." />;
-  }
-
-  if (diff.state !== "ready") {
-    return (
-      <div className="git-diff-file-panel">
-        <FilePanelHeader
-          branch={branch}
-          diff={diff}
-          repoRoot={repoRoot}
-          selectedFile={selectedFile}
-        />
-        <div className="git-diff-nonrenderable">
-          <strong>Inline diff unavailable</strong>
-          <p>{diff.message ?? "Fascinate cannot render this file as inline text."}</p>
-        </div>
-      </div>
-    );
-  }
+    return parseUnifiedDiff(diffQuery.data.patch);
+  }, [diffQuery.data]);
 
   return (
-    <div className="git-diff-file-panel">
-      <FilePanelHeader branch={branch} diff={diff} repoRoot={repoRoot} selectedFile={selectedFile} />
-      {parsedDiff && parsedDiff.rows.length > 0 ? (
+    <article className="git-diff-file-card">
+      <FilePanelHeader branch={branch} diff={diffQuery.data} file={file} repoRoot={repoRoot} />
+
+      {diffQuery.isPending ? (
+        <SidebarStateCard title="Loading file diff" description="Fetching this file patch." compact />
+      ) : diffQuery.error ? (
+        <SidebarStateCard
+          title="Unable to load this file diff"
+          description={
+            diffQuery.error instanceof Error
+              ? diffQuery.error.message
+              : "The selected file patch could not be loaded."
+          }
+          actionLabel="Retry"
+          onAction={() => void diffQuery.refetch()}
+          compact
+        />
+      ) : !diffQuery.data ? (
+        <SidebarStateCard
+          title="Diff unavailable"
+          description="Fascinate could not load this file patch."
+          compact
+        />
+      ) : diffQuery.data.state !== "ready" ? (
+        <div className="git-diff-nonrenderable">
+          <strong>Inline diff unavailable</strong>
+          <p>{diffQuery.data.message ?? "Fascinate cannot render this file as inline text."}</p>
+        </div>
+      ) : parsedDiff && parsedDiff.rows.length > 0 ? (
         <SplitDiffRows rows={parsedDiff.rows} />
       ) : (
         <div className="git-diff-nonrenderable">
           <strong>No inline hunks available</strong>
-          <p>The selected file has no textual hunks to render in the split diff view.</p>
+          <p>This file has no textual hunks to render in the split diff view.</p>
         </div>
       )}
-    </div>
+    </article>
   );
 }
 
 function FilePanelHeader({
   branch,
   diff,
+  file,
   repoRoot,
-  selectedFile,
 }: {
   branch?: string;
-  diff: GitFileDiff;
+  diff?: GitFileDiff;
+  file: GitChangedFile;
   repoRoot: string;
-  selectedFile: GitChangedFile;
 }) {
   return (
     <div className="git-diff-file-header">
       <div className="git-diff-file-header-copy">
-        <strong>{selectedFile.path}</strong>
-        <span title={repoRoot}>{selectedFile.previous_path ? `${selectedFile.previous_path} -> ${selectedFile.path}` : repoRoot}</span>
+        <strong>{file.path}</strong>
+        <span title={repoRoot}>
+          {file.previous_path ? `${file.previous_path} -> ${file.path}` : repoRoot}
+        </span>
       </div>
       <div className="git-diff-file-header-meta">
+        <span className={`git-diff-file-kind git-diff-file-kind-${file.kind}`}>
+          {formatFileKind(file.kind)}
+        </span>
         {branch ? <span className="inline-chip">{branch}</span> : null}
-        {typeof diff.additions === "number" ? <span className="git-diff-stat git-diff-stat-added">+{diff.additions}</span> : null}
-        {typeof diff.deletions === "number" ? <span className="git-diff-stat git-diff-stat-deleted">-{diff.deletions}</span> : null}
+        {typeof diff?.additions === "number" ? (
+          <span className="git-diff-stat git-diff-stat-added">+{diff.additions}</span>
+        ) : null}
+        {typeof diff?.deletions === "number" ? (
+          <span className="git-diff-stat git-diff-stat-deleted">-{diff.deletions}</span>
+        ) : null}
       </div>
     </div>
   );
@@ -359,7 +346,13 @@ function SplitDiffRows({ rows }: { rows: ParsedGitDiff["rows"] }) {
 }
 
 function ExpandedContextRows({ rows }: { rows: SplitDiffLineRow[] }) {
-  return <>{rows.map((row) => <SplitDiffLine key={row.id} row={row} />)}</>;
+  return (
+    <>
+      {rows.map((row) => (
+        <SplitDiffLine key={row.id} row={row} />
+      ))}
+    </>
+  );
 }
 
 function CollapsedContextRow({

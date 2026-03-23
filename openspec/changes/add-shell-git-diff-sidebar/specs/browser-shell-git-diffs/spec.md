@@ -5,7 +5,7 @@ Fascinate SHALL provide a git diff action in each browser shell window so a user
 
 #### Scenario: User opens the diff sidebar for a shell
 - **WHEN** a user activates the git diff action for a shell window with an active browser terminal session
-- **THEN** Fascinate opens a right-side git diff sidebar bound to that shell
+- **THEN** Fascinate opens a git diff overlay above the control sidebar bound to that shell
 - **AND** the workspace canvas and terminal window geometry remain unchanged
 
 #### Scenario: User switches the sidebar to another shell
@@ -27,20 +27,20 @@ Fascinate SHALL determine whether the selected shell is inside a git repository 
 - **AND** it does not present stale file changes from a previous repository context
 
 ### Requirement: Fascinate SHALL keep sidebar repo status current while the sidebar is active
-Fascinate SHALL refresh repository status for the selected shell while its git diff sidebar is open so that the file list reflects recent working-tree changes without requiring a full page reload.
+Fascinate SHALL refresh repository status for the selected shell while its git diff sidebar is open so that the stacked diff stream reflects recent working-tree changes without requiring a full page reload.
 
 #### Scenario: Working tree changes while the sidebar is open
 - **WHEN** files are added, removed, or modified in the selected shell's repository while the sidebar is open
-- **THEN** Fascinate refreshes the sidebar file list for that shell
+- **THEN** Fascinate refreshes the visible file stream for that shell
 - **AND** the update occurs without interrupting terminal interaction in the workspace
 
 #### Scenario: Selected file diff becomes stale after a repo update
 - **WHEN** the user is viewing a file diff and that file's repository status changes during sidebar refresh
-- **THEN** Fascinate refreshes the selected file's diff content for the active shell context
-- **AND** the sidebar remains open on the same selected file when that file still exists in the changed-file list
+- **THEN** Fascinate refreshes the active shell's diff stream for files currently visible or newly paged into view
+- **AND** the sidebar remains open on the same shell context while preserving the user's scroll position as closely as practical
 
 ### Requirement: Fascinate SHALL render changed files in a split diff review layout
-Fascinate SHALL present changed files in a split diff layout suitable for browser review, including per-file metadata, synchronized left/right line presentation, and collapsed unchanged context.
+Fascinate SHALL present changed files in a split diff layout suitable for browser review, including per-file metadata, synchronized left/right line presentation, collapsed unchanged context, and a scrollable stacked file stream instead of a separate changed-file list.
 
 #### Scenario: User opens a changed file diff
 - **WHEN** a user selects a changed file in the git diff sidebar
