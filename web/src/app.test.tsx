@@ -591,7 +591,10 @@ describe("App", () => {
     fireEvent.click(await screen.findByRole("button", { name: "New shell" }));
     expect(await screen.findByTestId("terminal-m-1")).toBeTruthy();
 
-    fireEvent.click(await screen.findByRole("button", { name: "Focus shell" }));
+    const closeButton = await screen.findByRole("button", { name: "Close shell" });
+    const header = closeButton.closest(".window-frame")?.querySelector(".window-header");
+    expect(header).toBeTruthy();
+    fireEvent.doubleClick(header!);
 
     await waitFor(() => {
       expect(useWorkspaceStore.getState().viewport.scale).toBeGreaterThan(1);
