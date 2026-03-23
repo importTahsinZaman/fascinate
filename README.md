@@ -66,10 +66,6 @@ Current browser HTTP API:
 - `GET /v1/diagnostics/snapshots/{name}`
 - `GET /v1/diagnostics/terminal-sessions`
 
-Legacy/secondary admin surfaces still exist in the repo:
-- SSH/frontdoor commands for machine, snapshot, env-var, and shell flows
-- the Bubble Tea dashboard for interactive SSH sessions
-
 ## Repo Layout
 
 - [`web/`](/Users/tahsin/Desktop/vmcloud/web): React/Vite browser command center and xterm workspace canvas

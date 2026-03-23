@@ -2,13 +2,9 @@ package database
 
 import (
 	"context"
-	"crypto/ed25519"
-	"crypto/rand"
 	"errors"
 	"path/filepath"
 	"testing"
-
-	"golang.org/x/crypto/ssh"
 )
 
 func TestMachineRecordLifecycle(t *testing.T) {
@@ -45,29 +41,6 @@ func TestMachineRecordLifecycle(t *testing.T) {
 	}
 	if user.TutorialCompletedAt == nil {
 		t.Fatalf("expected tutorial completion timestamp")
-	}
-
-	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	authorizedKey, err := ssh.NewPublicKey(privateKey.Public())
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	sshKeyRecord, err := store.CreateSSHKey(ctx, CreateSSHKeyParams{
-		UserID:      user.ID,
-		Name:        "laptop",
-		PublicKey:   string(ssh.MarshalAuthorizedKey(authorizedKey)),
-		Fingerprint: ssh.FingerprintSHA256(authorizedKey),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if sshKeyRecord.UserEmail != "dev@example.com" {
-		t.Fatalf("unexpected ssh key owner email: %q", sshKeyRecord.UserEmail)
 	}
 
 	record, err := store.CreateMachine(ctx, CreateMachineParams{

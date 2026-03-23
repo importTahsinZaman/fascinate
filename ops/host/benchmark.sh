@@ -201,7 +201,6 @@ cleanup_bench_user() {
     DELETE FROM machines
       WHERE owner_user_id = '${user_id}'
          OR name LIKE '${BENCH_PREFIX}-%';
-    DELETE FROM ssh_keys WHERE user_id = '${user_id}';
     DELETE FROM email_codes WHERE email = '${BENCH_EMAIL}';
     DELETE FROM users WHERE email = '${BENCH_EMAIL}';
   " >/dev/null 2>&1 || true

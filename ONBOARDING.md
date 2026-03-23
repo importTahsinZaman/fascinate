@@ -14,8 +14,6 @@ Then come back and use it in three ways:
 2. As a map when you need to find the right package to change.
 3. As a checklist before making control-plane, runtime, browser-terminal, snapshot, or tool-auth changes.
 
-Note: Fascinate is now browser-first. Historical references below to the old SSH frontdoor, Bubble Tea dashboard, or `seed-ssh-key` flow are obsolete and should be ignored if they have not been rewritten yet.
-
 ## What Fascinate Is
 
 Fascinate is a browser-first command center for persistent developer VMs.
@@ -186,25 +184,15 @@ So fork preserves live environment state, not just files on disk.
 
 Before reading the internals, understand the user experience.
 
-### Normal flow
+### Browser flow
 
-1. A user connects to Fascinate over SSH.
-2. Their public key is checked against SQLite.
-3. If the key is known, they enter the dashboard or run an exec-style SSH command.
-4. They can create, delete, fork, snapshot, or enter a shell in a VM.
-5. When they exit the guest shell, Fascinate captures supported tool auth from the guest.
-6. When they later create a fresh VM, Fascinate restores that stored auth before marking the machine ready.
-
-### Signup flow
-
-If an SSH key is unknown and email signup is configured:
-
-1. the SSH connection is allowed into a restricted signup mode
-2. the user enters an email
-3. Fascinate emails a 6-digit code
-4. the user verifies the code
-5. Fascinate creates or upserts the user and associates the SSH key
-6. the dashboard opens in the same session
+1. A user opens Fascinate in the browser.
+2. They request a 6-digit email code and verify it.
+3. Fascinate creates or resumes a browser session backed by SQLite.
+4. The browser command center lets them create, delete, fork, snapshot, or shell into VMs.
+5. Browser shell sessions attach to persistent tmux-backed guest shells.
+6. When a shell exits or a background sync runs, Fascinate captures supported tool auth from the guest.
+7. When the user later creates a fresh VM, Fascinate restores that stored auth before marking the machine ready.
 
 ### HTTP flow
 
@@ -230,17 +218,16 @@ cmd/fascinate
        -> internal/runtime/cloudhypervisor
        -> internal/toolauth
        -> internal/controlplane
+       -> internal/browserauth
+       -> internal/browserterm
        -> internal/httpapi
-       -> internal/signup
-       -> internal/sshfrontdoor
-       -> internal/tui
 ```
 
 And here is the operational picture:
 
 ```text
 User
-  -> SSH front door / HTTP API
+  -> browser auth / HTTP API
   -> control plane
   -> database + host registry
   -> host-aware executor boundary
@@ -325,9 +312,9 @@ It:
 - ensures the local host exists in the host registry
 - heartbeats the local host once during startup
 - reconciles runtime state on startup
+- creates the browser-auth service
+- creates the browser terminal manager
 - creates the HTTP server
-- creates the signup service
-- creates the SSH front door
 - runs the background tool-auth sync loop
 - runs the periodic runtime reconcile loop
 - runs the periodic local-host heartbeat loop
@@ -341,7 +328,6 @@ This package defines the environment-backed configuration model.
 Important defaults:
 
 - HTTP listens on `127.0.0.1:8080`
-- SSH listens on `127.0.0.1:2222`
 - data lives under `./data`
 - the default host ID is `local-host`
 - the default host role is `combined`
@@ -363,17 +349,19 @@ This package is the durable product memory.
 You should think of its responsibilities as:
 
 - schema migrations
-- CRUD for users, keys, machines, snapshots, and email codes
+- CRUD for users, machines, snapshots, email codes, browser sessions, workspace layouts, and env vars
 - enforcing soft deletion through `deleted_at`
 
 Important tables:
 
 - `users`
-- `ssh_keys`
 - `hosts`
 - `machines`
 - `snapshots`
 - `email_codes`
+- `web_sessions`
+- `workspace_layouts`
+- `env_vars`
 - `events`
 
 The `events` table exists in the initial schema but is not the center of this codebase today.
@@ -447,30 +435,29 @@ The newer diagnostics endpoints are especially helpful when learning the system 
 - stored tool-auth profile state
 - recent lifecycle events
 
-### `internal/sshfrontdoor`
+### `internal/browserauth`
 
-This package exposes the product over SSH.
+This package owns browser sign-in.
 
 That includes:
 
-- public key authentication
-- signup-mode handling for unknown keys
-- exec-style command handling
-- interactive dashboard flow
-- guest shell handoff
-- tutorial flow
-- post-session tool-auth sync
+- 6-digit email verification codes
+- DB-backed opaque browser sessions
+- cookie-backed auth for the browser app
+- validation around session expiry and revocation
 
-This package is important because it is both an auth surface and a transport layer.
+### `internal/browserterm`
 
-### `internal/tui`
+This package owns browser terminal sessions.
 
-This package contains the Bubble Tea user interface for:
+That includes:
 
-- signup
-- the dashboard
+- issuing browser terminal sessions
+- reattach tokens and TTLs
+- tmux-backed guest shell persistence
+- host-local PTY gateway diagnostics
 
-It is product-facing and helpful for understanding what the system thinks a machine or snapshot "is" from a user perspective.
+This package matters because it is the bridge between the browser canvas and real guest shells.
 
 ### `internal/toolauth`
 
@@ -505,10 +492,10 @@ When you run `fascinate serve`, the flow is:
 9. `controlPlane.EnsureLocalHost` makes sure the current box exists in the host registry.
 10. `controlPlane.HeartbeatLocalHost` publishes initial host health and capacity.
 11. `controlPlane.ReconcileRuntimeState` aligns DB state with runtime state.
-12. `httpapi.New` builds the HTTP handler.
-13. `signup.New` builds the signup service.
-14. `sshfrontdoor.New` builds the SSH server.
-15. `App.Run` starts HTTP, SSH, the periodic tool-auth sync loop, the periodic runtime reconcile loop, and the periodic local-host heartbeat loop.
+12. `browserauth.New` builds the browser auth service.
+13. `browserterm.New` builds the browser terminal manager.
+14. `httpapi.New` builds the HTTP handler.
+15. `App.Run` starts HTTP, the periodic tool-auth sync loop, the periodic runtime reconcile loop, and the periodic local-host heartbeat loop.
 
 This matters because if startup is broken, the issue is often in one of those boundaries:
 
@@ -531,12 +518,6 @@ You should be comfortable with the core records because many bugs are really "DB
 - whether the tutorial was completed
 
 Important note: `is_admin` is persisted, but it is not currently the main enforcement mechanism for front-door permissions.
-
-### SSH keys
-
-`ssh_keys` maps public keys to users.
-
-The SSH server authenticates by fingerprint lookup. This is why `seed-ssh-key` and signup both end by creating a DB key record.
 
 ### Machines
 
@@ -939,9 +920,9 @@ Users can run commands like:
 - `shell <name>`
 - `tutorial <name>`
 
-### Interactive flow
+### Browser shell flow
 
-Interactive sessions show the Bubble Tea dashboard. From there users can:
+The browser command center foregrounds these actions:
 
 - browse machines
 - browse snapshots
@@ -950,20 +931,20 @@ Interactive sessions show the Bubble Tea dashboard. From there users can:
 - fork a running machine
 - save snapshots
 - delete machines or snapshots
-- enter a guest shell
-- start a tutorial flow
+- open one or more browser shells per machine
 
-### Guest shell handoff
+### Browser terminal handoff
 
-When a user enters a machine shell, Fascinate:
+When a user opens a browser shell, Fascinate:
 
 1. looks up the machine and confirms it is `RUNNING`
 2. waits briefly for guest SSH readiness if needed
-3. runs the host's `ssh` binary to connect to the guest via the forwarder
-4. attaches the user's session PTY to that child SSH process
-5. after exit, captures tool-auth state from the guest
+3. attaches to or creates a tmux-backed guest shell over the host's guest SSH path
+4. bridges that shell through the browser terminal gateway
+5. allows refresh/reattach without losing the guest session
+6. after exit or during background sync, captures supported tool-auth state from the guest
 
-This is a very important idea: the SSH front door is not the same as guest SSH. It is a broker.
+This is a very important idea: the browser terminal gateway is not the same as guest SSH. It is a broker.
 
 ## Tool Auth Deep Dive
 
@@ -1020,11 +1001,11 @@ Restore happens before a fresh machine becomes `RUNNING`.
 
 That means the user's first shell in a later VM should already have their supported tool auth available.
 
-## The TUI: What The Product Thinks Matters
+## The Browser Command Center: What The Product Thinks Matters
 
-The dashboard is useful not just as a UI, but as a product specification in code.
+The web app is useful not just as a UI, but as a product specification in code.
 
-By reading `internal/tui/dashboard.go`, you learn what actions the product wants to foreground:
+By reading `web/src/app.tsx`, `web/src/store.ts`, and `web/src/terminal.tsx`, you learn what actions the product wants to foreground:
 
 - new machine
 - enter shell
@@ -1039,10 +1020,11 @@ You also learn the intended state gating:
 - only `RUNNING` machines can be forked
 - only `RUNNING` machines can be snapshotted
 - `CREATING` resources auto-refresh in the UI
+- browser shells can be reopened and reattached after refresh
 
 This is a good place to look when you are unsure what behavior is product-correct versus merely technically possible.
 
-The TUI remains host-agnostic from the user's point of view. That is deliberate: host IDs are now important internally and in diagnostics, but normal user flows still treat the product as "machines and snapshots" rather than "hosts and placement."
+The browser command center remains host-agnostic from the user's point of view. That is deliberate: host IDs are important internally and in diagnostics, but normal user flows still treat the product as "machines and snapshots" rather than "hosts and placement."
 
 ## Reading Order For The Codebase
 
@@ -1053,22 +1035,22 @@ If you want the fastest path to competence, read in this order.
 3. `cmd/fascinate/main.go`
 4. `internal/app/app.go`
 5. `internal/config/config.go`
-6. `internal/runtime/runtime.go`
-7. `internal/controlplane/hosts.go`
-8. `internal/controlplane/service.go`
-9. `internal/httpapi/server.go`
-10. `internal/sshfrontdoor/server.go`
+6. `internal/browserauth/service.go`
+7. `internal/browserterm/manager.go`
+8. `internal/controlplane/hosts.go`
+9. `internal/controlplane/service.go`
+10. `internal/httpapi/server.go`
 11. `internal/runtime/cloudhypervisor/runtime.go`
 12. `internal/runtime/cloudhypervisor/network.go`
 13. `internal/runtime/cloudhypervisor/snapshots.go`
 14. `internal/toolauth/manager.go`
 15. `internal/toolauth/store.go`
-16. `internal/tui/dashboard.go`
-17. `internal/signup/service.go`
+16. `web/src/app.tsx`
+17. `web/src/store.ts`
 18. `internal/database/migrations/*.sql`
 19. `internal/controlplane/hosts_test.go`
 20. `internal/controlplane/service_test.go`
-21. `internal/sshfrontdoor/server_test.go`
+21. `internal/browserterm/manager_test.go`
 22. `internal/httpapi/server_test.go`
 
 That order intentionally alternates between product-facing code and systems-facing code.
@@ -1173,11 +1155,12 @@ You do not need to memorize every test file, but you should know where truth liv
 
 These are the most important test files for host-aware placement, lifecycle behavior, reconciliation, and tool-auth integration.
 
-### Best tests for SSH and UX behavior
+### Best tests for browser auth and shell UX behavior
 
-- `internal/sshfrontdoor/server_test.go`
-- `internal/tui/dashboard_test.go`
-- `internal/tui/signup_test.go`
+- `internal/browserauth/service_test.go`
+- `internal/browserterm/manager_test.go`
+- `web/src/app.test.tsx`
+- `web/src/terminal.test.tsx`
 
 ### Best tests for HTTP behavior
 
@@ -1237,13 +1220,13 @@ Then trace into:
 - `internal/runtime/runtime.go`
 - `internal/runtime/cloudhypervisor/...`
 
-### If the change is about shell access or signup
+### If the change is about browser auth or shell access
 
 Start in:
 
-- `internal/sshfrontdoor/server.go`
-- `internal/signup/service.go`
-- `internal/tui/...`
+- `internal/browserauth/service.go`
+- `internal/browserterm/manager.go`
+- `web/src/...`
 
 ### If the change is about app routing or API behavior
 
@@ -1373,8 +1356,8 @@ If you want a practical ramp-up path, do this.
 
 ### Day 4
 
-- Read `internal/sshfrontdoor/server.go`, `internal/tui/dashboard.go`, and `internal/signup/service.go`.
-- Follow one user session from SSH auth to dashboard to guest shell to tool-auth sync.
+- Read `internal/browserauth/service.go`, `internal/browserterm/manager.go`, and `web/src/app.tsx`.
+- Follow one user session from browser sign-in to command center to guest shell to tool-auth sync.
 
 ### Day 5
 
@@ -1397,12 +1380,12 @@ If you want a practical ramp-up path, do this.
 
 These are the kinds of tasks that teach the codebase well.
 
-- Improve error messages in SSH or HTTP flows.
+- Improve error messages in browser-auth, browser-terminal, or HTTP flows.
 - Add a missing test for a state transition.
 - Tighten validation around machine or snapshot naming.
 - Improve docs where behavior in code is subtle.
 - Add observability or logging around reconciliation or tool-auth sync.
-- Improve dashboard clarity around pending machine or snapshot states.
+- Improve command-center clarity around pending machine or snapshot states.
 
 ## Risky Changes For New Contributors
 
@@ -1421,7 +1404,7 @@ These are worth approaching carefully.
 1. Which layer should own this behavior: transport, control plane, runtime, or storage?
 2. Is the source of truth SQLite, runtime metadata, or both?
 3. Does this affect fresh create, snapshot create, fork, delete, or reconcile?
-4. Does this affect shell access, HTTP reachability, or both?
+4. Does this affect browser shell access, HTTP reachability, or both?
 5. Does this affect tool-auth timing?
 6. What test should fail before I change the code?
 7. Does the README or an active spec need updating too?
@@ -1436,7 +1419,7 @@ make build
 go test ./...
 go test ./internal/controlplane/...
 go test ./internal/runtime/cloudhypervisor/...
-go test ./internal/sshfrontdoor/...
+go test ./internal/browserterm/...
 go test ./internal/httpapi/...
 ```
 
@@ -1475,15 +1458,6 @@ curl http://127.0.0.1:8080/v1/runtime/machines
 curl http://127.0.0.1:8080/v1/machines?owner_email=you@example.com
 ```
 
-SSH usage:
-
-```bash
-./bin/fascinate seed-ssh-key --email you@example.com --name laptop --public-key-file ~/.ssh/id_ed25519.pub
-ssh -p 2222 localhost
-ssh -p 2222 localhost machines
-ssh -p 2222 localhost shell my-machine
-```
-
 ## Final Mental Model
 
 If you only keep one deep model in your head, make it this:
@@ -1514,10 +1488,10 @@ Once you can spot which side a bug belongs to, contributing becomes much easier.
 
 After finishing this guide, the best next step is not reading more random files. It is tracing one full story at a time:
 
-1. Fresh create: SSH command or dashboard action all the way to `RUNNING`.
+1. Fresh create: browser command-center action all the way to `RUNNING`.
 2. Snapshot create: user action all the way to saved artifact directory.
 3. Fork: source machine to implicit snapshot to restored target.
-4. Shell session: front door auth to guest shell to tool-auth capture.
+4. Shell session: browser auth to guest shell to tool-auth capture.
 5. Crash recovery: partial create to startup reconciliation.
 
 If you can explain each of those out loud, you are ready to contribute productively.
