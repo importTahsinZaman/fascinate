@@ -935,8 +935,9 @@ a {
   min-height: 0;
   overflow: auto;
   padding: 18px 18px 26px;
-  display: grid;
-  align-content: start;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
   gap: 16px;
   overscroll-behavior: contain;
   scrollbar-color: rgba(255, 255, 255, 0.14) transparent;
@@ -977,7 +978,10 @@ a {
 }
 
 .git-diff-file-card {
-  display: grid;
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  min-height: 96px;
   border-radius: 12px;
   border: 1px solid rgba(255, 255, 255, 0.08);
   background: #1f1d1d;
@@ -1050,9 +1054,7 @@ a {
 }
 
 .git-diff-file-header {
-  position: sticky;
-  top: 0;
-  z-index: 2;
+  position: relative;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
