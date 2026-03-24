@@ -36,7 +36,7 @@ Fascinate currently gives us:
   - serve the browser command center on the primary Fascinate origin
   - authenticate browser users through emailed verification codes and DB-backed sessions
   - issue browser terminal sessions and stream PTY traffic over dedicated WebSockets
-  - inspect shell-scoped git working trees in a unified review overlay above the control sidebar with a repo-summary header, branch-chip and animated refresh chrome, sticky stacked file cards, full-width collapsed-context bars with quiet static link chrome, compact review-grade diff chrome, inline path copy affordances with visible copy feedback, scroll-batched file loading, Shiki syntax highlighting, and without resizing the workspace canvas
+  - inspect shell-scoped git working trees through a live shell-header git-status chip with distinct idle/open states, repeat-toggle and `Escape` dismissal, and a unified review overlay above the control sidebar, with a repo-summary header, branch-chip and animated refresh chrome, sticky stacked file cards, full-width collapsed-context bars with quiet static link chrome, compact review-grade diff chrome with consistent diff-count accents, insertion-only inline token highlights for pure add-side expansions, inline path copy affordances with visible copy feedback, a centered clean-repo empty state, scroll-ahead batched file loading that prefetches visible cards before you reach them, backend-batched per-file patch fetches with per-machine git-command throttling, lazy-loaded Shiki syntax highlighting across the major source languages, and without resizing the workspace canvas
   - bridge terminal-driven clipboard copy requests into the browser's local clipboard when supported
   - persist per-user workspace layouts for the browser terminal canvas
 
@@ -50,7 +50,7 @@ Current browser HTTP API:
 - `POST /v1/terminal/sessions`
 - `GET /v1/terminal/sessions/{id}/stream`
 - `POST /v1/terminal/sessions/{id}/git/status`
-- `POST /v1/terminal/sessions/{id}/git/diff`
+- `POST /v1/terminal/sessions/{id}/git/diffs`
 - `GET /v1/machines`
 - `POST /v1/machines`
 - `GET /v1/machines/{name}`

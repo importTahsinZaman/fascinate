@@ -138,17 +138,17 @@ func (f *fakeBrowserAuth) Logout(context.Context, string) error {
 }
 
 type fakeTerminalManager struct {
-	userEmail   string
-	machineName string
-	sessionID   string
-	cols        int
-	rows        int
-	cwd         string
-	diffRequest browserterm.GitDiffRequest
-	init        browserterm.SessionInit
-	gitStatus   browserterm.GitRepoStatus
-	gitDiff     browserterm.GitFileDiff
-	err         error
+	userEmail        string
+	machineName      string
+	sessionID        string
+	cols             int
+	rows             int
+	cwd              string
+	diffBatchRequest browserterm.GitDiffBatchRequest
+	init             browserterm.SessionInit
+	gitStatus        browserterm.GitRepoStatus
+	gitDiffBatch     browserterm.GitDiffBatchResponse
+	err              error
 }
 
 func (f *fakeTerminalManager) CreateSession(_ context.Context, userEmail, machineName string, cols, rows int) (browserterm.SessionInit, error) {
@@ -189,14 +189,14 @@ func (f *fakeTerminalManager) GetGitStatus(_ context.Context, userEmail, session
 	return f.gitStatus, nil
 }
 
-func (f *fakeTerminalManager) GetGitDiff(_ context.Context, userEmail, sessionID string, request browserterm.GitDiffRequest) (browserterm.GitFileDiff, error) {
+func (f *fakeTerminalManager) GetGitDiffBatch(_ context.Context, userEmail, sessionID string, request browserterm.GitDiffBatchRequest) (browserterm.GitDiffBatchResponse, error) {
 	f.userEmail = userEmail
 	f.sessionID = sessionID
-	f.diffRequest = request
+	f.diffBatchRequest = request
 	if f.err != nil {
-		return browserterm.GitFileDiff{}, f.err
+		return browserterm.GitDiffBatchResponse{}, f.err
 	}
-	return f.gitDiff, nil
+	return f.gitDiffBatch, nil
 }
 
 func (f *fakeTerminalManager) StreamSession(http.ResponseWriter, *http.Request, string) error {
@@ -1203,7 +1203,7 @@ func TestTerminalGitStatusUsesBrowserSession(t *testing.T) {
 	}
 }
 
-func TestTerminalGitDiffUsesBrowserSession(t *testing.T) {
+func TestTerminalGitDiffBatchUsesBrowserSession(t *testing.T) {
 	t.Parallel()
 
 	auth := &fakeBrowserAuth{
@@ -1218,12 +1218,11 @@ func TestTerminalGitDiffUsesBrowserSession(t *testing.T) {
 		},
 	}
 	terminals := &fakeTerminalManager{
-		gitDiff: browserterm.GitFileDiff{
-			State:     "ready",
-			Path:      "web/src/app.tsx",
-			Patch:     "diff --git a/web/src/app.tsx b/web/src/app.tsx\n@@ -1 +1 @@\n-old\n+new\n",
-			Additions: 1,
-			Deletions: 1,
+		gitDiffBatch: browserterm.GitDiffBatchResponse{
+			Diffs: []browserterm.GitFileDiff{
+				{State: "ready", Path: "web/src/app.tsx", Additions: 1, Deletions: 1, Patch: "diff --git a/web/src/app.tsx b/web/src/app.tsx\n"},
+				{State: "too_large", Path: "README.md", Message: "Diff is too large to render inline. Use git in the shell for the full patch."},
+			},
 		},
 	}
 	handler := newTestHandlerWithExtras(t, config.Config{
@@ -1231,7 +1230,7 @@ func TestTerminalGitDiffUsesBrowserSession(t *testing.T) {
 		WebSessionCookieName: "fascinate_session",
 	}, &fakeRuntime{}, &fakeMachineManager{}, auth, terminals, nil)
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/terminal/sessions/term-1/git/diff", strings.NewReader(`{"cwd":"/home/ubuntu/project/web","repo_root":"/home/ubuntu/project","path":"web/src/app.tsx","kind":"modified","worktree_status":"M"}`))
+	req := httptest.NewRequest(http.MethodPost, "/v1/terminal/sessions/term-1/git/diffs", strings.NewReader(`{"cwd":"/home/ubuntu/project/web","repo_root":"/home/ubuntu/project","files":[{"path":"web/src/app.tsx","kind":"modified","worktree_status":"M"},{"path":"README.md","kind":"modified","worktree_status":"M"}]}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.AddCookie(&http.Cookie{Name: "fascinate_session", Value: "session-token"})
 	rec := httptest.NewRecorder()
@@ -1243,10 +1242,10 @@ func TestTerminalGitDiffUsesBrowserSession(t *testing.T) {
 	if terminals.userEmail != "dev@example.com" || terminals.sessionID != "term-1" {
 		t.Fatalf("unexpected git diff args %+v", terminals)
 	}
-	if terminals.diffRequest.RepoRoot != "/home/ubuntu/project" || terminals.diffRequest.Path != "web/src/app.tsx" {
-		t.Fatalf("unexpected git diff request %+v", terminals.diffRequest)
+	if terminals.diffBatchRequest.RepoRoot != "/home/ubuntu/project" || len(terminals.diffBatchRequest.Files) != 2 {
+		t.Fatalf("unexpected git diff batch request %+v", terminals.diffBatchRequest)
 	}
-	if !strings.Contains(rec.Body.String(), `"additions":1`) {
-		t.Fatalf("expected diff stats in response, got %s", rec.Body.String())
+	if !strings.Contains(rec.Body.String(), `"diffs"`) || !strings.Contains(rec.Body.String(), `"too_large"`) {
+		t.Fatalf("expected batched diffs in response, got %s", rec.Body.String())
 	}
 }

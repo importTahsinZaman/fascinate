@@ -1,8 +1,11 @@
+import type { BundledLanguage, SpecialLanguage } from "shiki";
 import type { UnifiedDiffLineRow } from "./git-diff";
 
 type ShikiModule = typeof import("shiki");
+type ShikiHighlighter = Awaited<ReturnType<ShikiModule["createHighlighter"]>>;
+type ResolvedShikiLanguage = BundledLanguage | SpecialLanguage;
 
-type HighlightedToken = {
+export type HighlightedToken = {
   color?: string;
   content: string;
   fontStyle?: number;
@@ -11,23 +14,90 @@ type HighlightedToken = {
 export type HighlightedDiffLineMap = Record<string, HighlightedToken[]>;
 
 const shikiTheme = "github-dark";
-const shikiLangs = [
-  "bash",
-  "css",
-  "go",
-  "html",
-  "javascript",
-  "json",
-  "jsx",
-  "markdown",
-  "text",
-  "toml",
-  "ts",
-  "tsx",
-  "yaml",
-] as const;
+const shikiFallbackLanguage: SpecialLanguage = "text";
+const shikiFileNameLanguages: Array<[fileName: string, language: BundledLanguage]> = [
+  ["dockerfile", "docker"],
+  ["makefile", "make"],
+];
+const shikiExtensionLanguages: Array<[extension: string, language: BundledLanguage]> = [
+  [".md", "markdown"],
+  [".mdx", "markdown"],
+  [".markdown", "markdown"],
+  [".tsx", "tsx"],
+  [".ts", "ts"],
+  [".jsx", "jsx"],
+  [".js", "javascript"],
+  [".mjs", "javascript"],
+  [".cjs", "javascript"],
+  [".json", "json"],
+  [".jsonc", "json"],
+  [".yml", "yaml"],
+  [".yaml", "yaml"],
+  [".toml", "toml"],
+  [".ini", "ini"],
+  [".go", "go"],
+  [".py", "python"],
+  [".pyi", "python"],
+  [".rb", "ruby"],
+  [".erb", "erb"],
+  [".php", "php"],
+  [".phtml", "php"],
+  [".java", "java"],
+  [".kt", "kotlin"],
+  [".kts", "kotlin"],
+  [".swift", "swift"],
+  [".c", "c"],
+  [".h", "c"],
+  [".cpp", "cpp"],
+  [".cc", "cpp"],
+  [".cxx", "cpp"],
+  [".hpp", "cpp"],
+  [".hh", "cpp"],
+  [".hxx", "cpp"],
+  [".cs", "csharp"],
+  [".rs", "rust"],
+  [".sql", "sql"],
+  [".scala", "scala"],
+  [".dart", "dart"],
+  [".lua", "lua"],
+  [".pl", "perl"],
+  [".pm", "perl"],
+  [".r", "r"],
+  [".clj", "clojure"],
+  [".cljs", "clojure"],
+  [".cljc", "clojure"],
+  [".edn", "clojure"],
+  [".ex", "elixir"],
+  [".exs", "elixir"],
+  [".erl", "erlang"],
+  [".hrl", "erlang"],
+  [".hcl", "hcl"],
+  [".tf", "terraform"],
+  [".tfvars", "terraform"],
+  [".sh", "bash"],
+  [".bash", "bash"],
+  [".zsh", "bash"],
+  [".fish", "fish"],
+  [".ps1", "powershell"],
+  [".psm1", "powershell"],
+  [".psd1", "powershell"],
+  [".html", "html"],
+  [".xml", "xml"],
+  [".svg", "xml"],
+  [".css", "css"],
+  [".scss", "scss"],
+  [".sass", "scss"],
+  [".less", "less"],
+  [".proto", "proto"],
+  [".graphql", "graphql"],
+  [".gql", "graphql"],
+  [".vue", "vue"],
+  [".svelte", "svelte"],
+];
 
-let highlighterPromise: Promise<Awaited<ReturnType<ShikiModule["createHighlighter"]>>> | null = null;
+let highlighterPromise: Promise<ShikiHighlighter> | null = null;
+const loadedShikiLanguages = new Set<ResolvedShikiLanguage>([shikiFallbackLanguage]);
+const loadingShikiLanguages = new Map<ResolvedShikiLanguage, Promise<void>>();
 const highlightedCodeCache = new Map<string, Promise<HighlightedToken[][]>>();
 
 export async function highlightDiffRows(
@@ -43,53 +113,20 @@ export async function highlightDiffRows(
   return lineMap;
 }
 
-export function resolveShikiLanguage(path: string) {
+export function resolveShikiLanguage(path: string): ResolvedShikiLanguage {
   const normalizedPath = path.toLowerCase();
-  if (
-    normalizedPath.endsWith(".md") ||
-    normalizedPath.endsWith(".mdx") ||
-    normalizedPath.endsWith(".markdown")
-  ) {
-    return "markdown";
+  const fileName = normalizedPath.split("/").at(-1) ?? normalizedPath;
+  for (const [candidate, language] of shikiFileNameLanguages) {
+    if (fileName === candidate) {
+      return language;
+    }
   }
-  if (normalizedPath.endsWith(".tsx")) {
-    return "tsx";
+  for (const [extension, language] of shikiExtensionLanguages) {
+    if (normalizedPath.endsWith(extension)) {
+      return language;
+    }
   }
-  if (normalizedPath.endsWith(".ts")) {
-    return "ts";
-  }
-  if (normalizedPath.endsWith(".jsx")) {
-    return "jsx";
-  }
-  if (normalizedPath.endsWith(".js") || normalizedPath.endsWith(".mjs") || normalizedPath.endsWith(".cjs")) {
-    return "javascript";
-  }
-  if (normalizedPath.endsWith(".json") || normalizedPath.endsWith(".jsonc")) {
-    return "json";
-  }
-  if (normalizedPath.endsWith(".yml") || normalizedPath.endsWith(".yaml")) {
-    return "yaml";
-  }
-  if (normalizedPath.endsWith(".go")) {
-    return "go";
-  }
-  if (
-    normalizedPath.endsWith(".sh") ||
-    normalizedPath.endsWith(".bash") ||
-    normalizedPath.endsWith(".zsh")
-  ) {
-    return "bash";
-  }
-  if (normalizedPath.endsWith(".html")) {
-    return "html";
-  }
-  if (normalizedPath.endsWith(".css")) {
-    return "css";
-  }
-  if (normalizedPath.endsWith(".toml")) {
-    return "toml";
-  }
-  return "text";
+  return shikiFallbackLanguage;
 }
 
 async function highlightCode(path: string, code: string) {
@@ -102,6 +139,7 @@ async function highlightCode(path: string, code: string) {
   const next = (async () => {
     const highlighter = await getHighlighter();
     try {
+      await ensureLanguageLoaded(highlighter, language);
       const result = highlighter.codeToTokens(code, { lang: language, theme: shikiTheme });
       return result.tokens.map((line) =>
         line.map((token) => ({
@@ -111,8 +149,8 @@ async function highlightCode(path: string, code: string) {
         })),
       );
     } catch {
-      if (language !== "text") {
-        const fallback = highlighter.codeToTokens(code, { lang: "text", theme: shikiTheme });
+      if (language !== shikiFallbackLanguage) {
+        const fallback = highlighter.codeToTokens(code, { lang: shikiFallbackLanguage, theme: shikiTheme });
         return fallback.tokens.map((line) =>
           line.map((token) => ({
             color: token.color,
@@ -132,10 +170,32 @@ async function getHighlighter() {
   if (!highlighterPromise) {
     highlighterPromise = import("shiki").then(({ createHighlighter }) =>
       createHighlighter({
-        langs: [...shikiLangs],
+        langs: [shikiFallbackLanguage],
         themes: [shikiTheme],
       }),
     );
   }
   return highlighterPromise;
+}
+
+async function ensureLanguageLoaded(highlighter: ShikiHighlighter, language: ResolvedShikiLanguage) {
+  if (language === shikiFallbackLanguage || loadedShikiLanguages.has(language)) {
+    return;
+  }
+  const inFlight = loadingShikiLanguages.get(language);
+  if (inFlight) {
+    await inFlight;
+    return;
+  }
+  const next = highlighter.loadLanguage(language)
+    .then(() => {
+      loadedShikiLanguages.add(language);
+      loadingShikiLanguages.delete(language);
+    })
+    .catch((error) => {
+      loadingShikiLanguages.delete(language);
+      throw error;
+    });
+  loadingShikiLanguages.set(language, next);
+  await next;
 }

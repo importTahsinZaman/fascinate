@@ -59,14 +59,18 @@ export type GitRepoStatus = {
   files?: GitChangedFile[];
 };
 
-export type GitDiffRequest = {
-  cwd: string;
-  repo_root: string;
+export type GitDiffBatchFile = {
   path: string;
   previous_path?: string;
   kind?: string;
   index_status?: string;
   worktree_status?: string;
+};
+
+export type GitDiffBatchRequest = {
+  cwd: string;
+  repo_root: string;
+  files: GitDiffBatchFile[];
 };
 
 export type GitFileDiff = {
@@ -276,8 +280,8 @@ export async function getTerminalGitStatus(sessionId: string, cwd: string) {
   });
 }
 
-export async function getTerminalGitDiff(sessionId: string, diffRequest: GitDiffRequest) {
-  return request<GitFileDiff>("/v1/terminal/sessions/" + encodeURIComponent(sessionId) + "/git/diff", {
+export async function getTerminalGitDiffBatch(sessionId: string, diffRequest: GitDiffBatchRequest) {
+  return request<{ diffs: GitFileDiff[] }>("/v1/terminal/sessions/" + encodeURIComponent(sessionId) + "/git/diffs", {
     method: "POST",
     body: JSON.stringify(diffRequest),
   });

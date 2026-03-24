@@ -15,10 +15,11 @@ Relevant constraints:
 
 **Goals:**
 - Add a shell-header git diff action that opens a fixed overlay above the control sidebar without moving canvas windows.
+- Show a live shell-header git-status chip only when the shell cwd resolves inside a git repository, including clean repositories with zero current diffs, give the chip distinct idle/open styling that matches the rest of the workspace chrome, and let repeat toggle presses or `Escape` dismiss the overlay.
 - Resolve repository context from the selected shell's latest known cwd, including shells opened in nested directories inside a repo.
 - Fetch git status and file diffs through explicit shell-scoped backend APIs that run outside the interactive PTY path.
 - Keep the sidebar reasonably current while open through bounded polling rather than prompt hooks or long-lived file watchers.
-- Render changed files in a review-style unified diff UI with a repo-summary header, branch-chip and animated panel chrome, inline copy-path affordances with visible acknowledgment, sticky file headers, change counts, gutters, full-width expandable collapsed context, quiet static collapsed-link chrome, and a continuous stacked file stream.
+- Render changed files in a review-style unified diff UI with a repo-summary header, branch-chip and animated panel chrome, consistent diff-count accents, insertion-only intraline highlights for pure add-side expansions, inline copy-path affordances with visible acknowledgment, sticky file headers, change counts, gutters, full-width expandable collapsed context, quiet static collapsed-link chrome, a centered clean-repo empty state, a continuous stacked file stream, and syntax highlighting that covers the major source languages without preloading every grammar into the initial bundle.
 - Keep diff state ephemeral to the browser session so workspace layout persistence remains unchanged.
 
 **Non-Goals:**
@@ -32,7 +33,7 @@ Relevant constraints:
 
 ### 1. Use a single shell-scoped overlay panel that sits above the existing layout
 
-The git diff UI will be implemented as a dedicated overlay rendered at the command-center level rather than inside the canvas or the terminal body. The panel is opened from a button in the shell window header, sits above the standard control sidebar, and is bound to one selected shell window at a time.
+The git diff UI will be implemented as a dedicated overlay rendered at the command-center level rather than inside the canvas or the terminal body. The panel is opened from a git-status chip in the shell window header, sits above the standard control sidebar, and is bound to one selected shell window at a time.
 
 The overlay will:
 - sit above the workspace/control-sidebar layout with its own z-layer
@@ -57,7 +58,7 @@ The frontend already knows the latest cwd for each shell window from the termina
 
 The backend will extend the terminal manager boundary with read-only git inspection methods, for example:
 - repo/status lookup for a session + cwd
-- file diff lookup for a session + cwd + file path
+- batched file diff lookup for a session + cwd + visible file slice
 
 Authorization remains session-based:
 - the browser must already own the shell session
@@ -94,13 +95,14 @@ Alternatives considered:
 - Reuse the tmux session directly and run commands through the attached shell.
   - Rejected because it would pollute shell history/state and could race with user input.
 
-### 4. Poll repo status while the sidebar is open, and page file patches on demand
+### 4. Poll repo status while the sidebar is open, batch visible file patches, and bound guest git concurrency
 
-The sidebar will use bounded polling only while it is open for an active shell. Status polling will refresh the repo/file list on a short interval such as 2 seconds. File patch requests will be fetched in small scroll-driven batches and additional file cards will load as the user nears the end of the current batch.
+The sidebar will use bounded polling only while it is open for an active shell. Status polling will refresh the repo/file list on a short interval such as 2 seconds. File patch requests will be fetched in small scroll-driven batches, and each rendered batch should start diff fetches immediately so the next cards are already warm by the time the user scrolls into them. On the backend, git inspection commands should be throttled per machine so bursty UI fetches cannot overwhelm guest SSH startup and trip connection throttling.
 
 This splits the data flow into:
 - lightweight repo status polling for freshness
-- heavier per-file patch fetches only for files the user is actively reading in the stacked stream
+- heavier batched patch fetches only for files the user is actively reading in the stacked stream
+- per-machine guest git command gates so UI bursts stay below guest SSH startup limits
 
 Why:
 - It gives the user the near-real-time behavior they asked for without always-on background load.
@@ -108,8 +110,8 @@ Why:
 - It keeps the PTY and UI responsive even for repos with many modified files.
 
 Alternatives considered:
-- Poll full diffs for all files continuously.
-  - Rejected because it scales poorly and would make large working trees unnecessarily expensive.
+- Keep one request per file card and rely on client-side staggering alone.
+  - Rejected because it still creates an SSH handshake burst against the guest and has already proven capable of hitting guest `sshd` startup throttling under real use.
 - Build a true push-based repository watcher.
   - Rejected because it adds host/guest complexity with limited product benefit for the first delivery.
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -42,6 +43,9 @@ type Manager struct {
 	totalCreated        int
 	totalAttachFailures int
 	totalDisconnects    int
+
+	gitCommandMu    sync.Mutex
+	gitCommandGates map[string]chan struct{}
 }
 
 type SessionInit struct {
@@ -69,14 +73,22 @@ type GitChangedFile struct {
 	WorktreeStatus string `json:"worktree_status,omitempty"`
 }
 
-type GitDiffRequest struct {
-	RepoRoot       string `json:"repo_root"`
-	Cwd            string `json:"cwd"`
+type GitDiffBatchFile struct {
 	Path           string `json:"path"`
 	PreviousPath   string `json:"previous_path,omitempty"`
 	Kind           string `json:"kind,omitempty"`
 	IndexStatus    string `json:"index_status,omitempty"`
 	WorktreeStatus string `json:"worktree_status,omitempty"`
+}
+
+type GitDiffBatchRequest struct {
+	RepoRoot string             `json:"repo_root"`
+	Cwd      string             `json:"cwd"`
+	Files    []GitDiffBatchFile `json:"files"`
+}
+
+type GitDiffBatchResponse struct {
+	Diffs []GitFileDiff `json:"diffs"`
 }
 
 type GitFileDiff struct {
@@ -135,14 +147,16 @@ type controlMessage struct {
 }
 
 const (
-	gitRepoStatusReady   = "ready"
-	gitRepoStatusNotRepo = "not_repo"
-	gitDiffStateReady    = "ready"
-	gitDiffStateBinary   = "binary"
-	gitDiffStateTooLarge = "too_large"
-	gitDiffMaxBytes      = 200_000
-	gitDiffMaxLines      = 4_000
-	gitNotRepoSentinel   = "__FASCINATE_NOT_REPO__"
+	gitRepoStatusReady    = "ready"
+	gitRepoStatusNotRepo  = "not_repo"
+	gitDiffStateReady     = "ready"
+	gitDiffStateError     = "error"
+	gitDiffStateBinary    = "binary"
+	gitDiffStateTooLarge  = "too_large"
+	gitDiffMaxBytes       = 200_000
+	gitDiffMaxLines       = 4_000
+	gitNotRepoSentinel    = "__FASCINATE_NOT_REPO__"
+	gitCommandConcurrency = 2
 )
 
 func New(cfg config.Config, machines machineManager) *Manager {
@@ -159,6 +173,7 @@ func New(cfg config.Config, machines machineManager) *Manager {
 		guestReadyWait:  20 * time.Second,
 		guestReadyPoll:  1500 * time.Millisecond,
 		sessions:        map[string]*session{},
+		gitCommandGates: map[string]chan struct{}{},
 	}
 }
 
@@ -315,6 +330,11 @@ func (m *Manager) GetGitStatus(ctx context.Context, userEmail, sessionID, cwd st
 	if cwd == "" {
 		return GitRepoStatus{}, fmt.Errorf("cwd is required")
 	}
+	release, err := m.acquireGitCommandSlot(ctx, machine.Name)
+	if err != nil {
+		return GitRepoStatus{}, err
+	}
+	defer release()
 
 	script := strings.Join([]string{
 		fmt.Sprintf("cwd=%s", shellLiteral(cwd)),
@@ -369,54 +389,51 @@ func (m *Manager) GetGitStatus(ctx context.Context, userEmail, sessionID, cwd st
 	return status, nil
 }
 
-func (m *Manager) GetGitDiff(ctx context.Context, userEmail, sessionID string, req GitDiffRequest) (GitFileDiff, error) {
+func (m *Manager) GetGitDiffBatch(ctx context.Context, userEmail, sessionID string, req GitDiffBatchRequest) (GitDiffBatchResponse, error) {
 	sess, err := m.loadSession(sessionID, userEmail)
 	if err != nil {
-		return GitFileDiff{}, err
+		return GitDiffBatchResponse{}, err
 	}
 	machine, err := m.resolveSessionMachine(ctx, sess)
 	if err != nil {
-		return GitFileDiff{}, err
+		return GitDiffBatchResponse{}, err
 	}
 
 	req.Cwd = normalizeGuestCwd(req.Cwd, guestUserForMachine(machine))
-	req.Path = strings.TrimSpace(req.Path)
 	req.RepoRoot = strings.TrimSpace(req.RepoRoot)
 	if req.Cwd == "" {
-		return GitFileDiff{}, fmt.Errorf("cwd is required")
-	}
-	if req.Path == "" {
-		return GitFileDiff{}, fmt.Errorf("path is required")
+		return GitDiffBatchResponse{}, fmt.Errorf("cwd is required")
 	}
 	if req.RepoRoot == "" {
-		return GitFileDiff{}, fmt.Errorf("repo root is required")
+		return GitDiffBatchResponse{}, fmt.Errorf("repo root is required")
 	}
-
-	patch, err := m.runGuestCommandAllowExitCodes(ctx, machine, gitDiffShellCommand(req), 1)
+	if len(req.Files) == 0 {
+		return GitDiffBatchResponse{}, fmt.Errorf("at least one file is required")
+	}
+	if len(req.Files) > 8 {
+		return GitDiffBatchResponse{}, fmt.Errorf("at most 8 files may be requested at once")
+	}
+	release, err := m.acquireGitCommandSlot(ctx, machine.Name)
 	if err != nil {
-		return GitFileDiff{}, err
+		return GitDiffBatchResponse{}, err
+	}
+	defer release()
+
+	output, err := m.runGuestCommand(ctx, machine, gitDiffBatchShellCommand(req))
+	if err != nil {
+		return GitDiffBatchResponse{}, err
 	}
 
-	diff := GitFileDiff{
-		State:        gitDiffStateReady,
-		Path:         req.Path,
-		PreviousPath: strings.TrimSpace(req.PreviousPath),
+	var response GitDiffBatchResponse
+	if err := json.Unmarshal([]byte(output), &response); err != nil {
+		return GitDiffBatchResponse{}, err
 	}
-	diff.Additions, diff.Deletions = diffStatsFromPatch(patch)
-
-	switch {
-	case isBinaryDiff(patch):
-		diff.State = gitDiffStateBinary
-		diff.Message = "Binary files are not rendered in the browser diff sidebar."
-	case diffTooLarge(patch):
-		diff.State = gitDiffStateTooLarge
-		diff.Message = "Diff is too large to render inline. Use git in the shell for the full patch."
-	default:
-		diff.Patch = patch
+	if len(response.Diffs) != len(req.Files) {
+		return GitDiffBatchResponse{}, fmt.Errorf("git diff batch returned %d result(s) for %d file(s)", len(response.Diffs), len(req.Files))
 	}
 
 	m.touchSession(sess.id)
-	return diff, nil
+	return response, nil
 }
 
 func (m *Manager) StreamSession(w http.ResponseWriter, r *http.Request, id string) error {
@@ -910,6 +927,33 @@ func (m *Manager) runGuestCommandAllowExitCodes(ctx context.Context, machine con
 	return "", fmt.Errorf("%w: %s", err, text)
 }
 
+func (m *Manager) acquireGitCommandSlot(ctx context.Context, machineName string) (func(), error) {
+	gate := m.gitCommandGate(machineName)
+	select {
+	case gate <- struct{}{}:
+		return func() {
+			<-gate
+		}, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func (m *Manager) gitCommandGate(machineName string) chan struct{} {
+	name := strings.TrimSpace(machineName)
+	if name == "" {
+		name = "unknown"
+	}
+	m.gitCommandMu.Lock()
+	defer m.gitCommandMu.Unlock()
+	if gate, ok := m.gitCommandGates[name]; ok {
+		return gate
+	}
+	gate := make(chan struct{}, gitCommandConcurrency)
+	m.gitCommandGates[name] = gate
+	return gate
+}
+
 func (m *Manager) guestSSHArgs(guestUser, targetHost string, targetPort int) []string {
 	return []string{
 		"-i", m.guestSSHKeyPath,
@@ -1153,64 +1197,139 @@ func gitChangeKind(indexStatus, worktreeStatus string) string {
 	return "modified"
 }
 
-func gitDiffShellCommand(req GitDiffRequest) string {
-	lines := []string{
-		fmt.Sprintf("repo_root=%s", shellLiteral(strings.TrimSpace(req.RepoRoot))),
-		fmt.Sprintf("path=%s", shellLiteral(strings.TrimSpace(req.Path))),
-		`if [ -z "$repo_root" ] || [ -z "$path" ]; then`,
-		`  printf 'repo root and path are required' >&2`,
-		"  exit 2",
-		"fi",
-	}
+func gitDiffBatchShellCommand(req GitDiffBatchRequest) string {
+	payload, _ := json.Marshal(struct {
+		RepoRoot string             `json:"repo_root"`
+		MaxBytes int                `json:"max_bytes"`
+		MaxLines int                `json:"max_lines"`
+		Files    []GitDiffBatchFile `json:"files"`
+	}{
+		RepoRoot: strings.TrimSpace(req.RepoRoot),
+		MaxBytes: gitDiffMaxBytes,
+		MaxLines: gitDiffMaxLines,
+		Files:    req.Files,
+	})
+	encodedPayload := base64.StdEncoding.EncodeToString(payload)
 
-	if req.Kind == "untracked" || req.IndexStatus == "?" || req.WorktreeStatus == "?" {
-		lines = append(lines,
-			`abs_path="$repo_root/$path"`,
-			`if [ ! -e "$abs_path" ]; then`,
-			`  printf 'path not found: %s' "$path" >&2`,
-			"  exit 2",
-			"fi",
-			`git -c color.ui=false --no-pager diff --no-index --no-ext-diff --unified=999999 -- /dev/null "$abs_path"`,
-		)
-		return strings.Join(lines, "\n")
-	}
-
-	lines = append(lines,
-		`if git -C "$repo_root" rev-parse --verify HEAD >/dev/null 2>&1; then`,
-		`  git -C "$repo_root" -c color.ui=false --no-pager diff --no-ext-diff --find-renames --submodule=short --unified=999999 HEAD -- "$path"`,
-		"else",
-		`  git -C "$repo_root" -c color.ui=false --no-pager diff --no-ext-diff --find-renames --submodule=short --unified=999999 --cached -- "$path"`,
-		`  git -C "$repo_root" -c color.ui=false --no-pager diff --no-ext-diff --find-renames --submodule=short --unified=999999 -- "$path"`,
-		"fi",
-	)
-	return strings.Join(lines, "\n")
-}
-
-func diffStatsFromPatch(patch string) (int, int) {
-	additions := 0
-	deletions := 0
-	for _, line := range strings.Split(patch, "\n") {
-		switch {
-		case strings.HasPrefix(line, "+++"), strings.HasPrefix(line, "---"), strings.HasPrefix(line, "@@"):
-			continue
-		case strings.HasPrefix(line, "+"):
-			additions++
-		case strings.HasPrefix(line, "-"):
-			deletions++
-		}
-	}
-	return additions, deletions
-}
-
-func diffTooLarge(patch string) bool {
-	if len(patch) > gitDiffMaxBytes {
-		return true
-	}
-	return strings.Count(patch, "\n") > gitDiffMaxLines
-}
-
-func isBinaryDiff(patch string) bool {
-	return strings.Contains(patch, "GIT binary patch") || strings.Contains(patch, "Binary files ")
+	return strings.Join([]string{
+		fmt.Sprintf("export FASCINATE_GIT_DIFF_BATCH=%s", shellLiteral(encodedPayload)),
+		`python3 - <<'PY'`,
+		`import base64`,
+		`import json`,
+		`import os`,
+		`import subprocess`,
+		`import sys`,
+		``,
+		`payload = json.loads(base64.b64decode(os.environ["FASCINATE_GIT_DIFF_BATCH"]).decode("utf-8"))`,
+		`repo_root = payload.get("repo_root", "").strip()`,
+		`max_bytes = int(payload.get("max_bytes", 0) or 0)`,
+		`max_lines = int(payload.get("max_lines", 0) or 0)`,
+		`files = payload.get("files", [])`,
+		``,
+		`def command_output(args):`,
+		`    completed = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=False)`,
+		`    return completed.returncode, completed.stdout, completed.stderr`,
+		``,
+		`def decode_bytes(data):`,
+		`    return data.decode("utf-8", errors="replace").strip()`,
+		``,
+		`def patch_stats(text):`,
+		`    additions = 0`,
+		`    deletions = 0`,
+		`    for line in text.splitlines():`,
+		`        if line.startswith("+++") or line.startswith("---") or line.startswith("@@"):`,
+		`            continue`,
+		`        if line.startswith("+"):`,
+		`            additions += 1`,
+		`        elif line.startswith("-"):`,
+		`            deletions += 1`,
+		`    return additions, deletions`,
+		``,
+		`def is_binary_diff(text):`,
+		`    return "GIT binary patch" in text or "Binary files " in text`,
+		``,
+		`def finalize(result, patch_text):`,
+		`    additions, deletions = patch_stats(patch_text)`,
+		`    result["additions"] = additions`,
+		`    result["deletions"] = deletions`,
+		`    if is_binary_diff(patch_text):`,
+		`        result["state"] = "binary"`,
+		`        result["message"] = "Binary files are not rendered in the browser diff sidebar."`,
+		`        return result`,
+		`    if (max_bytes and len(patch_text.encode("utf-8")) > max_bytes) or (max_lines and patch_text.count("\n") > max_lines):`,
+		`        result["state"] = "too_large"`,
+		`        result["message"] = "Diff is too large to render inline. Use git in the shell for the full patch."`,
+		`        return result`,
+		`    result["state"] = "ready"`,
+		`    result["patch"] = patch_text`,
+		`    return result`,
+		``,
+		`head_code, _, _ = command_output(["git", "-C", repo_root, "rev-parse", "--verify", "HEAD"])`,
+		`has_head = head_code == 0`,
+		`diffs = []`,
+		``,
+		`for item in files:`,
+		`    path = str(item.get("path", "") or "").strip()`,
+		`    previous_path = str(item.get("previous_path", "") or "").strip()`,
+		`    kind = str(item.get("kind", "") or "").strip()`,
+		`    index_status = str(item.get("index_status", "") or "").strip()`,
+		`    worktree_status = str(item.get("worktree_status", "") or "").strip()`,
+		`    result = {"state": "error", "path": path}`,
+		`    if previous_path:`,
+		`        result["previous_path"] = previous_path`,
+		`    if not path:`,
+		`        result["message"] = "path is required"`,
+		`        diffs.append(result)`,
+		`        continue`,
+		``,
+		`    if kind == "untracked" or index_status == "?" or worktree_status == "?":`,
+		`        abs_path = os.path.join(repo_root, path)`,
+		`        if not os.path.exists(abs_path):`,
+		`            result["message"] = f"path not found: {path}"`,
+		`            diffs.append(result)`,
+		`            continue`,
+		`        code, stdout, stderr = command_output([`,
+		`            "git", "-c", "color.ui=false", "--no-pager", "diff", "--no-index", "--no-ext-diff", "--unified=999999", "--", "/dev/null", abs_path,`,
+		`        ])`,
+		`        if code not in (0, 1):`,
+		`            message = decode_bytes(stderr) or f"exit status {code}"`,
+		`            result["message"] = message`,
+		`            diffs.append(result)`,
+		`            continue`,
+		`        diffs.append(finalize(result, decode_bytes(stdout)))`,
+		`        continue`,
+		``,
+		`    commands = []`,
+		`    if has_head:`,
+		`        commands.append([`,
+		`            "git", "-C", repo_root, "-c", "color.ui=false", "--no-pager", "diff", "--no-ext-diff", "--find-renames", "--submodule=short", "--unified=999999", "HEAD", "--", path,`,
+		`        ])`,
+		`    else:`,
+		`        commands.append([`,
+		`            "git", "-C", repo_root, "-c", "color.ui=false", "--no-pager", "diff", "--no-ext-diff", "--find-renames", "--submodule=short", "--unified=999999", "--cached", "--", path,`,
+		`        ])`,
+		`        commands.append([`,
+		`            "git", "-C", repo_root, "-c", "color.ui=false", "--no-pager", "diff", "--no-ext-diff", "--find-renames", "--submodule=short", "--unified=999999", "--", path,`,
+		`        ])`,
+		``,
+		`    patch_parts = []`,
+		`    failed = False`,
+		`    for command in commands:`,
+		`        code, stdout, stderr = command_output(command)`,
+		`        if code not in (0, 1):`,
+		`            message = decode_bytes(stderr) or f"exit status {code}"`,
+		`            result["message"] = message`,
+		`            diffs.append(result)`,
+		`            failed = True`,
+		`            break`,
+		`        patch_parts.append(stdout)`,
+		`    if failed:`,
+		`        continue`,
+		`    diffs.append(finalize(result, decode_bytes(b"".join(patch_parts))))`,
+		``,
+		`sys.stdout.write(json.dumps({"diffs": diffs}))`,
+		`PY`,
+	}, "\n")
 }
 
 func isRetryableGuestAccessError(err error) bool {

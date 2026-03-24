@@ -677,19 +677,21 @@ describe("App", () => {
           ],
         });
       }
-      if (path === "/v1/terminal/sessions/term-1/git/diff") {
-        const body = JSON.parse(String(init?.body)) as { path: string };
+      if (path === "/v1/terminal/sessions/term-1/git/diffs") {
+        const body = JSON.parse(String(init?.body)) as { files: Array<{ path: string }> };
         expect(body).toMatchObject({
           cwd: "/home/ubuntu/repo",
           repo_root: "/home/ubuntu/repo",
         });
-        if (body.path === "web/src/app.tsx") {
-          return jsonResponse({
-            state: "ready",
-            path: "web/src/app.tsx",
-            additions: 1,
-            deletions: 1,
-            patch: `diff --git a/web/src/app.tsx b/web/src/app.tsx
+        return jsonResponse({
+          diffs: body.files.map((file) => {
+            if (file.path === "web/src/app.tsx") {
+              return {
+                state: "ready",
+                path: "web/src/app.tsx",
+                additions: 1,
+                deletions: 1,
+                patch: `diff --git a/web/src/app.tsx b/web/src/app.tsx
 index 1111111..2222222 100644
 --- a/web/src/app.tsx
 +++ b/web/src/app.tsx
@@ -712,39 +714,42 @@ index 1111111..2222222 100644
  line 15
 -old omega
 +new omega
- line 17
+line 17
 line 18
 line 19
 line 20
 `,
-          });
-        }
-        if (body.path === "web/src/store.ts") {
-          return jsonResponse({
-            state: "ready",
-            path: "web/src/store.ts",
-            additions: 1,
-            deletions: 1,
-            patch: `diff --git a/web/src/store.ts b/web/src/store.ts
+              };
+            }
+            if (file.path === "web/src/store.ts") {
+              return {
+                state: "ready",
+                path: "web/src/store.ts",
+                additions: 1,
+                deletions: 1,
+                patch: `diff --git a/web/src/store.ts b/web/src/store.ts
 @@ -1,2 +1,2 @@
 -old store
 +new store
  unchanged
 `,
-          });
-        }
-        if (body.path === "README.md") {
-          return jsonResponse({
-            state: "ready",
-            path: "README.md",
-            additions: 1,
-            deletions: 0,
-            patch: `diff --git a/README.md b/README.md
+              };
+            }
+            if (file.path === "README.md") {
+              return {
+                state: "ready",
+                path: "README.md",
+                additions: 1,
+                deletions: 0,
+                patch: `diff --git a/README.md b/README.md
 @@ -1,0 +1 @@
 +stacked diff panel
 `,
-          });
-        }
+              };
+            }
+            throw new Error(`unexpected diff request for ${file.path}`);
+          }),
+        });
       }
       return undefined;
     });
@@ -756,30 +761,55 @@ line 20
     expect(await screen.findByTestId("terminal-m-1")).toBeTruthy();
 
     await seedShellSession(0, "term-1", "/home/ubuntu/repo");
-    fireEvent.click(screen.getByRole("button", { name: "Open git diff for m-1 shell" }));
+    const diffButton = await screen.findByRole("button", { name: "Open git diff for m-1 shell" });
+    expect(diffButton.getAttribute("data-active")).toBe("false");
+    expect(diffButton.textContent).toContain("+3");
+    expect(diffButton.textContent).toContain("-2");
+    fireEvent.click(diffButton);
+    await waitFor(() => {
+      expect(diffButton.getAttribute("data-active")).toBe("true");
+    });
 
     expect(await screen.findByRole("heading", { name: "m-1" })).toBeTruthy();
     expect(screen.queryByText(/^Git Diff$/)).toBeNull();
     const branchLabel = await screen.findByText("main");
     expect(branchLabel.closest(".git-diff-sidebar-header-branch")?.querySelector("svg")).toBeTruthy();
     expect(await screen.findByText("3 files changed")).toBeTruthy();
-    expect(await screen.findByText("+3")).toBeTruthy();
-    expect(await screen.findByText("-2")).toBeTruthy();
+    await waitFor(() => {
+      const totals = document.querySelector(".git-diff-sidebar-header-totals");
+      expect(totals?.textContent).toContain("+3");
+      expect(totals?.textContent).toContain("-2");
+    });
     expect(screen.getByRole("button", { name: "Refresh diff" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Close diff sidebar" })).toBeTruthy();
     expect((await screen.findAllByText("web/src/app.tsx")).length).toBeGreaterThan(0);
     expect((await screen.findAllByText("web/src/store.ts")).length).toBeGreaterThan(0);
+    await waitFor(() => {
+      const diffRequests = fetchMock.mock.calls
+        .filter(([path]) => path === "/v1/terminal/sessions/term-1/git/diffs")
+        .flatMap(([, init]) =>
+          JSON.parse(String((init as RequestInit | undefined)?.body)).files.map((file: { path: string }) => file.path),
+        );
+      expect(diffRequests).toContain("README.md");
+    });
+    expect(screen.queryByText("Diff queued")).toBeNull();
     const copyButton = screen.getByRole("button", { name: "Copy path web/src/app.tsx" });
     fireEvent.click(copyButton);
     await waitFor(() => {
       expect(writeText).toHaveBeenCalledWith("web/src/app.tsx");
     });
     expect(screen.getByRole("button", { name: "Copied path web/src/app.tsx" })).toBeTruthy();
-    expect(await screen.findByText("new alpha")).toBeTruthy();
-    expect(await screen.findByText("new store")).toBeTruthy();
+    await waitFor(() => {
+      const codeNodes = Array.from(document.querySelectorAll(".git-diff-unified-code code"));
+      expect(codeNodes.some((node) => node.textContent === "new alpha")).toBe(true);
+      expect(codeNodes.some((node) => node.textContent === "new store")).toBe(true);
+    });
+    expect(document.querySelector(".git-diff-token-inline-add")).toBeNull();
     expect(screen.getByText("All 2 lines")).toBeTruthy();
     fireEvent.click(screen.getByText("All 2 lines"));
     expect((await screen.findAllByText("line 11")).length).toBeGreaterThan(0);
+
+    expect(await screen.findByText("stacked diff panel")).toBeTruthy();
 
     const stream = document.querySelector(".git-diff-stream") as HTMLElement | null;
     expect(stream).toBeTruthy();
@@ -794,7 +824,6 @@ line 20
     await waitFor(() => {
       expect(screen.queryByRole("button", { name: "Load more" })).toBeNull();
     });
-    expect(await screen.findByText("stacked diff panel")).toBeTruthy();
   });
 
   it("renders split collapsed controls for large unchanged regions", async () => {
@@ -809,18 +838,19 @@ line 20
           files: [{ path: "web/src/app.tsx", kind: "modified", index_status: "M", worktree_status: "M" }],
         });
       }
-      if (path === "/v1/terminal/sessions/term-1/git/diff") {
+      if (path === "/v1/terminal/sessions/term-1/git/diffs") {
         return jsonResponse({
-          state: "ready",
-          path: "web/src/app.tsx",
-          additions: 1,
-          deletions: 1,
-          patch: `diff --git a/web/src/app.tsx b/web/src/app.tsx
+          diffs: [{
+            state: "ready",
+            path: "web/src/app.tsx",
+            additions: 1,
+            deletions: 1,
+            patch: `diff --git a/web/src/app.tsx b/web/src/app.tsx
 index 1111111..2222222 100644
 --- a/web/src/app.tsx
 +++ b/web/src/app.tsx
 @@ -1,26 +1,26 @@
- line 1
+line 1
  line 2
  line 3
 -old alpha
@@ -849,6 +879,7 @@ index 1111111..2222222 100644
  line 25
  line 26
 `,
+          }],
         });
       }
       return undefined;
@@ -861,7 +892,7 @@ index 1111111..2222222 100644
     expect(await screen.findByTestId("terminal-m-1")).toBeTruthy();
 
     await seedShellSession(0, "term-1", "/home/ubuntu/repo");
-    fireEvent.click(screen.getByRole("button", { name: "Open git diff for m-1 shell" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Open git diff for m-1 shell" }));
 
     expect(await screen.findByRole("heading", { name: "m-1" })).toBeTruthy();
     expect(await screen.findByText("All 13 lines")).toBeTruthy();
@@ -882,17 +913,19 @@ index 1111111..2222222 100644
           files: [{ path: "web/src/app.tsx", kind: "modified" }],
         });
       }
-      if (path === "/v1/terminal/sessions/term-1/git/diff") {
+      if (path === "/v1/terminal/sessions/term-1/git/diffs") {
         return jsonResponse({
-          state: "ready",
-          path: "web/src/app.tsx",
-          additions: 1,
-          deletions: 1,
-          patch: `diff --git a/web/src/app.tsx b/web/src/app.tsx
+          diffs: [{
+            state: "ready",
+            path: "web/src/app.tsx",
+            additions: 1,
+            deletions: 1,
+            patch: `diff --git a/web/src/app.tsx b/web/src/app.tsx
 @@ -1 +1 @@
 -first
 +second
 `,
+          }],
         });
       }
       if (path === "/v1/terminal/sessions/term-2/git/status") {
@@ -905,16 +938,18 @@ index 1111111..2222222 100644
           files: [{ path: "web/src/store.ts", kind: "modified" }],
         });
       }
-      if (path === "/v1/terminal/sessions/term-2/git/diff") {
+      if (path === "/v1/terminal/sessions/term-2/git/diffs") {
         return jsonResponse({
-          state: "ready",
-          path: "web/src/store.ts",
-          additions: 1,
-          deletions: 0,
-          patch: `diff --git a/web/src/store.ts b/web/src/store.ts
+          diffs: [{
+            state: "ready",
+            path: "web/src/store.ts",
+            additions: 1,
+            deletions: 0,
+            patch: `diff --git a/web/src/store.ts b/web/src/store.ts
 @@ -1,0 +1 @@
 +store state
 `,
+          }],
         });
       }
       return undefined;
@@ -929,10 +964,10 @@ index 1111111..2222222 100644
     await seedShellSession(0, "term-1", "/home/ubuntu/repo-one");
     await seedShellSession(1, "term-2", "/home/ubuntu/repo-two");
 
-    fireEvent.click(screen.getByRole("button", { name: "Open git diff for m-1 shell" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Open git diff for m-1 shell" }));
     expect((await screen.findAllByText("web/src/app.tsx")).length).toBeGreaterThan(0);
 
-    fireEvent.click(screen.getByRole("button", { name: "Open git diff for m-1 shell 2" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Open git diff for m-1 shell 2" }));
 
     expect(await screen.findByRole("heading", { name: "m-1" })).toBeTruthy();
     expect(await screen.findByText("feature")).toBeTruthy();
@@ -951,7 +986,7 @@ index 1111111..2222222 100644
     });
   });
 
-  it("polls repo status while the sidebar is open and shows the non-repository state", async () => {
+  it("hides the shell-header git diff chip outside git repositories", async () => {
     const fetchMock = createAuthenticatedFetchMock((path) => {
       if (path === "/v1/terminal/sessions/term-1/git/status") {
         return jsonResponse({ state: "not_repo" });
@@ -965,15 +1000,97 @@ index 1111111..2222222 100644
     fireEvent.click(await screen.findByRole("button", { name: "New shell" }));
     await seedShellSession(0, "term-1", "/home/ubuntu");
 
-    fireEvent.click(screen.getByRole("button", { name: "Open git diff for m-1 shell" }));
-    expect(await screen.findByText("This shell is not in a git repository")).toBeTruthy();
-
     await waitFor(() => {
-      expect(
-        fetchMock.mock.calls.filter(([input]) => String(input) === "/v1/terminal/sessions/term-1/git/status"),
-      ).toHaveLength(2);
-    }, { timeout: 6_000 });
-  }, 10_000);
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/v1/terminal/sessions/term-1/git/status",
+        expect.objectContaining({ method: "POST" }),
+      );
+    });
+    expect(screen.queryByRole("button", { name: "Open git diff for m-1 shell" })).toBeNull();
+  });
+
+  it("shows the shell-header git diff chip for clean repositories", async () => {
+    const fetchMock = createAuthenticatedFetchMock((path) => {
+      if (path === "/v1/terminal/sessions/term-1/git/status") {
+        return jsonResponse({
+          state: "ready",
+          repo_root: "/home/ubuntu/repo",
+          branch: "main",
+          additions: 0,
+          deletions: 0,
+          files: [],
+        });
+      }
+      return undefined;
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderApp();
+
+    fireEvent.click(await screen.findByRole("button", { name: "New shell" }));
+    await seedShellSession(0, "term-1", "/home/ubuntu/repo");
+
+    const diffButton = await screen.findByRole("button", { name: "Open git diff for m-1 shell" });
+    expect(diffButton.getAttribute("data-active")).toBe("false");
+    expect(diffButton.textContent).toContain("+0");
+    expect(diffButton.textContent).toContain("-0");
+
+    fireEvent.click(diffButton);
+    await waitFor(() => {
+      expect(diffButton.getAttribute("data-active")).toBe("true");
+    });
+    expect(await screen.findByText("Working tree is clean")).toBeTruthy();
+    expect(await screen.findByText("This repository has no changed files right now.")).toBeTruthy();
+    expect(await screen.findByText("Changes from this shell appear here automatically.")).toBeTruthy();
+  });
+
+  it("closes the git diff sidebar on repeat toggle press and Escape", async () => {
+    const fetchMock = createAuthenticatedFetchMock((path) => {
+      if (path === "/v1/terminal/sessions/term-1/git/status") {
+        return jsonResponse({
+          state: "ready",
+          repo_root: "/home/ubuntu/repo",
+          branch: "main",
+          additions: 0,
+          deletions: 0,
+          files: [],
+        });
+      }
+      return undefined;
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderApp();
+
+    fireEvent.click(await screen.findByRole("button", { name: "New shell" }));
+    await seedShellSession(0, "term-1", "/home/ubuntu/repo");
+
+    const diffButton = await screen.findByRole("button", { name: "Open git diff for m-1 shell" });
+
+    fireEvent.click(diffButton);
+    expect(await screen.findByText("Working tree is clean")).toBeTruthy();
+    await waitFor(() => {
+      expect(diffButton.getAttribute("data-active")).toBe("true");
+    });
+
+    fireEvent.click(diffButton);
+    await waitFor(() => {
+      expect(diffButton.getAttribute("data-active")).toBe("false");
+      expect(screen.queryByText("Working tree is clean")).toBeNull();
+    });
+
+    fireEvent.click(diffButton);
+    expect(await screen.findByText("Working tree is clean")).toBeTruthy();
+    await waitFor(() => {
+      expect(diffButton.getAttribute("data-active")).toBe("true");
+    });
+
+    fireEvent.keyDown(window, { key: "Escape" });
+    await waitFor(() => {
+      expect(diffButton.getAttribute("data-active")).toBe("false");
+      expect(screen.queryByText("Working tree is clean")).toBeNull();
+    });
+  });
 
   it("shows an explicit fallback when a file diff cannot be rendered inline", async () => {
     const fetchMock = createAuthenticatedFetchMock((path) => {
@@ -987,11 +1104,13 @@ index 1111111..2222222 100644
           files: [{ path: "web/src/app.tsx", kind: "modified" }],
         });
       }
-      if (path === "/v1/terminal/sessions/term-1/git/diff") {
+      if (path === "/v1/terminal/sessions/term-1/git/diffs") {
         return jsonResponse({
-          state: "too_large",
-          path: "web/src/app.tsx",
-          message: "Patch exceeds the inline rendering limit.",
+          diffs: [{
+            state: "too_large",
+            path: "web/src/app.tsx",
+            message: "Patch exceeds the inline rendering limit.",
+          }],
         });
       }
       return undefined;
@@ -1003,7 +1122,7 @@ index 1111111..2222222 100644
     fireEvent.click(await screen.findByRole("button", { name: "New shell" }));
     await seedShellSession(0, "term-1", "/home/ubuntu/repo");
 
-    fireEvent.click(screen.getByRole("button", { name: "Open git diff for m-1 shell" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Open git diff for m-1 shell" }));
 
     expect(await screen.findByText("Inline diff unavailable")).toBeTruthy();
     expect(screen.getByText("Patch exceeds the inline rendering limit.")).toBeTruthy();

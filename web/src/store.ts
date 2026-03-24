@@ -128,7 +128,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   openGitDiffSidebar: (windowID) =>
     set((state) => {
       if (state.gitDiffSidebar.windowID === windowID) {
-        return state;
+        return { gitDiffSidebar: defaultGitDiffSidebarState };
       }
       return {
         gitDiffSidebar: {

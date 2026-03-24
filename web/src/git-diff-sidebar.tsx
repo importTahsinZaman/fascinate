@@ -14,30 +14,34 @@ import {
   ArrowsVertical,
   CaretDown,
   CaretRight,
+  CheckCircle,
   Check,
   CopySimple,
   GitBranch,
   X,
 } from "@phosphor-icons/react";
-import { useQuery } from "@tanstack/react-query";
+import { useQueries, useQuery } from "@tanstack/react-query";
 import {
-  getTerminalGitDiff,
+  getTerminalGitDiffBatch,
   getTerminalGitStatus,
   type GitChangedFile,
   type GitFileDiff,
 } from "./api";
 import {
+  computeInlineDiffRanges,
   parseUnifiedDiff,
+  type InlineDiffRange,
   type ParsedGitDiff,
   type UnifiedDiffLineRow,
 } from "./git-diff";
-import { highlightDiffRows, type HighlightedDiffLineMap } from "./shiki-highlight";
+import { highlightDiffRows, type HighlightedDiffLineMap, type HighlightedToken } from "./shiki-highlight";
 import { useWorkspaceStore } from "./store";
 
 const statusPollIntervalMs = 4_000;
-const initialDiffPageSize = 2;
-const diffPageStep = 3;
-const diffPagePreloadThresholdPx = 720;
+const diffBatchSize = 6;
+const initialDiffPageSize = diffBatchSize;
+const diffPageStep = diffBatchSize;
+const diffPagePreloadThresholdPx = 1_200;
 const collapsedRevealStep = 5;
 
 export function GitDiffSidebar() {
@@ -67,7 +71,6 @@ export function GitDiffSidebar() {
   const totalDeletions = statusQuery.data?.state === "ready" ? statusQuery.data.deletions ?? 0 : null;
   const deferredFiles = useDeferredValue(files);
   const [visibleFileCount, setVisibleFileCount] = useState(initialDiffPageSize);
-  const streamRef = useRef<HTMLDivElement | null>(null);
   const [streamNode, setStreamNode] = useState<HTMLDivElement | null>(null);
   const loadMoreRef = useRef<HTMLDivElement | null>(null);
 
@@ -79,6 +82,72 @@ export function GitDiffSidebar() {
     () => deferredFiles.slice(0, visibleFileCount),
     [deferredFiles, visibleFileCount],
   );
+  const visibleBatchIndices = useMemo(
+    () => Array.from({ length: Math.ceil(visibleFiles.length / diffBatchSize) }, (_, index) => index),
+    [visibleFiles.length],
+  );
+  const diffBatchQueries = useQueries({
+    queries: visibleBatchIndices.map((batchIndex) => {
+      const batchFiles = deferredFiles.slice(batchIndex * diffBatchSize, (batchIndex + 1) * diffBatchSize);
+      return {
+        queryKey: [
+          "terminal-git-diff-batch",
+          sessionId,
+          cwd,
+          statusQuery.data?.repo_root ?? "",
+          batchIndex,
+          batchFiles.map((file) => gitDiffFileKey(file.path, file.previous_path)).join("|"),
+        ],
+        queryFn: () =>
+          getTerminalGitDiffBatch(sessionId, {
+            cwd,
+            repo_root: statusQuery.data?.repo_root ?? "",
+            files: batchFiles.map((file) => ({
+              path: file.path,
+              previous_path: file.previous_path,
+              kind: file.kind,
+              index_status: file.index_status,
+              worktree_status: file.worktree_status,
+            })),
+          }),
+        enabled: Boolean(sessionId && cwd && statusQuery.data?.repo_root && batchFiles.length > 0),
+        refetchOnWindowFocus: false,
+        retry: false,
+        staleTime: 15_000,
+      };
+    }),
+  });
+  const diffByFileKey = useMemo(() => {
+    const entries = new Map<string, GitFileDiff>();
+    for (const query of diffBatchQueries) {
+      for (const diff of query.data?.diffs ?? []) {
+        entries.set(gitDiffFileKey(diff.path, diff.previous_path), diff);
+      }
+    }
+    return entries;
+  }, [diffBatchQueries]);
+  const batchStateByFileKey = useMemo(() => {
+    const entries = new Map<
+      string,
+      {
+        isPending: boolean;
+        error: unknown;
+        refetch: () => Promise<unknown>;
+      }
+    >();
+    visibleBatchIndices.forEach((batchIndex, queryIndex) => {
+      const query = diffBatchQueries[queryIndex];
+      const batchFiles = deferredFiles.slice(batchIndex * diffBatchSize, (batchIndex + 1) * diffBatchSize);
+      for (const file of batchFiles) {
+        entries.set(gitDiffFileKey(file.path, file.previous_path), {
+          isPending: query.isPending,
+          error: query.error,
+          refetch: query.refetch,
+        });
+      }
+    });
+    return entries;
+  }, [deferredFiles, diffBatchQueries, visibleBatchIndices]);
 
   useEffect(() => {
     if (visibleFileCount >= deferredFiles.length) {
@@ -214,29 +283,30 @@ export function GitDiffSidebar() {
             description="Fascinate could not resolve repository state for this shell."
           />
         ) : files.length === 0 ? (
-          <SidebarStateCard
-            title="Working tree is clean"
-            description="This repository has no changed files right now."
-          />
+          <SidebarCleanState />
         ) : (
           <section
             ref={(node: HTMLDivElement | null) => {
-              streamRef.current = node;
               setStreamNode(node);
             }}
             className="git-diff-stream"
             aria-label="Git file diffs"
           >
-            {visibleFiles.map((file) => (
-              <GitDiffFileCard
-                key={`${file.previous_path ?? ""}:${file.path}`}
-                cwd={cwd}
-                file={file}
-                repoRoot={statusQuery.data.repo_root ?? ""}
-                sessionId={sessionId}
-                scrollRoot={streamNode}
-              />
-            ))}
+            {visibleFiles.map((file) => {
+              const fileKey = gitDiffFileKey(file.path, file.previous_path);
+              const diff = diffByFileKey.get(fileKey);
+              const batchState = batchStateByFileKey.get(fileKey);
+              return (
+                <GitDiffFileCard
+                  key={fileKey}
+                  diff={diff}
+                  error={diff ? null : batchState?.error}
+                  file={file}
+                  isPending={Boolean(!diff && batchState?.isPending)}
+                  onRetry={batchState ? () => void batchState.refetch() : undefined}
+                />
+              );
+            })}
 
             {visibleFileCount < deferredFiles.length ? (
               <div className="git-diff-more-indicator">
@@ -258,88 +328,33 @@ export function GitDiffSidebar() {
 }
 
 function GitDiffFileCard({
-  cwd,
+  diff,
+  error,
   file,
-  repoRoot,
-  sessionId,
-  scrollRoot,
+  isPending,
+  onRetry,
 }: {
-  cwd: string;
+  diff?: GitFileDiff;
+  error: unknown;
   file: GitChangedFile;
-  repoRoot: string;
-  sessionId: string;
-  scrollRoot: HTMLDivElement | null;
+  isPending: boolean;
+  onRetry?: () => void;
 }) {
-  const cardRef = useRef<HTMLElement | null>(null);
-  const [shouldFetchDiff, setShouldFetchDiff] = useState(false);
   const [isCollapsed, setIsCollapsed] = useState(false);
 
-  useEffect(() => {
-    if (shouldFetchDiff) {
-      return;
-    }
-    const node = cardRef.current;
-    if (!node) {
-      return;
-    }
-    if (typeof IntersectionObserver === "undefined") {
-      setShouldFetchDiff(true);
-      return;
-    }
-    const observer = new IntersectionObserver(
-      (entries) => {
-        if (!entries.some((entry) => entry.isIntersecting)) {
-          return;
-        }
-        setShouldFetchDiff(true);
-        observer.disconnect();
-      },
-      { root: scrollRoot, rootMargin: "480px 0px" },
-    );
-    observer.observe(node);
-    return () => observer.disconnect();
-  }, [scrollRoot, shouldFetchDiff]);
-
-  const diffQuery = useQuery({
-    queryKey: [
-      "terminal-git-diff",
-      sessionId,
-      cwd,
-      repoRoot,
-      file.path,
-      file.previous_path,
-      file.kind,
-      file.index_status,
-      file.worktree_status,
-    ],
-    queryFn: () =>
-      getTerminalGitDiff(sessionId, {
-        cwd,
-        repo_root: repoRoot,
-        path: file.path,
-        previous_path: file.previous_path,
-        kind: file.kind,
-        index_status: file.index_status,
-        worktree_status: file.worktree_status,
-      }),
-    enabled: Boolean(sessionId && cwd && repoRoot && shouldFetchDiff),
-    refetchOnWindowFocus: false,
-    retry: false,
-  });
-
   const parsedDiff = useMemo<ParsedGitDiff | null>(() => {
-    if (!diffQuery.data?.patch || diffQuery.data.state !== "ready") {
+    if (!diff?.patch || diff.state !== "ready") {
       return null;
     }
-    return parseUnifiedDiff(diffQuery.data.patch);
-  }, [diffQuery.data]);
+    return parseUnifiedDiff(diff.patch);
+  }, [diff]);
 
   return (
-    <article ref={cardRef} className="git-diff-file-card" data-collapsed={isCollapsed ? "true" : "false"}>
+    <article className="git-diff-file-card" data-collapsed={isCollapsed ? "true" : "false"}>
       <div className="git-diff-file-header-shell">
         <FilePanelHeader
           collapsed={isCollapsed}
-          diff={diffQuery.data}
+          diff={diff}
           file={file}
           onToggleCollapse={() => setIsCollapsed((current) => !current)}
         />
@@ -347,36 +362,30 @@ function GitDiffFileCard({
 
       {!isCollapsed ? (
         <div className="git-diff-file-body">
-          {!shouldFetchDiff ? (
-            <SidebarStateCard
-              title="Diff queued"
-              description="Scroll this file into view to load its unified patch."
-              compact
-            />
-          ) : diffQuery.isPending ? (
+          {isPending ? (
             <SidebarStateCard title="Loading file diff" description="Fetching this file patch." compact />
-          ) : diffQuery.error ? (
+          ) : error ? (
             <SidebarStateCard
               title="Unable to load this file diff"
               description={
-                diffQuery.error instanceof Error
-                  ? diffQuery.error.message
+                error instanceof Error
+                  ? error.message
                   : "The selected file patch could not be loaded."
               }
-              actionLabel="Retry"
-              onAction={() => void diffQuery.refetch()}
+              actionLabel={onRetry ? "Retry" : undefined}
+              onAction={onRetry}
               compact
             />
-          ) : !diffQuery.data ? (
+          ) : !diff ? (
             <SidebarStateCard
               title="Diff unavailable"
               description="Fascinate could not load this file patch."
               compact
             />
-          ) : diffQuery.data.state !== "ready" ? (
+          ) : diff.state !== "ready" ? (
             <div className="git-diff-nonrenderable">
               <strong>Inline diff unavailable</strong>
-              <p>{diffQuery.data.message ?? "Fascinate cannot render this file as inline text."}</p>
+              <p>{diff.message ?? "Fascinate cannot render this file as inline text."}</p>
             </div>
           ) : parsedDiff && parsedDiff.rows.length > 0 ? (
             <UnifiedDiffRows path={file.path} rows={parsedDiff.rows} />
@@ -485,6 +494,7 @@ function UnifiedDiffRows({
   );
   const [highlightedLines, setHighlightedLines] = useState<HighlightedDiffLineMap>({});
   const lineRows = useMemo(() => collectLineRows(rows), [rows]);
+  const inlineDiffRanges = useMemo(() => computeInlineDiffRanges(lineRows), [lineRows]);
 
   useEffect(() => {
     setCollapsedRowState({});
@@ -518,13 +528,27 @@ function UnifiedDiffRows({
     <div className="git-diff-unified" role="table" aria-label="Unified diff">
       {rows.map((row) => {
         if (row.type !== "collapsed") {
-          return <UnifiedDiffLine key={row.id} highlightedLine={highlightedLines[row.id]} row={row} />;
+          return (
+            <UnifiedDiffLine
+              key={row.id}
+              highlightedLine={highlightedLines[row.id]}
+              inlineDiffRanges={inlineDiffRanges[row.id]}
+              row={row}
+            />
+          );
         }
 
         const collapsedState = collapsedRowState[row.id] ?? { head: 0, tail: 0, expanded: false };
         const remainingHiddenCount = Math.max(0, row.rows.length - collapsedState.head - collapsedState.tail);
         if (collapsedState.expanded || remainingHiddenCount === 0) {
-          return <ExpandedContextRows key={row.id} highlightedLines={highlightedLines} rows={row.rows} />;
+          return (
+            <ExpandedContextRows
+              key={row.id}
+              highlightedLines={highlightedLines}
+              inlineDiffRanges={inlineDiffRanges}
+              rows={row.rows}
+            />
+          );
         }
 
         const visibleHeadRows = collapsedState.head > 0 ? row.rows.slice(0, collapsedState.head) : [];
@@ -532,7 +556,7 @@ function UnifiedDiffRows({
 
         return (
           <Fragment key={row.id}>
-            <ExpandedContextRows highlightedLines={highlightedLines} rows={visibleHeadRows} />
+            <ExpandedContextRows highlightedLines={highlightedLines} inlineDiffRanges={inlineDiffRanges} rows={visibleHeadRows} />
             <CollapsedContextRow
               hiddenCount={remainingHiddenCount}
               showEdgeControls={row.rows.length > collapsedRevealStep * 2 || collapsedState.head > 0 || collapsedState.tail > 0}
@@ -569,7 +593,7 @@ function UnifiedDiffRows({
                 })
               }
             />
-            <ExpandedContextRows highlightedLines={highlightedLines} rows={visibleTailRows} />
+            <ExpandedContextRows highlightedLines={highlightedLines} inlineDiffRanges={inlineDiffRanges} rows={visibleTailRows} />
           </Fragment>
         );
       })}
@@ -579,15 +603,22 @@ function UnifiedDiffRows({
 
 function ExpandedContextRows({
   highlightedLines,
+  inlineDiffRanges,
   rows,
 }: {
   highlightedLines: HighlightedDiffLineMap;
+  inlineDiffRanges: Record<string, InlineDiffRange[]>;
   rows: UnifiedDiffLineRow[];
 }) {
   return (
     <>
       {rows.map((row) => (
-        <UnifiedDiffLine key={row.id} highlightedLine={highlightedLines[row.id]} row={row} />
+        <UnifiedDiffLine
+          key={row.id}
+          highlightedLine={highlightedLines[row.id]}
+          inlineDiffRanges={inlineDiffRanges[row.id]}
+          row={row}
+        />
       ))}
     </>
   );
@@ -664,29 +695,33 @@ function CollapsedContextRow({
 
 function UnifiedDiffLine({
   highlightedLine,
+  inlineDiffRanges,
   row,
 }: {
   highlightedLine?: HighlightedDiffLineMap[string];
+  inlineDiffRanges?: InlineDiffRange[];
   row: UnifiedDiffLineRow;
 }) {
   const lineNumber = row.kind === "delete" ? row.oldLineNumber : row.newLineNumber ?? row.oldLineNumber;
+  const tokens = useMemo(
+    () => buildDisplayTokens(highlightedLine, row.text, inlineDiffRanges),
+    [highlightedLine, inlineDiffRanges, row.text],
+  );
 
   return (
     <div className={`git-diff-unified-row git-diff-unified-row-${row.kind}`} role="row">
       <div className="git-diff-unified-gutter">{lineNumber ?? ""}</div>
       <div className="git-diff-unified-code">
         <code>
-          {highlightedLine && highlightedLine.length > 0
-            ? highlightedLine.map((token, index) => (
-                <span
-                  key={`${row.id}-${index}`}
-                  className="git-diff-token"
-                  style={tokenStyle(token.fontStyle, token.color)}
-                >
-                  {token.content}
-                </span>
-              ))
-            : row.text}
+          {tokens.map((token, index) => (
+            <span
+              key={`${row.id}-${index}`}
+              className={`git-diff-token${token.changed ? " git-diff-token-inline git-diff-token-inline-add" : ""}`}
+              style={tokenStyle(token.fontStyle, token.color)}
+            >
+              {token.content}
+            </span>
+          ))}
         </code>
       </div>
     </div>
@@ -719,6 +754,24 @@ function SidebarStateCard({
   );
 }
 
+function SidebarCleanState() {
+  return (
+    <div className="git-diff-clean-state">
+      <section className="git-diff-clean-state-card" aria-label="Working tree is clean">
+        <div className="git-diff-clean-state-badge" aria-hidden="true">
+          <CheckCircle size={18} weight="fill" />
+        </div>
+        <div className="git-diff-clean-state-copy">
+          <span className="git-diff-clean-state-label">Repo status</span>
+          <strong>Working tree is clean</strong>
+          <p>This repository has no changed files right now.</p>
+          <span className="git-diff-clean-state-note">Changes from this shell appear here automatically.</span>
+        </div>
+      </section>
+    </div>
+  );
+}
+
 function collectLineRows(rows: ParsedGitDiff["rows"]) {
   const lineRows: UnifiedDiffLineRow[] = [];
   for (const row of rows) {
@@ -735,6 +788,10 @@ function formatChangedFilesLabel(count: number) {
   return `${count} file${count === 1 ? "" : "s"} changed`;
 }
 
+function gitDiffFileKey(path: string, previousPath?: string) {
+  return `${previousPath ?? ""}:${path}`;
+}
+
 function tokenStyle(fontStyle: number | undefined, color: string | undefined) {
   return {
     color,
@@ -742,4 +799,72 @@ function tokenStyle(fontStyle: number | undefined, color: string | undefined) {
     fontWeight: fontStyle && (fontStyle & 2) !== 0 ? 700 : 400,
     textDecoration: fontStyle && (fontStyle & 4) !== 0 ? "underline" : "none",
   } as const;
+}
+
+function buildDisplayTokens(
+  highlightedLine: HighlightedToken[] | undefined,
+  text: string,
+  ranges: InlineDiffRange[] | undefined,
+) {
+  const tokens = highlightedLine && highlightedLine.length > 0 ? highlightedLine : [{ content: text }];
+  if (!ranges || ranges.length === 0) {
+    return tokens.map((token) => ({ ...token, changed: false }));
+  }
+
+  const normalizedRanges = ranges
+    .filter((range) => range.end > range.start)
+    .sort((left, right) => left.start - right.start);
+  if (normalizedRanges.length === 0) {
+    return tokens.map((token) => ({ ...token, changed: false }));
+  }
+
+  const rendered: Array<HighlightedToken & { changed: boolean }> = [];
+  let offset = 0;
+
+  for (const token of tokens) {
+    const tokenStart = offset;
+    const tokenEnd = tokenStart + token.content.length;
+    offset = tokenEnd;
+
+    if (token.content.length === 0) {
+      rendered.push({ ...token, changed: false });
+      continue;
+    }
+
+    let cursor = tokenStart;
+    for (const range of normalizedRanges) {
+      if (range.end <= tokenStart || range.start >= tokenEnd) {
+        continue;
+      }
+      const overlapStart = Math.max(range.start, tokenStart);
+      const overlapEnd = Math.min(range.end, tokenEnd);
+
+      if (overlapStart > cursor) {
+        rendered.push({
+          ...token,
+          content: token.content.slice(cursor - tokenStart, overlapStart - tokenStart),
+          changed: false,
+        });
+      }
+
+      if (overlapEnd > overlapStart) {
+        rendered.push({
+          ...token,
+          content: token.content.slice(overlapStart - tokenStart, overlapEnd - tokenStart),
+          changed: true,
+        });
+      }
+      cursor = overlapEnd;
+    }
+
+    if (cursor < tokenEnd) {
+      rendered.push({
+        ...token,
+        content: token.content.slice(cursor - tokenStart),
+        changed: false,
+      });
+    }
+  }
+
+  return rendered.filter((token) => token.content.length > 0);
 }

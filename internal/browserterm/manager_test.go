@@ -2,6 +2,8 @@ package browserterm
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"net/url"
 	"strings"
@@ -208,35 +210,76 @@ func TestParseGitRepoStatusOutputParsesTrackedUntrackedAndRenamedFiles(t *testin
 	}
 }
 
-func TestDiffStatsFromPatchIgnoresHeaders(t *testing.T) {
+func TestGitDiffBatchShellCommandEmbedsBatchPayload(t *testing.T) {
 	t.Parallel()
 
-	patch := strings.Join([]string{
-		"diff --git a/web/src/app.tsx b/web/src/app.tsx",
-		"--- a/web/src/app.tsx",
-		"+++ b/web/src/app.tsx",
-		"@@ -1,2 +1,2 @@",
-		"-old value",
-		"+new value",
-		" unchanged",
-	}, "\n")
+	command := gitDiffBatchShellCommand(GitDiffBatchRequest{
+		RepoRoot: "/home/ubuntu/project",
+		Files: []GitDiffBatchFile{
+			{Path: "web/src/app.tsx", Kind: "modified", WorktreeStatus: "M"},
+			{Path: "README.md", Kind: "untracked", WorktreeStatus: "?"},
+		},
+	})
 
-	additions, deletions := diffStatsFromPatch(patch)
-	if additions != 1 || deletions != 1 {
-		t.Fatalf("unexpected diff stats additions=%d deletions=%d", additions, deletions)
+	if !strings.Contains(command, "export FASCINATE_GIT_DIFF_BATCH=") {
+		t.Fatalf("expected batch payload env var, got %q", command)
+	}
+	if !strings.Contains(command, `python3 - <<'PY'`) {
+		t.Fatalf("expected embedded python batch script, got %q", command)
+	}
+
+	prefix := "export FASCINATE_GIT_DIFF_BATCH='"
+	start := strings.Index(command, prefix)
+	if start == -1 {
+		t.Fatalf("expected encoded payload prefix in command, got %q", command)
+	}
+	start += len(prefix)
+	end := strings.Index(command[start:], "'\npython3 - <<'PY'")
+	if end == -1 {
+		t.Fatalf("expected encoded payload terminator in command, got %q", command)
+	}
+	encodedPayload := command[start : start+end]
+	payloadJSON, err := base64.StdEncoding.DecodeString(encodedPayload)
+	if err != nil {
+		t.Fatalf("expected valid base64 payload, got %v", err)
+	}
+	var payload struct {
+		RepoRoot string             `json:"repo_root"`
+		Files    []GitDiffBatchFile `json:"files"`
+	}
+	if err := json.Unmarshal(payloadJSON, &payload); err != nil {
+		t.Fatalf("expected valid json payload, got %v", err)
+	}
+	if payload.RepoRoot != "/home/ubuntu/project" {
+		t.Fatalf("unexpected repo root %+v", payload)
+	}
+	if len(payload.Files) != 2 || payload.Files[0].Path != "web/src/app.tsx" || payload.Files[1].Path != "README.md" {
+		t.Fatalf("unexpected payload files %+v", payload.Files)
 	}
 }
 
-func TestBinaryAndLargeDiffDetection(t *testing.T) {
+func TestAcquireGitCommandSlotHonorsPerMachineConcurrency(t *testing.T) {
 	t.Parallel()
 
-	if !isBinaryDiff("Binary files a/foo and b/foo differ\n") {
-		t.Fatalf("expected binary diff to be detected")
+	manager := New(config.Config{}, &fakeMachineManager{})
+	releaseOne, err := manager.acquireGitCommandSlot(context.Background(), "m-1")
+	if err != nil {
+		t.Fatal(err)
 	}
-	largePatch := strings.Repeat("+line\n", gitDiffMaxLines+1)
-	if !diffTooLarge(largePatch) {
-		t.Fatalf("expected oversized diff to be detected")
+	releaseTwo, err := manager.acquireGitCommandSlot(context.Background(), "m-1")
+	if err != nil {
+		t.Fatal(err)
 	}
+	blockedCtx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+
+	_, err = manager.acquireGitCommandSlot(blockedCtx, "m-1")
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected third slot acquisition to block, got %v", err)
+	}
+
+	releaseOne()
+	releaseTwo()
 }
 
 func TestNormalizeGuestCwd(t *testing.T) {

@@ -1,4 +1,8 @@
 export type UnifiedDiffLineKind = "context" | "delete" | "add";
+export type InlineDiffRange = {
+  start: number;
+  end: number;
+};
 
 export type UnifiedDiffLineRow = {
   type: "line";
@@ -113,6 +117,45 @@ export function parseUnifiedDiff(patch: string): ParsedGitDiff {
   };
 }
 
+export function computeInlineDiffRanges(rows: UnifiedDiffLineRow[]) {
+  const ranges: Record<string, InlineDiffRange[]> = {};
+
+  for (let index = 0; index < rows.length; ) {
+    if (rows[index].kind !== "delete") {
+      index += 1;
+      continue;
+    }
+
+    const deleteStart = index;
+    while (index < rows.length && rows[index].kind === "delete") {
+      index += 1;
+    }
+    const addStart = index;
+    while (index < rows.length && rows[index].kind === "add") {
+      index += 1;
+    }
+
+    if (addStart === index) {
+      continue;
+    }
+
+    const deletedRows = rows.slice(deleteStart, addStart);
+    const addedRows = rows.slice(addStart, index);
+    const pairCount = Math.min(deletedRows.length, addedRows.length);
+
+    for (let pairIndex = 0; pairIndex < pairCount; pairIndex += 1) {
+      const deletedRow = deletedRows[pairIndex];
+      const addedRow = addedRows[pairIndex];
+      const pairRanges = computeInlineDiffPair(deletedRow.text, addedRow.text);
+      if (pairRanges.added) {
+        ranges[addedRow.id] = pairRanges.added;
+      }
+    }
+  }
+
+  return ranges;
+}
+
 function parseHunkHeader(line: string): HunkHeader | null {
   const match = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line);
   if (!match) {
@@ -162,4 +205,44 @@ function collapseContextRows(rows: UnifiedDiffLineRow[]): UnifiedDiffRow[] {
 
 function isContextRow(row: UnifiedDiffLineRow) {
   return row.kind === "context";
+}
+
+function computeInlineDiffPair(
+  deletedText: string,
+  addedText: string,
+): {
+  added?: InlineDiffRange[];
+} {
+  if (deletedText === addedText) {
+    return {};
+  }
+
+  const maxPrefix = Math.min(deletedText.length, addedText.length);
+  let prefixLength = 0;
+  while (prefixLength < maxPrefix && deletedText[prefixLength] === addedText[prefixLength]) {
+    prefixLength += 1;
+  }
+
+  const maxSuffix = Math.min(deletedText.length - prefixLength, addedText.length - prefixLength);
+  let suffixLength = 0;
+  while (
+    suffixLength < maxSuffix &&
+    deletedText[deletedText.length - 1 - suffixLength] === addedText[addedText.length - 1 - suffixLength]
+  ) {
+    suffixLength += 1;
+  }
+
+  const addedRange =
+    addedText.length - suffixLength > prefixLength
+      ? [{ start: prefixLength, end: addedText.length - suffixLength }]
+      : undefined;
+
+  const hasDeletedSegment = deletedText.length - suffixLength > prefixLength;
+  if (hasDeletedSegment) {
+    return {};
+  }
+
+  return {
+    added: addedRange,
+  };
 }

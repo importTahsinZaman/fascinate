@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseUnifiedDiff } from "./git-diff";
+import { computeInlineDiffRanges, parseUnifiedDiff } from "./git-diff";
 
 describe("parseUnifiedDiff", () => {
   it("renders unified changed rows and collapses long unchanged regions", () => {
@@ -84,5 +84,35 @@ new file mode 100644
       text: "second line",
     });
     expect(parsed.rows[1]).not.toHaveProperty("oldLineNumber");
+  });
+
+  it("computes intraline ranges for paired delete and add rows", () => {
+    const parsed = parseUnifiedDiff(`diff --git a/example.ts b/example.ts
+@@ -1 +1 @@
+-if (!credentials.label.includes(':')) {
++if (credentials.label && !credentials.label.includes(':')) {
+`);
+    const lineRows = parsed.rows.filter((row) => row.type === "line");
+    const ranges = computeInlineDiffRanges(lineRows);
+
+    const deletedRow = lineRows[0];
+    const addedRow = lineRows[1];
+    expect(ranges[deletedRow.id]).toBeUndefined();
+    expect(ranges[addedRow.id]).toEqual([{ start: 4, end: 25 }]);
+  });
+
+  it("skips intraline ranges when the paired change replaces deleted text", () => {
+    const parsed = parseUnifiedDiff(`diff --git a/example.ts b/example.ts
+@@ -1 +1 @@
+-const previousValue = oldStore;
++const nextValue = newStore;
+`);
+    const lineRows = parsed.rows.filter((row) => row.type === "line");
+    const ranges = computeInlineDiffRanges(lineRows);
+
+    const deletedRow = lineRows[0];
+    const addedRow = lineRows[1];
+    expect(ranges[deletedRow.id]).toBeUndefined();
+    expect(ranges[addedRow.id]).toBeUndefined();
   });
 });

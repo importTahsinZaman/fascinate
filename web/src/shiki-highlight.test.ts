@@ -8,6 +8,17 @@ describe("resolveShikiLanguage", () => {
     expect(resolveShikiLanguage("README.md")).toBe("markdown");
     expect(resolveShikiLanguage("ops/host/bootstrap.sh")).toBe("bash");
     expect(resolveShikiLanguage("cmd/fascinate/main.go")).toBe("go");
+    expect(resolveShikiLanguage("Dockerfile")).toBe("docker");
+    expect(resolveShikiLanguage("Makefile")).toBe("make");
+    expect(resolveShikiLanguage("services/api/main.py")).toBe("python");
+    expect(resolveShikiLanguage("backend/src/Main.java")).toBe("java");
+    expect(resolveShikiLanguage("infra/main.tf")).toBe("terraform");
+    expect(resolveShikiLanguage("src/lib.rs")).toBe("rust");
+    expect(resolveShikiLanguage("src/server.cpp")).toBe("cpp");
+    expect(resolveShikiLanguage("src/Program.cs")).toBe("csharp");
+    expect(resolveShikiLanguage("app/schema.graphql")).toBe("graphql");
+    expect(resolveShikiLanguage("ui/App.vue")).toBe("vue");
+    expect(resolveShikiLanguage("ui/App.svelte")).toBe("svelte");
     expect(resolveShikiLanguage("config/settings.yaml")).toBe("yaml");
     expect(resolveShikiLanguage("package.json")).toBe("json");
   });

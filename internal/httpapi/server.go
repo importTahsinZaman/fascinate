@@ -54,7 +54,7 @@ type terminalManager interface {
 	ReattachSession(context.Context, string, string, int, int) (browserterm.SessionInit, error)
 	CloseSession(context.Context, string, string) error
 	GetGitStatus(context.Context, string, string, string) (browserterm.GitRepoStatus, error)
-	GetGitDiff(context.Context, string, string, browserterm.GitDiffRequest) (browserterm.GitFileDiff, error)
+	GetGitDiffBatch(context.Context, string, string, browserterm.GitDiffBatchRequest) (browserterm.GitDiffBatchResponse, error)
 	StreamSession(http.ResponseWriter, *http.Request, string) error
 	Diagnostics() browserterm.Diagnostics
 }
@@ -330,7 +330,7 @@ func New(cfg config.Config, store *database.Store, runtime runtimeChecker, machi
 			writeJSON(w, http.StatusOK, status)
 			return
 		}
-		if len(parts) == 3 && parts[1] == "git" && parts[2] == "diff" {
+		if len(parts) == 3 && parts[1] == "git" && parts[2] == "diffs" {
 			if r.Method != http.MethodPost {
 				writeMethodNotAllowed(w, http.MethodPost)
 				return
@@ -342,12 +342,12 @@ func New(cfg config.Config, store *database.Store, runtime runtimeChecker, machi
 				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
 				return
 			}
-			var body browserterm.GitDiffRequest
+			var body browserterm.GitDiffBatchRequest
 			if err := decodeJSON(r, &body); err != nil {
 				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 				return
 			}
-			diff, err := terminals.GetGitDiff(ctx, session.User.Email, parts[0], body)
+			diff, err := terminals.GetGitDiffBatch(ctx, session.User.Email, parts[0], body)
 			if err != nil {
 				writeServiceError(w, err)
 				return

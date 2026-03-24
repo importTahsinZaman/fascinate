@@ -1,5 +1,5 @@
 import { Suspense, lazy, startTransition, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
-import { Camera, Diamond, GitFork, Trash, X } from "@phosphor-icons/react";
+import { Camera, GitDiff as GitDiffIcon, GitFork, Trash, X } from "@phosphor-icons/react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   forkMachine,
@@ -11,6 +11,7 @@ import {
   deleteTerminalSession,
   getDefaultWorkspace,
   getSession,
+  getTerminalGitStatus,
   listEnvVars,
   listMachines,
   listSnapshots,
@@ -53,6 +54,7 @@ const maxWorkspaceScale = 2.2;
 const workspaceZoomWheelFactor = 0.006;
 const workspaceWheelPanContinuationMs = 160;
 const workspaceFocusAnimationMs = 240;
+const windowGitStatusPollIntervalMs = 4_000;
 
 export function App() {
   const queryClient = useQueryClient();
@@ -153,6 +155,8 @@ function CommandCenter() {
   const closeWindow = useWorkspaceStore((state) => state.closeWindow);
   const focusWindow = useWorkspaceStore((state) => state.focusWindow);
   const requestViewportFocus = useWorkspaceStore((state) => state.requestViewportFocus);
+  const closeGitDiffSidebar = useWorkspaceStore((state) => state.closeGitDiffSidebar);
+  const gitDiffSidebarWindowID = useWorkspaceStore((state) => state.gitDiffSidebar.windowID);
 
   const machinesQuery = useQuery({
     queryKey: ["machines"],
@@ -189,6 +193,23 @@ function CommandCenter() {
       window.removeEventListener("keydown", handleKeyDown);
     };
   }, [modal]);
+
+  useEffect(() => {
+    if (modal || !gitDiffSidebarWindowID) {
+      return;
+    }
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        closeGitDiffSidebar();
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [closeGitDiffSidebar, gitDiffSidebarWindowID, modal]);
 
   const createMachineMutation = useMutation({
     mutationFn: ({ name, snapshotName }: { name: string; snapshotName?: string }) =>
@@ -248,6 +269,10 @@ function CommandCenter() {
   const machineColorStyles = useMemo(
     () => getMachineColorStyles([...machineList.map((machine) => machine.name), ...windows.map((window) => window.machineName)]),
     [machineList, windows],
+  );
+  const frontmostWindowZ = useMemo(
+    () => windows.reduce((max, window) => Math.max(max, window.z), 0),
+    [windows],
   );
   const snapshotList = snapshotsQuery.data ?? [];
   const envList = envVarsQuery.data ?? [];
@@ -561,13 +586,13 @@ function CommandCenter() {
   return (
     <main className="command-center">
       <div className="app-brandmark" aria-hidden="true">
-        <Diamond className="app-brandmark-icon" size={18} weight="fill" />
         <span>Fascinate</span>
       </div>
       <WorkspaceAutosave enabled={workspaceQuery.isSuccess} />
       <div className="command-center-workspace">
         <WorkspaceCanvas
           machineColorStyles={machineColorStyles}
+          frontmostWindowZ={frontmostWindowZ}
           closingShellIDs={closingShellIDs}
           onCloseShell={(window) => closeShellWindow(window)}
         />
@@ -792,14 +817,17 @@ function WorkspaceAutosave({ enabled }: { enabled: boolean }) {
 
 function WorkspaceCanvas({
   machineColorStyles,
+  frontmostWindowZ,
   closingShellIDs,
   onCloseShell,
 }: {
   machineColorStyles: Record<string, CSSProperties>;
+  frontmostWindowZ: number;
   closingShellIDs: string[];
   onCloseShell: (window: WorkspaceWindow) => Promise<void>;
 }) {
   const windows = useWorkspaceStore((state) => state.windows);
+  const windowCwds = useWorkspaceStore((state) => state.windowCwds);
   const viewport = useWorkspaceStore((state) => state.viewport);
   const setViewport = useWorkspaceStore((state) => state.setViewport);
   const closeWindow = useWorkspaceStore((state) => state.closeWindow);
@@ -1142,7 +1170,9 @@ function WorkspaceCanvas({
                 focusWindow(window.id);
                 openGitDiffSidebar(window.id);
               }}
+              isFrontmost={window.z === frontmostWindowZ}
               isGitDiffActive={gitDiffSidebarWindowID === window.id}
+              cwd={windowCwds[window.id]}
               toCanvasPoint={getCanvasPointFromClient}
             >
               <Suspense fallback={<div className="terminal-loading">Opening terminal…</div>}>
@@ -1179,7 +1209,9 @@ function WindowFrame({
   onRequestViewportFocus,
   onMove,
   onOpenGitDiff,
+  isFrontmost,
   isGitDiffActive,
+  cwd,
   toCanvasPoint,
 }: {
   window: WorkspaceWindow;
@@ -1191,7 +1223,9 @@ function WindowFrame({
   onRequestViewportFocus: () => void;
   onMove: (x: number, y: number) => void;
   onOpenGitDiff: () => void;
+  isFrontmost: boolean;
   isGitDiffActive: boolean;
+  cwd?: string;
   toCanvasPoint: (clientX: number, clientY: number) => { x: number; y: number };
 }) {
   const dragOffsetRef = useRef<{ x: number; y: number } | null>(null);
@@ -1261,22 +1295,74 @@ function WindowFrame({
           </div>
         </div>
         <div className="window-header-actions window-header-actions-end">
-          <button
-            className="window-header-button"
-            type="button"
-            aria-label={`Open git diff for ${layoutWindow.title}`}
-            title={`Open git diff for ${layoutWindow.title}`}
-            data-active={isGitDiffActive ? "true" : "false"}
-            onPointerDown={(event) => event.stopPropagation()}
-            onDoubleClick={(event) => event.stopPropagation()}
-            onClick={onOpenGitDiff}
-          >
-            Diff
-          </button>
+          <WindowGitDiffButton
+            title={layoutWindow.title}
+            sessionId={layoutWindow.sessionId}
+            cwd={cwd}
+            isFrontmost={isFrontmost}
+            isActive={isGitDiffActive}
+            onOpen={onOpenGitDiff}
+          />
         </div>
       </header>
       <div className="window-body">{children}</div>
     </div>
+  );
+}
+
+function WindowGitDiffButton({
+  title,
+  sessionId,
+  cwd,
+  isFrontmost,
+  isActive,
+  onOpen,
+}: {
+  title: string;
+  sessionId?: string;
+  cwd?: string;
+  isFrontmost: boolean;
+  isActive: boolean;
+  onOpen: () => void;
+}) {
+  const statusQuery = useQuery({
+    queryKey: ["terminal-git-status", sessionId, cwd],
+    queryFn: () => getTerminalGitStatus(sessionId ?? "", cwd ?? ""),
+    enabled: Boolean(sessionId && cwd),
+    staleTime: 15_000,
+    refetchInterval: sessionId && cwd && (isFrontmost || isActive) ? windowGitStatusPollIntervalMs : false,
+    refetchOnWindowFocus: false,
+    retry: false,
+  });
+
+  if (statusQuery.data?.state !== "ready") {
+    return null;
+  }
+
+  const additions = statusQuery.data.additions ?? 0;
+  const deletions = statusQuery.data.deletions ?? 0;
+
+  return (
+    <button
+      className="window-git-diff-button"
+      type="button"
+      aria-label={`Open git diff for ${title}`}
+      title={`Open git diff for ${title}`}
+      data-active={isActive ? "true" : "false"}
+      onPointerDown={(event) => event.stopPropagation()}
+      onDoubleClick={(event) => event.stopPropagation()}
+      onClick={onOpen}
+    >
+      <span className="window-git-diff-button-icon-shell" aria-hidden="true">
+        <GitDiffIcon className="icon-svg" weight="regular" />
+      </span>
+      <span className="window-git-diff-button-stat window-git-diff-button-stat-added">
+        +{additions.toLocaleString()}
+      </span>
+      <span className="window-git-diff-button-stat window-git-diff-button-stat-deleted">
+        -{deletions.toLocaleString()}
+      </span>
+    </button>
   );
 }
 
