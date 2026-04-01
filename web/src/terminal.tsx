@@ -38,7 +38,6 @@ export function TerminalView({ machineName, title, sessionId, onSessionId, onCwd
   const socketRef = useRef<WebSocket | null>(null);
   const dataListenerRef = useRef<{ dispose(): void } | null>(null);
   const resizeListenerRef = useRef<{ dispose(): void } | null>(null);
-  const selectionListenerRef = useRef<{ dispose(): void } | null>(null);
   const webglAddonRef = useRef<WebglAddon | null>(null);
   const webglContextLossRef = useRef<{ dispose(): void } | null>(null);
   const sessionIdRef = useRef(sessionId ?? "");
@@ -46,8 +45,6 @@ export function TerminalView({ machineName, title, sessionId, onSessionId, onCwd
   const pendingMetadataRef = useRef("");
   const promptLineRef = useRef("");
   const clipboardNoticeTimerRef = useRef<number | null>(null);
-  const selectionOwnerRef = useRef(Symbol("terminal-selection"));
-  const selectionActiveRef = useRef(false);
   const [connectionAttempt, setConnectionAttempt] = useState(0);
   const [stats, setStats] = useState<TerminalStats>({
     status: "connecting",
@@ -95,27 +92,6 @@ export function TerminalView({ machineName, title, sessionId, onSessionId, onCwd
           ? "Clipboard access was blocked by the browser."
           : "Clipboard copy requires a secure browser context.",
       });
-    }
-  });
-  const handleTerminalKeyEvent = useEffectEvent((event: KeyboardEvent, terminal: Terminal) => {
-    if (!shouldCopyTerminalSelection(event, terminal)) {
-      return true;
-    }
-
-    event.preventDefault();
-    event.stopPropagation();
-    void copyToLocalClipboard(terminal.getSelection());
-    return false;
-  });
-  const registerSelectionOwner = useEffectEvent((terminal: Terminal) => {
-    const hasSelection = terminal.hasSelection();
-    selectionActiveRef.current = hasSelection;
-    if (hasSelection) {
-      activeTerminalSelectionOwner = selectionOwnerRef.current;
-      return;
-    }
-    if (activeTerminalSelectionOwner === selectionOwnerRef.current) {
-      activeTerminalSelectionOwner = null;
     }
   });
   const retryConnection = useEffectEvent((mode: "reuse" | "new") => {
@@ -177,10 +153,6 @@ export function TerminalView({ machineName, title, sessionId, onSessionId, onCwd
       // fall back to default renderer
     }
     terminal.open(hostRef.current);
-    terminal.attachCustomKeyEventHandler((event) => handleTerminalKeyEvent(event, terminal));
-    selectionListenerRef.current = terminal.onSelectionChange(() => {
-      registerSelectionOwner(terminal);
-    });
     fitAddon.fit();
     terminalRef.current = terminal;
     fitRef.current = fitAddon;
@@ -188,7 +160,6 @@ export function TerminalView({ machineName, title, sessionId, onSessionId, onCwd
     return () => {
       dataListenerRef.current?.dispose();
       resizeListenerRef.current?.dispose();
-      selectionListenerRef.current?.dispose();
       webglContextLossRef.current?.dispose();
       webglAddonRef.current?.dispose();
       socketRef.current?.close();
@@ -200,79 +171,14 @@ export function TerminalView({ machineName, title, sessionId, onSessionId, onCwd
       fitRef.current = null;
       dataListenerRef.current = null;
       resizeListenerRef.current = null;
-      selectionListenerRef.current = null;
       webglContextLossRef.current = null;
       webglAddonRef.current = null;
       decoderRef.current = null;
       pendingMetadataRef.current = "";
       promptLineRef.current = "";
       clipboardNoticeTimerRef.current = null;
-      selectionActiveRef.current = false;
-      if (activeTerminalSelectionOwner === selectionOwnerRef.current) {
-        activeTerminalSelectionOwner = null;
-      }
     };
   }, []);
-
-  useEffect(() => {
-    const handleCopy = (event: ClipboardEvent) => {
-      const terminal = terminalRef.current;
-      if (!terminal || activeTerminalSelectionOwner !== selectionOwnerRef.current || !selectionActiveRef.current) {
-        return;
-      }
-
-      const selection = terminal.getSelection();
-      if (!selection) {
-        return;
-      }
-
-      if (isEditableTargetOutsideTerminal(event.target, hostRef.current)) {
-        return;
-      }
-
-      if (event.clipboardData) {
-        event.preventDefault();
-        event.stopPropagation();
-        event.clipboardData.setData("text/plain", selection);
-        showClipboardNotice({
-          tone: "success",
-          message: "Copied to your local clipboard.",
-        });
-        return;
-      }
-
-      event.preventDefault();
-      event.stopPropagation();
-      void copyToLocalClipboard(selection);
-    };
-
-    const handleKeyDown = (event: KeyboardEvent) => {
-      const terminal = terminalRef.current;
-      if (
-        !terminal ||
-        activeTerminalSelectionOwner !== selectionOwnerRef.current ||
-        !selectionActiveRef.current ||
-        !shouldCopyShortcut(event)
-      ) {
-        return;
-      }
-
-      if (!terminal.hasSelection() || isEditableTargetOutsideTerminal(event.target, hostRef.current)) {
-        return;
-      }
-
-      event.preventDefault();
-      event.stopPropagation();
-      void copyToLocalClipboard(terminal.getSelection());
-    };
-
-    document.addEventListener("copy", handleCopy);
-    document.addEventListener("keydown", handleKeyDown, true);
-    return () => {
-      document.removeEventListener("copy", handleCopy);
-      document.removeEventListener("keydown", handleKeyDown, true);
-    };
-  }, [copyToLocalClipboard, showClipboardNotice]);
 
   useEffect(() => {
     if (!terminalRef.current || !fitRef.current) {
@@ -481,39 +387,6 @@ function getTerminalOverlay(stats: TerminalStats) {
   };
 }
 
-function shouldCopyTerminalSelection(event: KeyboardEvent, terminal: Terminal) {
-  if (!shouldCopyShortcut(event)) {
-    return false;
-  }
-  if (!terminal.hasSelection()) {
-    return false;
-  }
-  return true;
-}
-
-function shouldCopyShortcut(event: KeyboardEvent) {
-  if (event.type !== "keydown") {
-    return false;
-  }
-  return !event.altKey && event.key.toLowerCase() === "c" && (event.ctrlKey || event.metaKey);
-}
-
-function isEditableTargetOutsideTerminal(target: EventTarget | null, terminalHost: HTMLDivElement | null) {
-  if (!(target instanceof Node)) {
-    return false;
-  }
-  if (terminalHost?.contains(target)) {
-    return false;
-  }
-  if (!(target instanceof HTMLElement)) {
-    return false;
-  }
-  if (target.isContentEditable) {
-    return true;
-  }
-  return target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement;
-}
-
 function parseTerminalMetadata(chunk: string) {
   let output = "";
   let cwd: string | undefined;
@@ -619,5 +492,3 @@ function detectPromptPath(previousLine: string, output: string) {
 function promptLineRefSafeguard(value: string) {
   return value.replace(/\u0000/g, "").slice(-512);
 }
-
-let activeTerminalSelectionOwner: symbol | null = null;
