@@ -36,9 +36,9 @@ Fascinate currently gives us:
   - serve the browser command center on the primary Fascinate origin
   - authenticate browser users through emailed verification codes and DB-backed sessions
   - issue browser terminal sessions and stream PTY traffic over dedicated WebSockets
-  - inspect shell-scoped git working trees through a live shell-header git-status chip with distinct idle/open states, repeat-toggle and `Escape` dismissal, and a unified review overlay above the control sidebar, with a repo-summary header, branch-chip and animated refresh chrome, sticky stacked file cards, full-width collapsed-context bars with quiet static link chrome, compact review-grade diff chrome with consistent diff-count accents, insertion-only inline token highlights for pure add-side expansions, inline path copy affordances with visible copy feedback, a centered clean-repo empty state, scroll-ahead batched file loading that prefetches visible cards before you reach them, backend-batched per-file patch fetches with per-machine git-command throttling, lazy-loaded Shiki syntax highlighting across the major source languages, and without resizing the workspace canvas
-  - bridge terminal-driven clipboard copy requests into the browser's local clipboard when supported
-  - persist per-user workspace layouts for the browser terminal canvas
+  - inspect shell-scoped git working trees through a live shell-header git-status chip with distinct idle/open states, repeat-toggle and `Escape` dismissal, and a unified review overlay above a shell-first control sidebar, with a repo-summary header, branch-chip and animated refresh chrome, sticky stacked file cards, full-width collapsed-context bars with quiet static link chrome, compact review-grade diff chrome with consistent diff-count accents, insertion-only inline token highlights for pure add-side expansions, inline path copy affordances with visible copy feedback, a centered clean-repo empty state, scroll-ahead batched file loading that prefetches visible cards before you reach them, backend-batched per-file patch fetches with per-machine git-command throttling, lazy-loaded Shiki syntax highlighting across the major source languages, a rigid horizontally scrollable shell strip with drag-to-reorder headers instead of a zoomable free canvas, and a separate machine inventory block for machine actions and shell launch
+  - bridge terminal-driven clipboard copy requests into the browser's local clipboard when supported, and honor `Cmd-C`/`Ctrl-C` for active terminal text selections without sending an interrupt into the shell
+  - persist per-user workspace layouts for the browser terminal shell strip
 
 Current browser HTTP API:
 - `POST /v1/auth/request-code`
@@ -72,7 +72,7 @@ Current browser HTTP API:
 
 ## Repo Layout
 
-- [`web/`](/Users/tahsin/Desktop/vmcloud/web): React/Vite browser command center and xterm workspace canvas
+- [`web/`](/Users/tahsin/Desktop/vmcloud/web): React/Vite browser command center and ordered xterm shell strip
 - [`ops/host/bootstrap.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/bootstrap.sh): installs host dependencies and baseline VM networking/runtime config
 - [`ops/host/verify.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/verify.sh): checks the host after bootstrap
 - [`ops/host/write-caddyfile.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/write-caddyfile.sh): writes the host Caddy config for Fascinate

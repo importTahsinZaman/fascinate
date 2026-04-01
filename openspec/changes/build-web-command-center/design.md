@@ -5,7 +5,7 @@ Fascinate has reached the point where the runtime substrate is materially strong
 The desired product is a browser command center for running many coding-agent sessions on VMs at once. That means the main interaction surface must support:
 - creating and managing machines, snapshots, and env vars without leaving the web app
 - opening multiple live shells at once, including multiple shells into the same VM
-- arranging those shells on a canvas-like workspace
+- arranging those shells in a rigid left-to-right workspace
 - keeping input latency low enough that the browser terminal feels immediate rather than tunneled through a slow admin path
 
 There are no live users and no compatibility promises to preserve. That removes the main reason to keep terminal-first assumptions alive. The design should optimize for the final browser-first architecture, even when that means de-prioritizing or replacing the TUI and SSH-specific UX.
@@ -16,7 +16,7 @@ There are no live users and no compatibility promises to preserve. That removes 
 - Make the web app at `fascinate.dev` the primary Fascinate product surface.
 - Use a stack that is performant for a windowed multi-terminal workspace and does not fight low-latency terminal streaming.
 - Give the web app first-class workflows for machines, snapshots, clone/create-from-snapshot, and env vars.
-- Support multiple browser terminal sessions per VM with draggable, resizable window layouts.
+- Support multiple browser terminal sessions per VM in an ordered horizontal strip that users can reorder.
 - Keep terminal keystroke-to-echo latency off the normal control-plane path as much as possible.
 - Build directly on the existing host model so the same design scales from the current single host to later VM worker hosts.
 - Introduce observability for browser terminal attach time, session failures, and latency.
@@ -55,7 +55,7 @@ Alternatives considered:
 
 Fascinate will continue using the existing central control-plane database rather than introducing a second product database for the web app. The browser rollout will add new control-plane tables for browser-specific state, including:
 - `web_sessions` for browser-authenticated sessions
-- `workspace_layouts` for persisted canvas/workspace state
+- `workspace_layouts` for persisted browser workspace state
 
 Optional future tables may exist for control-plane-visible browser terminal metadata, but live PTY state remains host-local rather than becoming a central database concern.
 
@@ -68,20 +68,21 @@ Alternatives considered:
 - Introduce a separate frontend or auth database.
   - Rejected because it complicates deployment and data ownership too early.
 
-### 2. Model the main surface as a DOM workspace, not a literal raster canvas
+### 2. Model the main surface as a horizontally scrollable DOM workspace
 
-The “canvas” UI will be implemented as an infinite/pannable DOM workspace with absolutely positioned windows. Each terminal window will host its own `xterm.js` instance. Window movement and resize will be handled through CSS transforms and localized state updates rather than through a single `<canvas>` drawing system.
+The main workspace will be implemented as a horizontally scrollable DOM strip with fixed shell windows arranged left-to-right. Each terminal window will host its own `xterm.js` instance. Users can drag shell headers to reorder shells within the strip, but the workspace does not support freeform dragging, freeform resizing, or zooming.
 
 Why:
 - Browser terminals need focus, text selection, IME handling, copy/paste, accessibility semantics, and independent rendering lifecycles.
-- `xterm.js` is designed to own a DOM container; forcing terminals into a rasterized canvas would make them worse.
-- A DOM workspace can still look and feel like a canvas while preserving correct terminal behavior.
+- Terminal copy shortcuts should resolve from xterm selection state at the document level, rather than depending on the hidden xterm textarea to keep keyboard focus after a mouse selection.
+- `xterm.js` is designed to own a DOM container; avoiding a scaled/transformed canvas removes an entire class of terminal hit-testing and selection bugs.
+- A rigid strip matches the product need better than a whiteboard metaphor because users primarily switch contexts, reorder shells, and scan left-to-right.
 
 Alternatives considered:
 - A real HTML canvas or whiteboard-style renderer.
   - Rejected because it is the wrong substrate for multiple interactive terminals.
-- A generic node-editor library.
-  - Rejected because Fascinate needs a lightweight window manager, not graph semantics and extra abstraction.
+- A freeform DOM canvas with draggable/resizable shells.
+  - Rejected because it adds zoom, transform, and placement complexity without enough product value for a shell-first command center.
 
 ### 3. Keep terminal bytes out of React state and out of the normal control-plane request path
 
@@ -174,7 +175,7 @@ Alternatives considered:
 
 The control plane will store browser workspace metadata per user, including:
 - workspace ID/name
-- window positions, dimensions, z-order, and minimized/maximized state
+- the left-to-right shell order and the window-to-machine bindings
 - which machine a terminal window is bound to
 - whether the window should reopen a new shell or try to reattach to a known session
 
@@ -197,7 +198,9 @@ The web app will ship with browser surfaces for:
 - env-var list/create/edit/delete and effective machine-env inspection
 - terminal launch from machine detail or directly into the workspace
 
-These are not auxiliary pages around the canvas; they are part of the main product surface and should share auth, data fetching, and optimistic UX patterns with the workspace.
+These are not auxiliary pages around the shell strip; they are part of the main product surface and should share auth, data fetching, and optimistic UX patterns with the workspace.
+
+The default control surface should prioritize active work before inventory. That means the sidebar should present open shells as its primary list, using the persisted shell-strip order and surfacing cwd plus machine name for fast context switching. Machine rows belong in a separate lower inventory block that keeps machine actions and shell launch available without burying currently open shells inside per-machine cards.
 
 Why:
 - The product goal is a command center, not just a browser terminal.
@@ -221,7 +224,7 @@ Fascinate will instrument:
 The design target for same-region usage is:
 - terminal attach visibly started in under 1 second
 - median keypress-to-echo RTT low enough to feel local
-- no full-workspace rerender on terminal output or drag updates
+- no full-workspace rerender on terminal output or shell reorder updates
 
 Exact thresholds can tighten later, but the system must expose enough data to measure them from day one.
 
@@ -237,7 +240,7 @@ Alternatives considered:
 
 - **[Frontend build complexity in a previously Go-only repo]** -> Add a dedicated `web/` package and treat it as a bounded exception rather than spreading JS tooling across the repo.
 - **[Two session models: browser auth and terminal attach tokens]** -> Keep browser sessions long-lived and simple; make terminal tokens short-lived and purpose-scoped.
-- **[Workspace UX complexity]** -> Ship one high-value workspace model first: draggable/resizable terminal windows with persisted layout. Defer collaboration and advanced orchestration.
+- **[Workspace UX complexity]** -> Ship one high-value workspace model first: an ordered horizontal shell strip with persisted layout. Defer collaboration and advanced orchestration.
 - **[Host-direct terminal streams complicate deployment]** -> Reuse the existing host model and Caddy routing so the current single host remains the first terminal gateway implementation.
 - **[Session loss on restart in v1]** -> Persist layout durably and make session reattach best-effort; do not block the first browser release on full restart-proof session recovery.
 - **[Temptation to preserve the TUI path]** -> Treat browser-first flows as authoritative and avoid designing APIs around the Bubble Tea dashboard.
@@ -249,7 +252,7 @@ Alternatives considered:
 3. Add session cookies, opaque DB-backed web sessions, and the initial browser shell of the app.
 4. Add REST-backed browser views for machines, snapshots, and env vars on top of the existing control plane.
 5. Add the host-aware browser terminal session API plus the local-host terminal gateway.
-6. Add the workspace window manager and `xterm.js`-based multi-terminal canvas.
+6. Add the workspace shell-strip manager and `xterm.js`-based multi-terminal workspace.
 7. Add workspace persistence, browser-terminal diagnostics, and latency instrumentation.
 8. Remove Bubble Tea/TUI assumptions from primary product docs and stop treating terminal-first flows as the main UX.
 

@@ -15,7 +15,7 @@ type WorkspaceState = {
   gitDiffSidebar: GitDiffSidebarState;
   hydrated: boolean;
   hydrate: (layout: WorkspaceLayout) => void;
-  openTerminal: (machineName: string, title?: string) => void;
+  openTerminal: (machineName: string, title?: string) => string;
   setWindowSession: (id: string, sessionId: string) => void;
   setWindowCwd: (id: string, cwd: string) => void;
   openGitDiffSidebar: (windowID: string) => void;
@@ -26,14 +26,16 @@ type WorkspaceState = {
   focusWindow: (id: string) => void;
   requestViewportFocus: (id: string) => void;
   clearViewportFocusRequest: () => void;
-  moveWindow: (id: string, x: number, y: number) => void;
+  moveWindowToIndex: (id: string, index: number) => void;
+  moveWindowEarlier: (id: string) => void;
+  moveWindowLater: (id: string) => void;
   setViewport: (viewport: WorkspaceViewport) => void;
   serialize: () => WorkspaceLayout;
 };
 
 const defaultViewport: WorkspaceViewport = { x: 120, y: 96, scale: 1 };
-const defaultWindowSize = { width: 1297, height: 907 };
-const windowMargin = 36;
+const defaultWindowSize = { width: 796, height: 900 };
+const orderedWindowGap = 0;
 const defaultGitDiffSidebarState: GitDiffSidebarState = {
   windowID: null,
   selectedPath: null,
@@ -51,23 +53,34 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       if (state.hydrated) {
         return state;
       }
-      const windows = Array.isArray(layout.windows)
-        ? layout.windows.reduce<WorkspaceWindow[]>((items, item, index) => {
-            const position = findAvailablePosition(item.x, item.y, items);
-            items.push({
-              id: item.id,
-              machineName: item.machineName,
-              title: item.title,
-              sessionId: item.sessionId,
-              x: position.x,
-              y: position.y,
-              width: defaultWindowSize.width,
-              height: defaultWindowSize.height,
-              z: Number.isFinite(item.z) ? item.z : index + 1,
-            });
-            return items;
-          }, [])
-        : [];
+
+      const incomingWindows = Array.isArray(layout.windows) ? [...layout.windows] : [];
+      if ((layout.version ?? 1) < 3) {
+        incomingWindows.sort((left, right) => {
+          if (left.x !== right.x) {
+            return left.x - right.x;
+          }
+          if (left.y !== right.y) {
+            return left.y - right.y;
+          }
+          return left.z - right.z;
+        });
+      }
+
+      const windows = normalizeOrderedWindows(
+        incomingWindows.map((item, index) => ({
+          id: item.id,
+          machineName: item.machineName,
+          title: item.title,
+          sessionId: item.sessionId,
+          x: item.x,
+          y: item.y,
+          width: defaultWindowSize.width,
+          height: defaultWindowSize.height,
+          z: Number.isFinite(item.z) ? item.z : index + 1,
+        })),
+      );
+
       return {
         windows,
         windowCwds: {},
@@ -77,22 +90,26 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         hydrated: true,
       };
     }),
-  openTerminal: (machineName, title) =>
+  openTerminal: (machineName, title) => {
+    const windowID = crypto.randomUUID();
     set((state) => {
       const nextZ = state.windows.reduce((max, item) => Math.max(max, item.z), 0) + 1;
-      const position = findAvailablePosition(windowMargin, windowMargin, state.windows);
       const window: WorkspaceWindow = {
-        id: crypto.randomUUID(),
+        id: windowID,
         machineName,
         title: title ?? `${machineName} shell`,
-        x: position.x,
-        y: position.y,
+        x: 0,
+        y: 0,
         width: defaultWindowSize.width,
         height: defaultWindowSize.height,
         z: nextZ,
       };
-      return { windows: [...state.windows, window] };
-    }),
+      return {
+        windows: normalizeOrderedWindows([...state.windows, window]),
+      };
+    });
+    return windowID;
+  },
   setWindowSession: (id, sessionId) =>
     set((state) => ({
       windows: state.windows.map((item) =>
@@ -170,7 +187,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       const windowCwds = { ...state.windowCwds };
       delete windowCwds[id];
       return {
-        windows: state.windows.filter((item) => item.id !== id),
+        windows: normalizeOrderedWindows(state.windows.filter((item) => item.id !== id)),
         windowCwds,
         viewportFocusRequest:
           state.viewportFocusRequest?.windowID === id ? null : state.viewportFocusRequest,
@@ -200,26 +217,24 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       },
     }),
   clearViewportFocusRequest: () => set({ viewportFocusRequest: null }),
-  moveWindow: (id, x, y) =>
+  moveWindowToIndex: (id, targetIndex) =>
     set((state) => ({
-      windows: state.windows.map((item) => {
-        if (item.id !== id) {
-          return item;
-        }
-        const position = findAvailablePosition(x, y, state.windows, id);
-        return {
-          ...item,
-          x: position.x,
-          y: position.y,
-        };
-      }),
+      windows: normalizeOrderedWindows(reorderWindowToIndex(state.windows, id, targetIndex)),
+    })),
+  moveWindowEarlier: (id) =>
+    set((state) => ({
+      windows: normalizeOrderedWindows(moveWindowByOffset(state.windows, id, -1)),
+    })),
+  moveWindowLater: (id) =>
+    set((state) => ({
+      windows: normalizeOrderedWindows(moveWindowByOffset(state.windows, id, 1)),
     })),
   setViewport: (viewport) =>
     set({
       viewport: normalizeViewport(viewport),
     }),
   serialize: () => ({
-    version: 2,
+    version: 3,
     windows: get().windows,
     viewport: get().viewport,
   }),
@@ -239,77 +254,38 @@ function normalizeViewport(viewport?: Partial<WorkspaceViewport>): WorkspaceView
   };
 }
 
-function findAvailablePosition(x: number, y: number, windows: WorkspaceWindow[], ignoreID?: string) {
-  const originX = Math.max(windowMargin, Math.round(x));
-  const originY = Math.max(windowMargin, Math.round(y));
-
-  if (!hasOverlap(originX, originY, windows, ignoreID)) {
-    return { x: originX, y: originY };
-  }
-
-  const relevantWindows = windows.filter((window) => window.id !== ignoreID);
-  const xCandidates = new Set<number>([originX]);
-  const yCandidates = new Set<number>([originY]);
-
-  for (const window of relevantWindows) {
-    xCandidates.add(Math.max(windowMargin, window.x - defaultWindowSize.width));
-    xCandidates.add(Math.max(windowMargin, window.x + defaultWindowSize.width));
-    yCandidates.add(Math.max(windowMargin, window.y - defaultWindowSize.height));
-    yCandidates.add(Math.max(windowMargin, window.y + defaultWindowSize.height));
-  }
-
-  const candidates = Array.from(xCandidates).flatMap((nextX) =>
-    Array.from(yCandidates).map((nextY) => ({ x: nextX, y: nextY })),
-  );
-
-  candidates.sort((left, right) => {
-    const leftDistance = Math.hypot(left.x - originX, left.y - originY);
-    const rightDistance = Math.hypot(right.x - originX, right.y - originY);
-    if (leftDistance !== rightDistance) {
-      return leftDistance - rightDistance;
-    }
-    if (left.y !== right.y) {
-      return left.y - right.y;
-    }
-    return left.x - right.x;
-  });
-
-  for (const candidate of candidates) {
-    if (!hasOverlap(candidate.x, candidate.y, windows, ignoreID)) {
-      return candidate;
-    }
-  }
-
-  return { x: originX, y: originY };
+function normalizeOrderedWindows(windows: WorkspaceWindow[]) {
+  return windows.map((window, index) => ({
+    ...window,
+    x: index * (defaultWindowSize.width + orderedWindowGap),
+    y: 0,
+    width: defaultWindowSize.width,
+    height: defaultWindowSize.height,
+  }));
 }
 
-function hasOverlap(x: number, y: number, windows: WorkspaceWindow[], ignoreID?: string) {
-  return windows.some((window) => {
-    if (window.id === ignoreID) {
-      return false;
-    }
-    return rectanglesOverlap(
-      x,
-      y,
-      defaultWindowSize.width,
-      defaultWindowSize.height,
-      window.x,
-      window.y,
-      defaultWindowSize.width,
-      defaultWindowSize.height,
-    );
-  });
+function moveWindowByOffset(windows: WorkspaceWindow[], id: string, offset: -1 | 1) {
+  const currentIndex = windows.findIndex((window) => window.id === id);
+  if (currentIndex === -1) {
+    return windows;
+  }
+
+  return reorderWindowToIndex(windows, id, currentIndex + offset);
 }
 
-function rectanglesOverlap(
-  x1: number,
-  y1: number,
-  width1: number,
-  height1: number,
-  x2: number,
-  y2: number,
-  width2: number,
-  height2: number,
-) {
-  return x1 < x2 + width2 && x1 + width1 > x2 && y1 < y2 + height2 && y1 + height1 > y2;
+function reorderWindowToIndex(windows: WorkspaceWindow[], id: string, targetIndex: number) {
+  const currentIndex = windows.findIndex((window) => window.id === id);
+  if (currentIndex === -1) {
+    return windows;
+  }
+
+  const nextIndex = Math.min(windows.length - 1, Math.max(0, targetIndex));
+  if (nextIndex === currentIndex) {
+    return windows;
+  }
+
+  const items = [...windows];
+  const [window] = items.splice(currentIndex, 1);
+  items.splice(nextIndex, 0, window);
+  return items;
 }

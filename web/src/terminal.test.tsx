@@ -47,6 +47,27 @@ const {
     dispose = vi.fn();
     onData = vi.fn(() => ({ dispose: vi.fn() }));
     onResize = vi.fn(() => ({ dispose: vi.fn() }));
+    private selectionListeners = new Set<() => void>();
+    onSelectionChange = vi.fn((listener: () => void) => {
+      this.selectionListeners.add(listener);
+      return {
+        dispose: () => {
+          this.selectionListeners.delete(listener);
+        },
+      };
+    });
+    hasSelection = vi.fn(() => false);
+    getSelection = vi.fn(() => "");
+    customKeyEventHandler: ((event: KeyboardEvent) => boolean) | null = null;
+    attachCustomKeyEventHandler = vi.fn((handler: (event: KeyboardEvent) => boolean) => {
+      this.customKeyEventHandler = handler;
+    });
+
+    emitSelectionChange() {
+      for (const listener of this.selectionListeners) {
+        listener();
+      }
+    }
   }
 
   const terminalInstances: MockTerminal[] = [];
@@ -303,6 +324,73 @@ describe("TerminalView", () => {
       expect(writeText).toHaveBeenCalledWith(url);
     });
     expect(await screen.findByText("Copied to your local clipboard.")).toBeTruthy();
+  });
+
+  it("copies the selected terminal text on ctrl+c", async () => {
+    const onSessionId = vi.fn();
+    const setData = vi.fn();
+    const execCommand = vi.fn((command: string) => {
+      if (command !== "copy") {
+        return false;
+      }
+      const copyEvent = new Event("copy", { bubbles: true, cancelable: true });
+      Object.defineProperty(copyEvent, "clipboardData", {
+        configurable: true,
+        value: { setData },
+      });
+      document.dispatchEvent(copyEvent);
+      return true;
+    });
+    Object.defineProperty(document, "execCommand", {
+      configurable: true,
+      value: execCommand,
+    });
+
+    render(<TerminalView machineName="m-1" title="m-1 shell" onSessionId={onSessionId} />);
+
+    await waitFor(() => {
+      expect(createTerminalSession).toHaveBeenCalledWith("m-1", 120, 40);
+    });
+
+    terminalInstances[0].hasSelection.mockReturnValue(true);
+    terminalInstances[0].getSelection.mockReturnValue("selected text");
+    terminalInstances[0].emitSelectionChange();
+
+    const keyEvent = new KeyboardEvent("keydown", {
+      key: "c",
+      metaKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+
+    await act(async () => {
+      document.dispatchEvent(keyEvent);
+    });
+
+    expect(execCommand).toHaveBeenCalledWith("copy");
+    expect(setData).toHaveBeenCalledWith("text/plain", "selected text");
+  });
+
+  it("keeps ctrl+c available for the shell when there is no selection", async () => {
+    const onSessionId = vi.fn();
+
+    render(<TerminalView machineName="m-1" title="m-1 shell" onSessionId={onSessionId} />);
+
+    await waitFor(() => {
+      expect(createTerminalSession).toHaveBeenCalledWith("m-1", 120, 40);
+    });
+
+    terminalInstances[0].hasSelection.mockReturnValue(false);
+
+    const keyEvent = new KeyboardEvent("keydown", {
+      key: "c",
+      ctrlKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+
+    const handled = terminalInstances[0].customKeyEventHandler?.(keyEvent);
+    expect(handled).toBe(true);
   });
 
   it("shows a visible notice when the browser blocks clipboard access", async () => {

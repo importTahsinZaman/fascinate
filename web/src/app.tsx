@@ -1,4 +1,15 @@
-import { Suspense, lazy, startTransition, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import {
+  Suspense,
+  lazy,
+  startTransition,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type PointerEvent as ReactPointerEvent,
+  type ReactNode,
+} from "react";
 import { Camera, GitDiff as GitDiffIcon, GitFork, Trash, X } from "@phosphor-icons/react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -22,7 +33,6 @@ import {
   verifyLogin,
   type Machine,
   type Snapshot,
-  type WorkspaceViewport,
   type WorkspaceWindow,
 } from "./api";
 import { GitDiffSidebar } from "./git-diff-sidebar";
@@ -30,11 +40,6 @@ import { getMachineColorStyle, getMachineColorStyles } from "./machine-colors";
 import { useWorkspaceStore } from "./store";
 
 const TerminalView = lazy(async () => import("./terminal").then((module) => ({ default: module.TerminalView })));
-
-type WorkspaceBounds = {
-  width: number;
-  height: number;
-};
 
 type ModalState =
   | { type: "new-machine" }
@@ -45,15 +50,6 @@ type ModalState =
   | { type: "env-vars" }
   | null;
 
-const workspaceCanvasSize = { width: 9600, height: 6400 };
-const workspaceViewportPadding = 160;
-const workspaceFocusPadding = { horizontal: 56, vertical: 48 };
-const defaultWorkspaceViewport: WorkspaceViewport = { x: 120, y: 96, scale: 1 };
-const minWorkspaceScale = 0.531;
-const maxWorkspaceScale = 2.2;
-const workspaceZoomWheelFactor = 0.006;
-const workspaceWheelPanContinuationMs = 160;
-const workspaceFocusAnimationMs = 240;
 const windowGitStatusPollIntervalMs = 4_000;
 
 export function App() {
@@ -155,6 +151,7 @@ function CommandCenter() {
   const closeWindow = useWorkspaceStore((state) => state.closeWindow);
   const focusWindow = useWorkspaceStore((state) => state.focusWindow);
   const requestViewportFocus = useWorkspaceStore((state) => state.requestViewportFocus);
+  const moveWindowToIndex = useWorkspaceStore((state) => state.moveWindowToIndex);
   const closeGitDiffSidebar = useWorkspaceStore((state) => state.closeGitDiffSidebar);
   const gitDiffSidebarWindowID = useWorkspaceStore((state) => state.gitDiffSidebar.windowID);
 
@@ -274,6 +271,10 @@ function CommandCenter() {
     () => windows.reduce((max, window) => Math.max(max, window.z), 0),
     [windows],
   );
+  const frontmostWindowID = useMemo(
+    () => windows.find((window) => window.z === frontmostWindowZ)?.id ?? null,
+    [frontmostWindowZ, windows],
+  );
   const snapshotList = snapshotsQuery.data ?? [];
   const envList = envVarsQuery.data ?? [];
   const windowsByMachine = useMemo(() => {
@@ -285,11 +286,34 @@ function CommandCenter() {
     }
     return grouped;
   }, [windows]);
+  const shellOrdinalByWindowID = useMemo(() => {
+    const ordinals = new Map<string, number>();
+    const counts = new Map<string, number>();
+    for (const window of windows) {
+      const nextOrdinal = (counts.get(window.machineName) ?? 0) + 1;
+      counts.set(window.machineName, nextOrdinal);
+      ordinals.set(window.id, nextOrdinal);
+    }
+    return ordinals;
+  }, [windows]);
+  const sidebarShellNodeRefs = useRef(new Map<string, HTMLDivElement>());
+  const sidebarShellDragStateRef = useRef<{
+    pointerId: number;
+    startY: number;
+    windowID: string;
+    dragging: boolean;
+  } | null>(null);
+  const [draggingSidebarShellID, setDraggingSidebarShellID] = useState<string | null>(null);
 
   const openMachineShell = (machineName: string) => {
     const shellCount = windowsByMachine.get(machineName)?.length ?? 0;
     const nextShellNumber = shellCount + 1;
-    openTerminal(machineName, nextShellNumber === 1 ? `${machineName} shell` : `${machineName} shell ${nextShellNumber}`);
+    const windowID = openTerminal(
+      machineName,
+      nextShellNumber === 1 ? `${machineName} shell` : `${machineName} shell ${nextShellNumber}`,
+    );
+    focusWindow(windowID);
+    requestViewportFocus(windowID);
   };
 
   const closeShellWindow = async (window: WorkspaceWindow) => {
@@ -311,6 +335,77 @@ function CommandCenter() {
   const focusShellWindow = (windowID: string) => {
     focusWindow(windowID);
     requestViewportFocus(windowID);
+  };
+
+  const reorderSidebarShellFromPointer = (windowID: string, clientY: number) => {
+    const orderedWindowIDs = windows.map((window) => window.id);
+    if (!orderedWindowIDs.includes(windowID)) {
+      return;
+    }
+
+    let targetIndex = orderedWindowIDs.length - 1;
+    for (let index = 0; index < orderedWindowIDs.length; index += 1) {
+      const node = sidebarShellNodeRefs.current.get(orderedWindowIDs[index]);
+      if (!node) {
+        continue;
+      }
+      const rect = node.getBoundingClientRect();
+      const midpoint = rect.top + rect.height / 2;
+      if (clientY < midpoint) {
+        targetIndex = index;
+        break;
+      }
+    }
+
+    moveWindowToIndex(windowID, targetIndex);
+  };
+
+  const startSidebarShellDrag = (event: ReactPointerEvent<HTMLElement>, windowID: string) => {
+    if (event.button !== 0) {
+      return;
+    }
+    focusShellWindow(windowID);
+    sidebarShellDragStateRef.current = {
+      pointerId: event.pointerId,
+      startY: event.clientY,
+      windowID,
+      dragging: false,
+    };
+    if (typeof event.currentTarget.setPointerCapture === "function") {
+      event.currentTarget.setPointerCapture(event.pointerId);
+    }
+  };
+
+  const continueSidebarShellDrag = (event: ReactPointerEvent<HTMLElement>, windowID: string) => {
+    const dragState = sidebarShellDragStateRef.current;
+    if (!dragState || dragState.pointerId !== event.pointerId || dragState.windowID !== windowID) {
+      return;
+    }
+    if (!dragState.dragging) {
+      if (Math.abs(event.clientY - dragState.startY) < 6) {
+        return;
+      }
+      dragState.dragging = true;
+      setDraggingSidebarShellID(windowID);
+    }
+    reorderSidebarShellFromPointer(windowID, event.clientY);
+    event.preventDefault();
+  };
+
+  const finishSidebarShellDrag = (event: ReactPointerEvent<HTMLElement>, windowID: string) => {
+    const dragState = sidebarShellDragStateRef.current;
+    if (!dragState || dragState.pointerId !== event.pointerId || dragState.windowID !== windowID) {
+      return;
+    }
+    if (
+      typeof event.currentTarget.hasPointerCapture === "function" &&
+      event.currentTarget.hasPointerCapture(event.pointerId) &&
+      typeof event.currentTarget.releasePointerCapture === "function"
+    ) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    sidebarShellDragStateRef.current = null;
+    setDraggingSidebarShellID(null);
   };
 
   const renderModal = () => {
@@ -590,7 +685,7 @@ function CommandCenter() {
       </div>
       <WorkspaceAutosave enabled={workspaceQuery.isSuccess} />
       <div className="command-center-workspace">
-        <WorkspaceCanvas
+        <WorkspaceRail
           machineColorStyles={machineColorStyles}
           frontmostWindowZ={frontmostWindowZ}
           closingShellIDs={closingShellIDs}
@@ -598,125 +693,153 @@ function CommandCenter() {
         />
       </div>
       <aside className="control-sidebar" aria-label="Workspace controls">
-        <div className="control-sidebar-scroll">
-          <section className="sidebar-section">
-            <div className="sidebar-section-header">
-              <h2>Machines</h2>
-              <button
-                className="button-primary"
-                type="button"
-                onClick={() => {
-                  setMachineName("");
-                  setModal({ type: "new-machine" });
-                }}
-              >
-                New machine
-              </button>
-            </div>
-            {machineList.length === 0 ? (
-              <p className="muted">No machines yet. Create one to start running shells and agents.</p>
-            ) : (
-              <div className="sidebar-machine-list">
-                {machineList.map((machine) => {
-                  const machineWindows = windowsByMachine.get(machine.name) ?? [];
-                  return (
-                    <article
-                      key={machine.id}
-                      className="machine-card"
-                      style={machineColorStyles[machine.name] ?? getMachineColorStyle(machine.name)}
-                    >
-                      <div className="machine-card-header">
-                        <div className="machine-card-title">
-                          <span className="machine-color-dot" aria-hidden="true" />
-                          <strong>{machine.name}</strong>
-                        </div>
-                        <div className="actions">
-                          <button
-                            className="icon-action-button"
-                            type="button"
-                            aria-label={`Fork ${machine.name}`}
-                            title={`Fork ${machine.name}`}
-                            onClick={() => {
-                              setForkTarget(`${machine.name}-copy`);
-                              setModal({ type: "fork-machine", machine });
-                            }}
-                          >
-                            <GitFork className="icon-svg" weight="regular" />
-                          </button>
-                          <button
-                            className="icon-action-button"
-                            type="button"
-                            aria-label={`Snapshot ${machine.name}`}
-                            title={`Snapshot ${machine.name}`}
-                            onClick={() => {
-                              setSnapshotName(`${machine.name}-snapshot`);
-                              setModal({ type: "snapshot-machine", machine });
-                            }}
-                          >
-                            <Camera className="icon-svg" weight="regular" />
-                          </button>
-                          <button
-                            className="icon-action-button danger"
-                            type="button"
-                            aria-label={`Delete ${machine.name}`}
-                            title={`Delete ${machine.name}`}
-                            onClick={() => deleteMachineMutation.mutate(machine.name)}
-                          >
-                            <Trash className="icon-svg" weight="regular" />
-                          </button>
-                        </div>
-                      </div>
-                      <div className="machine-card-shells">
-                        {machineWindows.length === 0 ? (
-                          <p className="muted">No open shells.</p>
-                        ) : (
-                          <div className="machine-shell-list">
-                            {machineWindows.map((window, index) => {
-                              const shellLabel = formatShellListLabel(windowCwds[window.id], index + 1);
-                              return (
-                                <div key={window.id} className="machine-shell-row">
-                                  <button
-                                    type="button"
-                                    className="machine-shell-focus"
-                                    onClick={() => focusShellWindow(window.id)}
-                                    title={windowCwds[window.id] ?? shellLabel}
-                                  >
-                                    <span className="machine-shell-label">{shellLabel}</span>
-                                  </button>
-                                  <button
-                                    type="button"
-                                    className="machine-shell-delete"
-                                    aria-label={`Delete ${shellLabel}`}
-                                    title={`Delete ${shellLabel}`}
-                                    onClick={() => {
-                                      void closeShellWindow(window);
-                                    }}
-                                    disabled={closingShellIDs.includes(window.id)}
-                                  >
-                                    <X className="icon-svg" weight="regular" />
-                                  </button>
-                                </div>
-                              );
-                            })}
-                          </div>
-                        )}
-                        <div className="machine-card-shells-actions">
-                          <button type="button" onClick={() => openMachineShell(machine.name)}>
-                            New shell
-                          </button>
-                        </div>
-                      </div>
-                    </article>
-                  );
-                })}
+        <section className="sidebar-shells-section">
+          <div className="sidebar-section-header sidebar-section-header-stacked">
+            <h2>Shells</h2>
+          </div>
+          <div className="sidebar-shell-list">
+            {windows.length === 0 ? (
+              <div className="sidebar-shells-empty">
+                <strong>No shells open</strong>
+                <p className="muted">Open a shell from a machine below to start working.</p>
               </div>
+            ) : (
+              windows.map((window) => {
+                const shellLabel = formatShellListLabel(
+                  windowCwds[window.id],
+                  shellOrdinalByWindowID.get(window.id) ?? 1,
+                );
+                return (
+                  <div
+                    key={window.id}
+                    className="sidebar-shell-row"
+                    data-window-id={window.id}
+                    style={machineColorStyles[window.machineName] ?? getMachineColorStyle(window.machineName)}
+                    data-active={frontmostWindowID === window.id ? "true" : "false"}
+                    data-dragging={draggingSidebarShellID === window.id ? "true" : "false"}
+                    ref={(node) => {
+                      if (node) {
+                        sidebarShellNodeRefs.current.set(window.id, node);
+                        return;
+                      }
+                      sidebarShellNodeRefs.current.delete(window.id);
+                    }}
+                  >
+                    <button
+                      type="button"
+                      className="sidebar-shell-close"
+                      aria-label={`Delete ${shellLabel}`}
+                      title={`Delete ${shellLabel}`}
+                      onClick={() => {
+                        void closeShellWindow(window);
+                      }}
+                      disabled={closingShellIDs.includes(window.id)}
+                    >
+                      <X className="icon-svg" weight="regular" />
+                    </button>
+                    <button
+                      type="button"
+                      className="sidebar-shell-focus"
+                      aria-label={shellLabel}
+                      title={`${shellLabel} · ${window.machineName}`}
+                      onClick={() => focusShellWindow(window.id)}
+                      onPointerDown={(event) => startSidebarShellDrag(event, window.id)}
+                      onPointerMove={(event) => continueSidebarShellDrag(event, window.id)}
+                      onPointerUp={(event) => finishSidebarShellDrag(event, window.id)}
+                      onPointerCancel={(event) => finishSidebarShellDrag(event, window.id)}
+                    >
+                      <span className="sidebar-shell-cwd">{shellLabel}</span>
+                      {" "}
+                      <span className="sidebar-shell-machine" aria-hidden="true">
+                        {window.machineName}
+                      </span>
+                    </button>
+                  </div>
+                );
+              })
             )}
-            <StatusError mutationError={shellCloseError} />
-            <StatusError mutationError={deleteMachineMutation.error} />
-          </section>
-        </div>
+          </div>
+          <StatusError mutationError={shellCloseError} />
+        </section>
 
-        <footer className="control-sidebar-footer">
+        <section className="sidebar-machines-section sidebar-section">
+          <div className="sidebar-section-header">
+            <h2>Machines</h2>
+            <button
+              className="button-primary"
+              type="button"
+              onClick={() => {
+                setMachineName("");
+                setModal({ type: "new-machine" });
+              }}
+            >
+              New machine
+            </button>
+          </div>
+          {machineList.length === 0 ? (
+            <p className="muted">No machines yet. Create one to start running shells and agents.</p>
+          ) : (
+            <div className="sidebar-machine-list sidebar-machine-list-compact">
+              {machineList.map((machine) => {
+                return (
+                  <article
+                    key={machine.id}
+                    className="machine-card"
+                    style={machineColorStyles[machine.name] ?? getMachineColorStyle(machine.name)}
+                  >
+                    <div className="machine-card-header">
+                      <div className="machine-card-title">
+                        <span className="machine-color-dot" aria-hidden="true" />
+                        <strong>{machine.name}</strong>
+                      </div>
+                      <div className="actions machine-card-actions">
+                        <button type="button" onClick={() => openMachineShell(machine.name)}>
+                          New shell
+                        </button>
+                        <button
+                          className="icon-action-button"
+                          type="button"
+                          aria-label={`Fork ${machine.name}`}
+                          title={`Fork ${machine.name}`}
+                          onClick={() => {
+                            setForkTarget(`${machine.name}-copy`);
+                            setModal({ type: "fork-machine", machine });
+                          }}
+                        >
+                          <GitFork className="icon-svg" weight="regular" />
+                        </button>
+                        <button
+                          className="icon-action-button"
+                          type="button"
+                          aria-label={`Snapshot ${machine.name}`}
+                          title={`Snapshot ${machine.name}`}
+                          onClick={() => {
+                            setSnapshotName(`${machine.name}-snapshot`);
+                            setModal({ type: "snapshot-machine", machine });
+                          }}
+                        >
+                          <Camera className="icon-svg" weight="regular" />
+                        </button>
+                        <button
+                          className="icon-action-button danger"
+                          type="button"
+                          aria-label={`Delete ${machine.name}`}
+                          title={`Delete ${machine.name}`}
+                          onClick={() => deleteMachineMutation.mutate(machine.name)}
+                        >
+                          <Trash className="icon-svg" weight="regular" />
+                        </button>
+                      </div>
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+          )}
+          <StatusError mutationError={deleteMachineMutation.error} />
+        </section>
+
+        <section className="control-sidebar-footer">
           <div className="control-sidebar-manage">
             <span className="control-sidebar-manage-label">Manage</span>
             <div className="control-sidebar-manage-actions">
@@ -728,17 +851,17 @@ function CommandCenter() {
               </button>
             </div>
           </div>
-          <div className="sidebar-signout-row">
-            <button
-              className="sidebar-signout-button"
-              type="button"
-              onClick={() => logoutMutation.mutate()}
-              disabled={logoutMutation.isPending}
-            >
-              {logoutMutation.isPending ? "Signing out…" : "Sign out"}
-            </button>
-          </div>
-        </footer>
+        </section>
+        <div className="sidebar-signout-row">
+          <button
+            className="sidebar-signout-button"
+            type="button"
+            onClick={() => logoutMutation.mutate()}
+            disabled={logoutMutation.isPending}
+          >
+            {logoutMutation.isPending ? "Signing out…" : "Sign out"}
+          </button>
+        </div>
       </aside>
       <GitDiffSidebar />
       {renderModal()}
@@ -815,7 +938,7 @@ function WorkspaceAutosave({ enabled }: { enabled: boolean }) {
   return null;
 }
 
-function WorkspaceCanvas({
+function WorkspaceRail({
   machineColorStyles,
   frontmostWindowZ,
   closingShellIDs,
@@ -828,363 +951,184 @@ function WorkspaceCanvas({
 }) {
   const windows = useWorkspaceStore((state) => state.windows);
   const windowCwds = useWorkspaceStore((state) => state.windowCwds);
-  const viewport = useWorkspaceStore((state) => state.viewport);
-  const setViewport = useWorkspaceStore((state) => state.setViewport);
-  const closeWindow = useWorkspaceStore((state) => state.closeWindow);
   const focusWindow = useWorkspaceStore((state) => state.focusWindow);
   const viewportFocusRequest = useWorkspaceStore((state) => state.viewportFocusRequest);
   const clearViewportFocusRequest = useWorkspaceStore((state) => state.clearViewportFocusRequest);
-  const requestViewportFocus = useWorkspaceStore((state) => state.requestViewportFocus);
-  const moveWindow = useWorkspaceStore((state) => state.moveWindow);
+  const moveWindowToIndex = useWorkspaceStore((state) => state.moveWindowToIndex);
   const setWindowSession = useWorkspaceStore((state) => state.setWindowSession);
   const setWindowCwd = useWorkspaceStore((state) => state.setWindowCwd);
   const openGitDiffSidebar = useWorkspaceStore((state) => state.openGitDiffSidebar);
   const gitDiffSidebarWindowID = useWorkspaceStore((state) => state.gitDiffSidebar.windowID);
 
   const workspaceViewportRef = useRef<HTMLDivElement | null>(null);
-  const viewportRef = useRef(viewport);
-  const boundsRef = useRef<WorkspaceBounds>({ width: 0, height: 0 });
-  const panStateRef = useRef<{
+  const windowNodeRefs = useRef(new Map<string, HTMLDivElement>());
+  const dragStateRef = useRef<{
     pointerId: number;
-    startClientX: number;
-    startClientY: number;
-    viewport: WorkspaceViewport;
+    startX: number;
+    windowID: string;
+    dragging: boolean;
   } | null>(null);
-  const gestureZoomRef = useRef<{
-    viewport: WorkspaceViewport;
-    scale: number;
-  } | null>(null);
-  const wheelPanUntilRef = useRef(0);
-  const [workspaceBounds, setWorkspaceBounds] = useState<WorkspaceBounds>({ width: 0, height: 0 });
-  const [isPanning, setIsPanning] = useState(false);
-  const [isFocusAnimating, setIsFocusAnimating] = useState(false);
-  const focusAnimationTimerRef = useRef<number | null>(null);
+  const [draggingWindowID, setDraggingWindowID] = useState<string | null>(null);
 
   useEffect(() => {
-    viewportRef.current = viewport;
-  }, [viewport]);
-
-  useEffect(() => {
-    boundsRef.current = workspaceBounds;
-  }, [workspaceBounds]);
-
-  useEffect(() => {
-    return () => {
-      if (focusAnimationTimerRef.current) {
-        window.clearTimeout(focusAnimationTimerRef.current);
-      }
-    };
-  }, []);
-
-  useEffect(() => {
-    const node = workspaceViewportRef.current;
+    if (!viewportFocusRequest) {
+      return;
+    }
+    const node = windowNodeRefs.current.get(viewportFocusRequest.windowID);
     if (!node) {
-      return;
-    }
-
-    const updateBounds = () => {
-      const rect = node.getBoundingClientRect();
-      setWorkspaceBounds({ width: rect.width, height: rect.height });
-    };
-
-    updateBounds();
-
-    if (typeof ResizeObserver === "undefined") {
-      return;
-    }
-
-    const observer = new ResizeObserver(() => updateBounds());
-    observer.observe(node);
-    return () => observer.disconnect();
-  }, []);
-
-  const applyViewport = (nextViewport: WorkspaceViewport) => {
-    setViewport(clampViewport(nextViewport, boundsRef.current));
-  };
-
-  useEffect(() => {
-    if (!viewportFocusRequest || !workspaceBounds.width || !workspaceBounds.height) {
-      return;
-    }
-
-    const targetWindow = windows.find((window) => window.id === viewportFocusRequest.windowID);
-    if (!targetWindow) {
       clearViewportFocusRequest();
       return;
     }
-
-    const nextScale = clamp(
-      Math.min(
-        (workspaceBounds.width - workspaceFocusPadding.horizontal * 2) / targetWindow.width,
-        (workspaceBounds.height - workspaceFocusPadding.vertical * 2) / targetWindow.height,
-      ),
-      minWorkspaceScale,
-      maxWorkspaceScale,
-    );
-
-    setViewport(
-      clampViewport(
-        {
-          x: (workspaceBounds.width - targetWindow.width * nextScale) / 2 - targetWindow.x * nextScale,
-          y: (workspaceBounds.height - targetWindow.height * nextScale) / 2 - targetWindow.y * nextScale,
-          scale: nextScale,
-        },
-        workspaceBounds,
-      ),
-    );
-    if (focusAnimationTimerRef.current) {
-      window.clearTimeout(focusAnimationTimerRef.current);
-    }
-    setIsFocusAnimating(true);
-    focusAnimationTimerRef.current = window.setTimeout(() => {
-      setIsFocusAnimating(false);
-      focusAnimationTimerRef.current = null;
-    }, workspaceFocusAnimationMs);
+    node.scrollIntoView({
+      behavior:
+        typeof window !== "undefined" &&
+        typeof window.matchMedia === "function" &&
+        window.matchMedia("(prefers-reduced-motion: reduce)").matches
+          ? "auto"
+          : "smooth",
+      inline: "center",
+      block: "nearest",
+    });
     clearViewportFocusRequest();
-  }, [clearViewportFocusRequest, setViewport, viewportFocusRequest, windows, workspaceBounds]);
+  }, [clearViewportFocusRequest, viewportFocusRequest, windows]);
 
   useEffect(() => {
-    const node = workspaceViewportRef.current;
-    if (!node) {
+    if (!draggingWindowID) {
+      document.body.classList.remove("workspace-shell-dragging");
+      return;
+    }
+    document.body.classList.add("workspace-shell-dragging");
+    return () => {
+      document.body.classList.remove("workspace-shell-dragging");
+    };
+  }, [draggingWindowID]);
+
+  const reorderWindowFromPointer = (windowID: string, clientX: number) => {
+    const orderedWindowIDs = windows.map((window) => window.id);
+    if (!orderedWindowIDs.includes(windowID)) {
       return;
     }
 
-    const isWindowTarget = (target: EventTarget | null) => {
-      return target instanceof HTMLElement ? Boolean(target.closest(".window-frame")) : false;
-    };
-
-    const isWindowHeaderTarget = (target: EventTarget | null) => {
-      return target instanceof HTMLElement ? Boolean(target.closest(".window-header")) : false;
-    };
-
-    const isGitDiffTarget = (target: EventTarget | null) => {
-      return target instanceof HTMLElement ? Boolean(target.closest(".git-diff-sidebar")) : false;
-    };
-
-    const applyZoomFromClientPoint = (
-      baseViewport: WorkspaceViewport,
-      nextScale: number,
-      clientX: number,
-      clientY: number,
-    ) => {
-      const currentBounds = boundsRef.current;
-      const rect = node.getBoundingClientRect();
-      setViewport(
-        zoomViewportFromScreenPoint(
-          baseViewport,
-          nextScale,
-          { x: clientX - rect.left, y: clientY - rect.top },
-          currentBounds,
-        ),
-      );
-    };
-
-    const panViewportFromWheel = (event: WheelEvent, currentViewport: WorkspaceViewport) => {
-      event.preventDefault();
-      event.stopPropagation();
-      wheelPanUntilRef.current = performance.now() + workspaceWheelPanContinuationMs;
-      setViewport(
-        clampViewport(
-          {
-            ...currentViewport,
-            x: currentViewport.x - event.deltaX,
-            y: currentViewport.y - event.deltaY,
-          },
-          boundsRef.current,
-        ),
-      );
-    };
-
-    const handleWheel = (event: WheelEvent) => {
-      const currentViewport = viewportRef.current;
-
-      if (isGitDiffTarget(event.target)) {
-        return;
-      }
-
-      if (event.ctrlKey || event.metaKey) {
-        event.preventDefault();
-        event.stopPropagation();
-        const nextScale = clamp(
-          currentViewport.scale * Math.exp(-event.deltaY * workspaceZoomWheelFactor),
-          minWorkspaceScale,
-          maxWorkspaceScale,
-        );
-        applyZoomFromClientPoint(currentViewport, nextScale, event.clientX, event.clientY);
-        return;
-      }
-
-      if (isWindowHeaderTarget(event.target)) {
-        panViewportFromWheel(event, currentViewport);
-        return;
-      }
-
-      if (isWindowTarget(event.target)) {
-        if (performance.now() < wheelPanUntilRef.current) {
-          panViewportFromWheel(event, currentViewport);
-        }
-        return;
-      }
-
-      panViewportFromWheel(event, currentViewport);
-    };
-
-    const handleGestureStart = (event: Event) => {
-      if (isGitDiffTarget(event.target)) {
-        return;
-      }
-      gestureZoomRef.current = {
-        viewport: viewportRef.current,
-        scale: viewportRef.current.scale,
-      };
-      event.preventDefault();
-      event.stopPropagation();
-    };
-
-    const handleGestureChange = (event: Event) => {
-      if (isGitDiffTarget(event.target)) {
-        return;
-      }
-      const gesture = event as Event & { scale?: number; clientX?: number; clientY?: number };
-      const state = gestureZoomRef.current;
-      if (!state) {
-        return;
+    let targetIndex = orderedWindowIDs.length - 1;
+    for (let index = 0; index < orderedWindowIDs.length; index += 1) {
+      const node = windowNodeRefs.current.get(orderedWindowIDs[index]);
+      if (!node) {
+        continue;
       }
       const rect = node.getBoundingClientRect();
-      const clientX = typeof gesture.clientX === "number" ? gesture.clientX : rect.left + rect.width / 2;
-      const clientY = typeof gesture.clientY === "number" ? gesture.clientY : rect.top + rect.height / 2;
-      const nextScale = clamp(
-        state.scale * (typeof gesture.scale === "number" ? gesture.scale : 1),
-        minWorkspaceScale,
-        maxWorkspaceScale,
-      );
-      applyZoomFromClientPoint(state.viewport, nextScale, clientX, clientY);
-      event.preventDefault();
-      event.stopPropagation();
-    };
-
-    const handleGestureEnd = (event: Event) => {
-      if (isGitDiffTarget(event.target)) {
-        return;
+      const midpoint = rect.left + rect.width / 2;
+      if (clientX < midpoint) {
+        targetIndex = index;
+        break;
       }
-      gestureZoomRef.current = null;
-      event.preventDefault();
-      event.stopPropagation();
-    };
-
-    node.addEventListener("wheel", handleWheel, { passive: false, capture: true });
-    node.addEventListener("gesturestart", handleGestureStart as EventListener, { passive: false, capture: true });
-    node.addEventListener("gesturechange", handleGestureChange as EventListener, { passive: false, capture: true });
-    node.addEventListener("gestureend", handleGestureEnd as EventListener, { passive: false, capture: true });
-
-    return () => {
-      node.removeEventListener("wheel", handleWheel, true);
-      node.removeEventListener("gesturestart", handleGestureStart as EventListener, true);
-      node.removeEventListener("gesturechange", handleGestureChange as EventListener, true);
-      node.removeEventListener("gestureend", handleGestureEnd as EventListener, true);
-    };
-  }, [setViewport]);
-
-  const getCanvasPointFromClient = (clientX: number, clientY: number) => {
-    const node = workspaceViewportRef.current;
-    if (!node) {
-      return { x: 0, y: 0 };
     }
-    return getCanvasPoint(clientX, clientY, node.getBoundingClientRect(), viewport);
+
+    moveWindowToIndex(windowID, targetIndex);
+  };
+
+  const startWindowHeaderDrag = (event: ReactPointerEvent<HTMLElement>, windowID: string) => {
+    if (event.button !== 0) {
+      return;
+    }
+    focusWindow(windowID);
+    dragStateRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      windowID,
+      dragging: false,
+    };
+    if (typeof event.currentTarget.setPointerCapture === "function") {
+      event.currentTarget.setPointerCapture(event.pointerId);
+    }
+  };
+
+  const continueWindowHeaderDrag = (event: ReactPointerEvent<HTMLElement>, windowID: string) => {
+    const dragState = dragStateRef.current;
+    if (!dragState || dragState.pointerId !== event.pointerId || dragState.windowID !== windowID) {
+      return;
+    }
+    if (!dragState.dragging) {
+      if (Math.abs(event.clientX - dragState.startX) < 10) {
+        return;
+      }
+      dragState.dragging = true;
+      setDraggingWindowID(windowID);
+    }
+    reorderWindowFromPointer(windowID, event.clientX);
+    event.preventDefault();
+  };
+
+  const finishWindowHeaderDrag = (event: ReactPointerEvent<HTMLElement>, windowID: string) => {
+    const dragState = dragStateRef.current;
+    if (!dragState || dragState.pointerId !== event.pointerId || dragState.windowID !== windowID) {
+      return;
+    }
+    if (
+      typeof event.currentTarget.hasPointerCapture === "function" &&
+      event.currentTarget.hasPointerCapture(event.pointerId) &&
+      typeof event.currentTarget.releasePointerCapture === "function"
+    ) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    dragStateRef.current = null;
+    setDraggingWindowID(null);
   };
 
   return (
     <section className="workspace">
-      <div
-        ref={workspaceViewportRef}
-        className="workspace-viewport"
-        data-panning={isPanning ? "true" : "false"}
-        onPointerDown={(event) => {
-          if (event.button !== 0) {
-            return;
-          }
-          const target = event.target as HTMLElement;
-          if (target.closest(".window-frame")) {
-            return;
-          }
-          panStateRef.current = {
-            pointerId: event.pointerId,
-            startClientX: event.clientX,
-            startClientY: event.clientY,
-            viewport,
-          };
-          setIsPanning(true);
-          event.currentTarget.setPointerCapture(event.pointerId);
-        }}
-        onPointerMove={(event) => {
-          const panState = panStateRef.current;
-          if (!panState || panState.pointerId !== event.pointerId) {
-            return;
-          }
-          applyViewport({
-            ...panState.viewport,
-            x: panState.viewport.x + (event.clientX - panState.startClientX),
-            y: panState.viewport.y + (event.clientY - panState.startClientY),
-          });
-        }}
-        onPointerUp={(event) => {
-          if (panStateRef.current?.pointerId === event.pointerId) {
-            panStateRef.current = null;
-            setIsPanning(false);
-            event.currentTarget.releasePointerCapture(event.pointerId);
-          }
-        }}
-        onPointerCancel={(event) => {
-          if (panStateRef.current?.pointerId === event.pointerId) {
-            panStateRef.current = null;
-            setIsPanning(false);
-            event.currentTarget.releasePointerCapture(event.pointerId);
-          }
-        }}
-      >
-        <div
-          className="workspace-stage"
-          data-focus-animating={isFocusAnimating ? "true" : "false"}
-          style={{
-            width: workspaceCanvasSize.width,
-            height: workspaceCanvasSize.height,
-            transform: `translate3d(${viewport.x}px, ${viewport.y}px, 0) scale(${viewport.scale})`,
-          }}
-        >
+      <div ref={workspaceViewportRef} className="workspace-viewport workspace-strip-viewport">
+        <div className="workspace-strip">
+          {windows.length === 0 ? (
+            <div className="workspace-empty-state">
+              <strong>No shells open</strong>
+              <p>Open a shell from the machines sidebar to place it into the horizontal workspace.</p>
+            </div>
+          ) : null}
           {windows.map((window) => (
-            <WindowFrame
+            <div
               key={window.id}
-              window={window}
-              machineColorStyle={machineColorStyles[window.machineName] ?? getMachineColorStyle(window.machineName)}
-              onClose={() => {
-                void onCloseShell(window);
+              className="workspace-strip-item"
+              data-window-id={window.id}
+              ref={(node) => {
+                if (node) {
+                  windowNodeRefs.current.set(window.id, node);
+                  return;
+                }
+                windowNodeRefs.current.delete(window.id);
               }}
-              isClosing={closingShellIDs.includes(window.id)}
-              onFocus={() => focusWindow(window.id)}
-              onRequestViewportFocus={() => {
-                focusWindow(window.id);
-                requestViewportFocus(window.id);
-              }}
-              onMove={(x, y) => moveWindow(window.id, x, y)}
-              onOpenGitDiff={() => {
-                focusWindow(window.id);
-                openGitDiffSidebar(window.id);
-              }}
-              isFrontmost={window.z === frontmostWindowZ}
-              isGitDiffActive={gitDiffSidebarWindowID === window.id}
-              cwd={windowCwds[window.id]}
-              toCanvasPoint={getCanvasPointFromClient}
             >
-              <Suspense fallback={<div className="terminal-loading">Opening terminal…</div>}>
-                <TerminalView
-                  machineName={window.machineName}
-                  title={window.title}
-                  sessionId={window.sessionId}
-                  onSessionId={(sessionId) => setWindowSession(window.id, sessionId)}
-                  onCwdChange={(cwd) => setWindowCwd(window.id, cwd)}
-                />
-              </Suspense>
-            </WindowFrame>
+              <WindowFrame
+                window={window}
+                machineColorStyle={machineColorStyles[window.machineName] ?? getMachineColorStyle(window.machineName)}
+                onClose={() => {
+                  void onCloseShell(window);
+                }}
+                isClosing={closingShellIDs.includes(window.id)}
+                onFocus={() => focusWindow(window.id)}
+                onHeaderPointerDown={(event) => startWindowHeaderDrag(event, window.id)}
+                onHeaderPointerMove={(event) => continueWindowHeaderDrag(event, window.id)}
+                onHeaderPointerUp={(event) => finishWindowHeaderDrag(event, window.id)}
+                onHeaderPointerCancel={(event) => finishWindowHeaderDrag(event, window.id)}
+                onOpenGitDiff={() => {
+                  focusWindow(window.id);
+                  openGitDiffSidebar(window.id);
+                }}
+                isFrontmost={window.z === frontmostWindowZ}
+                isGitDiffActive={gitDiffSidebarWindowID === window.id}
+                isDragging={draggingWindowID === window.id}
+                cwd={windowCwds[window.id]}
+              >
+                <Suspense fallback={<div className="terminal-loading">Opening terminal…</div>}>
+                  <TerminalView
+                    machineName={window.machineName}
+                    title={window.title}
+                    sessionId={window.sessionId}
+                    onSessionId={(sessionId) => setWindowSession(window.id, sessionId)}
+                    onCwdChange={(cwd) => setWindowCwd(window.id, cwd)}
+                  />
+                </Suspense>
+              </WindowFrame>
+            </div>
           ))}
         </div>
       </div>
@@ -1206,13 +1150,15 @@ function WindowFrame({
   onClose,
   isClosing,
   onFocus,
-  onRequestViewportFocus,
-  onMove,
+  onHeaderPointerDown,
+  onHeaderPointerMove,
+  onHeaderPointerUp,
+  onHeaderPointerCancel,
   onOpenGitDiff,
   isFrontmost,
   isGitDiffActive,
+  isDragging,
   cwd,
-  toCanvasPoint,
 }: {
   window: WorkspaceWindow;
   machineColorStyle: CSSProperties;
@@ -1220,59 +1166,31 @@ function WindowFrame({
   onClose: () => void;
   isClosing: boolean;
   onFocus: () => void;
-  onRequestViewportFocus: () => void;
-  onMove: (x: number, y: number) => void;
+  onHeaderPointerDown: (event: ReactPointerEvent<HTMLElement>) => void;
+  onHeaderPointerMove: (event: ReactPointerEvent<HTMLElement>) => void;
+  onHeaderPointerUp: (event: ReactPointerEvent<HTMLElement>) => void;
+  onHeaderPointerCancel: (event: ReactPointerEvent<HTMLElement>) => void;
   onOpenGitDiff: () => void;
   isFrontmost: boolean;
   isGitDiffActive: boolean;
+  isDragging: boolean;
   cwd?: string;
-  toCanvasPoint: (clientX: number, clientY: number) => { x: number; y: number };
 }) {
-  const dragOffsetRef = useRef<{ x: number; y: number } | null>(null);
-
-  useEffect(() => {
-    const handleMove = (event: PointerEvent) => {
-      if (dragOffsetRef.current) {
-        const point = toCanvasPoint(event.clientX, event.clientY);
-        onMove(point.x - dragOffsetRef.current.x, point.y - dragOffsetRef.current.y);
-      }
-    };
-    const handleUp = () => {
-      dragOffsetRef.current = null;
-    };
-    globalThis.window.addEventListener("pointermove", handleMove);
-    globalThis.window.addEventListener("pointerup", handleUp);
-    return () => {
-      globalThis.window.removeEventListener("pointermove", handleMove);
-      globalThis.window.removeEventListener("pointerup", handleUp);
-    };
-  }, [onMove, toCanvasPoint]);
-
   return (
     <div
       className="window-frame"
-      style={{
-        ...machineColorStyle,
-        transform: `translate3d(${layoutWindow.x}px, ${layoutWindow.y}px, 0)`,
-        width: layoutWindow.width,
-        height: layoutWindow.height,
-        zIndex: layoutWindow.z,
-      }}
+      style={machineColorStyle}
+      data-active={isFrontmost ? "true" : "false"}
+      data-dragging={isDragging ? "true" : "false"}
       onPointerDown={onFocus}
     >
       <header
         className="window-header"
-        onPointerDown={(event) => {
-          onFocus();
-          const point = toCanvasPoint(event.clientX, event.clientY);
-          dragOffsetRef.current = {
-            x: point.x - layoutWindow.x,
-            y: point.y - layoutWindow.y,
-          };
-        }}
-        onDoubleClick={() => {
-          onRequestViewportFocus();
-        }}
+        data-dragging={isDragging ? "true" : "false"}
+        onPointerDown={onHeaderPointerDown}
+        onPointerMove={onHeaderPointerMove}
+        onPointerUp={onHeaderPointerUp}
+        onPointerCancel={onHeaderPointerCancel}
       >
         <div className="window-header-actions window-header-actions-start">
           <button
@@ -1382,51 +1300,4 @@ function StateBadge({ state }: { state: string }) {
 
 function StatusError({ mutationError }: { mutationError: unknown }) {
   return mutationError ? <p className="error-text">{mutationError instanceof Error ? mutationError.message : "Request failed"}</p> : null;
-}
-
-function clampViewport(viewport: WorkspaceViewport, bounds: WorkspaceBounds): WorkspaceViewport {
-  const scale = clamp(viewport.scale, minWorkspaceScale, maxWorkspaceScale);
-  if (!bounds.width || !bounds.height) {
-    return { ...viewport, scale };
-  }
-
-  const scaledWidth = workspaceCanvasSize.width * scale;
-  const scaledHeight = workspaceCanvasSize.height * scale;
-  const minX = Math.min(workspaceViewportPadding, bounds.width - scaledWidth - workspaceViewportPadding);
-  const minY = Math.min(workspaceViewportPadding, bounds.height - scaledHeight - workspaceViewportPadding);
-
-  return {
-    x: clamp(viewport.x, minX, workspaceViewportPadding),
-    y: clamp(viewport.y, minY, workspaceViewportPadding),
-    scale,
-  };
-}
-
-function zoomViewportFromScreenPoint(
-  viewport: WorkspaceViewport,
-  nextScale: number,
-  point: { x: number; y: number },
-  bounds: WorkspaceBounds,
-) {
-  const canvasX = (point.x - viewport.x) / viewport.scale;
-  const canvasY = (point.y - viewport.y) / viewport.scale;
-  return clampViewport(
-    {
-      x: point.x - canvasX * nextScale,
-      y: point.y - canvasY * nextScale,
-      scale: nextScale,
-    },
-    bounds,
-  );
-}
-
-function getCanvasPoint(clientX: number, clientY: number, rect: DOMRect, viewport: WorkspaceViewport) {
-  return {
-    x: (clientX - rect.left - viewport.x) / viewport.scale,
-    y: (clientY - rect.top - viewport.y) / viewport.scale,
-  };
-}
-
-function clamp(value: number, min: number, max: number) {
-  return Math.min(max, Math.max(min, value));
 }

@@ -106,6 +106,21 @@ async function seedShellSession(windowIndex: number, sessionId: string, cwd: str
 
 describe("App", () => {
   beforeEach(() => {
+    Object.defineProperty(window, "matchMedia", {
+      configurable: true,
+      value: vi.fn().mockReturnValue({
+        matches: false,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        dispatchEvent: vi.fn(),
+      }),
+    });
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+      configurable: true,
+      value: vi.fn(),
+    });
     useWorkspaceStore.setState({
       windows: [],
       windowCwds: {},
@@ -242,213 +257,24 @@ describe("App", () => {
     });
   });
 
-  it("zooms the workspace on ctrl-wheel over shell content and shell header", async () => {
-    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const path = String(input);
-      if (path === "/v1/auth/session") {
-        return jsonResponse({ user: { id: "user-1", email: "dev@example.com", is_admin: false } });
-      }
-      if (path === "/v1/machines") {
-        return jsonResponse({
-          machines: [
-            {
-              id: "machine-1",
-              name: "m-1",
-              state: "RUNNING",
-              primary_port: 3000,
-              created_at: "2026-03-22T00:00:00Z",
-              updated_at: "2026-03-22T00:00:00Z",
-            },
-          ],
-        });
-      }
-      if (path === "/v1/snapshots") {
-        return jsonResponse({ snapshots: [] });
-      }
-      if (path === "/v1/env-vars") {
-        return jsonResponse({ env_vars: [] });
-      }
-      if (path === "/v1/workspaces/default") {
-        if (init?.method === "PUT") {
-          const body = JSON.parse(String(init.body)) as { layout: unknown };
-          return jsonResponse({ name: "default", layout: body.layout });
-        }
-        return jsonResponse({ name: "default", layout: { version: 2, windows: [], viewport: { x: 120, y: 96, scale: 1 } } });
-      }
-      throw new Error(`unexpected request ${path}`);
-    });
+  it("reveals new shells in the horizontal strip without changing viewport state", async () => {
+    const fetchMock = createAuthenticatedFetchMock();
     vi.stubGlobal("fetch", fetchMock);
 
     renderApp();
 
     fireEvent.click(await screen.findByRole("button", { name: "New shell" }));
 
-    const terminal = await screen.findByTestId("terminal-m-1");
-    fireEvent.wheel(terminal, { ctrlKey: true, deltaY: -100, clientX: 120, clientY: 120 });
-    expect(useWorkspaceStore.getState().viewport.scale).toBeGreaterThan(1);
-
-    const zoomedScale = useWorkspaceStore.getState().viewport.scale;
-    fireEvent.wheel(screen.getAllByText("m-1 shell")[0], {
-      ctrlKey: true,
-      deltaY: -100,
-      clientX: 140,
-      clientY: 48,
+    expect(await screen.findByTestId("terminal-m-1")).toBeTruthy();
+    await waitFor(() => {
+      expect(HTMLElement.prototype.scrollIntoView).toHaveBeenCalled();
     });
-    expect(useWorkspaceStore.getState().viewport.scale).toBeGreaterThan(zoomedScale);
+    expect(useWorkspaceStore.getState().viewport).toEqual({ x: 120, y: 96, scale: 1 });
+    expect(useWorkspaceStore.getState().viewportFocusRequest).toBeNull();
   });
 
-  it("pans the workspace on shell header wheel gestures without stealing shell body scroll", async () => {
-    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const path = String(input);
-      if (path === "/v1/auth/session") {
-        return jsonResponse({ user: { id: "user-1", email: "dev@example.com", is_admin: false } });
-      }
-      if (path === "/v1/machines") {
-        return jsonResponse({
-          machines: [
-            {
-              id: "machine-1",
-              name: "m-1",
-              state: "RUNNING",
-              primary_port: 3000,
-              created_at: "2026-03-22T00:00:00Z",
-              updated_at: "2026-03-22T00:00:00Z",
-            },
-          ],
-        });
-      }
-      if (path === "/v1/snapshots") {
-        return jsonResponse({ snapshots: [] });
-      }
-      if (path === "/v1/env-vars") {
-        return jsonResponse({ env_vars: [] });
-      }
-      if (path === "/v1/workspaces/default") {
-        if (init?.method === "PUT") {
-          const body = JSON.parse(String(init.body)) as { layout: unknown };
-          return jsonResponse({ name: "default", layout: body.layout });
-        }
-        return jsonResponse({ name: "default", layout: { version: 2, windows: [], viewport: { x: 120, y: 96, scale: 1 } } });
-      }
-      throw new Error(`unexpected request ${path}`);
-    });
-    vi.stubGlobal("fetch", fetchMock);
-
-    renderApp();
-
-    fireEvent.click(await screen.findByRole("button", { name: "New shell" }));
-
-    const terminal = await screen.findByTestId("terminal-m-1");
-    fireEvent.wheel(terminal, { deltaX: 20, deltaY: 32, clientX: 120, clientY: 120 });
-    expect(useWorkspaceStore.getState().viewport.x).toBe(120);
-    expect(useWorkspaceStore.getState().viewport.y).toBe(96);
-
-    fireEvent.wheel(screen.getAllByText("m-1 shell")[0], {
-      deltaX: 16,
-      deltaY: 24,
-      clientX: 140,
-      clientY: 48,
-    });
-    expect(useWorkspaceStore.getState().viewport.x).toBe(104);
-    expect(useWorkspaceStore.getState().viewport.y).toBe(72);
-  });
-
-  it("continues an in-progress wheel pan when the gesture crosses into shell body", async () => {
-    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const path = String(input);
-      if (path === "/v1/auth/session") {
-        return jsonResponse({ user: { id: "user-1", email: "dev@example.com", is_admin: false } });
-      }
-      if (path === "/v1/machines") {
-        return jsonResponse({
-          machines: [
-            {
-              id: "machine-1",
-              name: "m-1",
-              state: "RUNNING",
-              primary_port: 3000,
-              created_at: "2026-03-22T00:00:00Z",
-              updated_at: "2026-03-22T00:00:00Z",
-            },
-          ],
-        });
-      }
-      if (path === "/v1/snapshots") {
-        return jsonResponse({ snapshots: [] });
-      }
-      if (path === "/v1/env-vars") {
-        return jsonResponse({ env_vars: [] });
-      }
-      if (path === "/v1/workspaces/default") {
-        if (init?.method === "PUT") {
-          const body = JSON.parse(String(init.body)) as { layout: unknown };
-          return jsonResponse({ name: "default", layout: body.layout });
-        }
-        return jsonResponse({ name: "default", layout: { version: 2, windows: [], viewport: { x: 120, y: 96, scale: 1 } } });
-      }
-      throw new Error(`unexpected request ${path}`);
-    });
-    vi.stubGlobal("fetch", fetchMock);
-
-    const view = renderApp();
-
-    fireEvent.click(await screen.findByRole("button", { name: "New shell" }));
-
-    const workspace = view.container.querySelector(".workspace-viewport");
-    const terminal = await screen.findByTestId("terminal-m-1");
-    expect(workspace).toBeTruthy();
-
-    fireEvent.wheel(workspace!, { deltaX: 10, deltaY: 14, clientX: 80, clientY: 80 });
-    expect(useWorkspaceStore.getState().viewport.x).toBe(110);
-    expect(useWorkspaceStore.getState().viewport.y).toBe(82);
-
-    fireEvent.wheel(terminal, { deltaX: 12, deltaY: 18, clientX: 120, clientY: 120 });
-    expect(useWorkspaceStore.getState().viewport.x).toBe(98);
-    expect(useWorkspaceStore.getState().viewport.y).toBe(64);
-  });
-
-  it("focuses a shell from the sidebar by centering and zooming the canvas", async () => {
-    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
-      if (this.classList.contains("workspace-viewport")) {
-        return rect(1600, 1200);
-      }
-      return rect(240, 56);
-    });
-
-    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const path = String(input);
-      if (path === "/v1/auth/session") {
-        return jsonResponse({ user: { id: "user-1", email: "dev@example.com", is_admin: false } });
-      }
-      if (path === "/v1/machines") {
-        return jsonResponse({
-          machines: [
-            {
-              id: "machine-1",
-              name: "m-1",
-              state: "RUNNING",
-              primary_port: 3000,
-              created_at: "2026-03-22T00:00:00Z",
-              updated_at: "2026-03-22T00:00:00Z",
-            },
-          ],
-        });
-      }
-      if (path === "/v1/snapshots") {
-        return jsonResponse({ snapshots: [] });
-      }
-      if (path === "/v1/env-vars") {
-        return jsonResponse({ env_vars: [] });
-      }
-      if (path === "/v1/workspaces/default") {
-        if (init?.method === "PUT") {
-          const body = JSON.parse(String(init.body)) as { layout: unknown };
-          return jsonResponse({ name: "default", layout: body.layout });
-        }
-        return jsonResponse({ name: "default", layout: { version: 2, windows: [], viewport: { x: 120, y: 96, scale: 1 } } });
-      }
-      throw new Error(`unexpected request ${path}`);
-    });
+  it("reveals a shell from the sidebar within the horizontal strip", async () => {
+    const fetchMock = createAuthenticatedFetchMock();
     vi.stubGlobal("fetch", fetchMock);
 
     renderApp();
@@ -459,9 +285,90 @@ describe("App", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Shell 1" }));
 
     await waitFor(() => {
-      expect(useWorkspaceStore.getState().viewport.scale).toBeGreaterThan(1);
+      expect(HTMLElement.prototype.scrollIntoView).toHaveBeenCalled();
     });
+    expect(useWorkspaceStore.getState().viewport).toEqual({ x: 120, y: 96, scale: 1 });
     expect(useWorkspaceStore.getState().viewportFocusRequest).toBeNull();
+  });
+
+  it("reorders shells by dragging the window header", async () => {
+    const fetchMock = createAuthenticatedFetchMock();
+    vi.stubGlobal("fetch", fetchMock);
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+      if (this.classList.contains("workspace-strip-item")) {
+        const orderedIds = useWorkspaceStore.getState().windows.map((window) => window.id);
+        const index = orderedIds.indexOf(this.dataset.windowId ?? "");
+        const left = Math.max(0, index) * 400;
+        return {
+          ...rect(400, 900),
+          x: left,
+          left,
+          right: left + 400,
+        } as DOMRect;
+      }
+      return rect(240, 56);
+    });
+
+    renderApp();
+
+    fireEvent.click(await screen.findByRole("button", { name: "New shell" }));
+    fireEvent.click(await screen.findByRole("button", { name: "New shell" }));
+
+    await seedShellSession(0, "term-1", "/home/ubuntu/repo-a");
+    await seedShellSession(1, "term-2", "/home/ubuntu/repo-b");
+
+    expect(useWorkspaceStore.getState().windows.map((window) => window.title)).toEqual(["m-1 shell", "m-1 shell 2"]);
+
+    const headers = Array.from(document.querySelectorAll(".window-header")) as HTMLElement[];
+    fireEvent.pointerDown(headers[1], { button: 0, pointerId: 1, clientX: 460 });
+    fireEvent.pointerMove(headers[1], { pointerId: 1, clientX: 40 });
+    fireEvent.pointerUp(headers[1], { pointerId: 1, clientX: 40 });
+
+    expect(useWorkspaceStore.getState().windows.map((window) => window.title)).toEqual(["m-1 shell 2", "m-1 shell"]);
+    const shellButtons = screen
+      .getAllByRole("button")
+      .filter((button) => button.classList.contains("sidebar-shell-focus"));
+    expect(shellButtons.map((button) => button.textContent?.trim())).toEqual(["~/repo-b m-1", "~/repo-a m-1"]);
+  });
+
+  it("reorders shells by dragging the sidebar shell list", async () => {
+    const fetchMock = createAuthenticatedFetchMock();
+    vi.stubGlobal("fetch", fetchMock);
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+      if (this.classList.contains("sidebar-shell-row")) {
+        const orderedIds = useWorkspaceStore.getState().windows.map((window) => window.id);
+        const index = orderedIds.indexOf(this.dataset.windowId ?? "");
+        const top = Math.max(0, index) * 48;
+        return {
+          ...rect(320, 40),
+          y: top,
+          top,
+          bottom: top + 40,
+        } as DOMRect;
+      }
+      return rect(240, 56);
+    });
+
+    renderApp();
+
+    fireEvent.click(await screen.findByRole("button", { name: "New shell" }));
+    fireEvent.click(await screen.findByRole("button", { name: "New shell" }));
+
+    await seedShellSession(0, "term-1", "/home/ubuntu/repo-a");
+    await seedShellSession(1, "term-2", "/home/ubuntu/repo-b");
+
+    let shellButtons = screen
+      .getAllByRole("button")
+      .filter((button) => button.classList.contains("sidebar-shell-focus"));
+    fireEvent.pointerDown(shellButtons[1], { button: 0, pointerId: 1, clientY: 64 });
+    fireEvent.pointerMove(shellButtons[1], { pointerId: 1, clientY: 8 });
+    fireEvent.pointerUp(shellButtons[1], { pointerId: 1, clientY: 8 });
+
+    expect(useWorkspaceStore.getState().windows.map((window) => window.title)).toEqual(["m-1 shell 2", "m-1 shell"]);
+    shellButtons = screen
+      .getAllByRole("button")
+      .filter((button) => button.classList.contains("sidebar-shell-focus"));
+    expect(shellButtons.map((button) => button.textContent?.trim())).toEqual(["~/repo-b m-1", "~/repo-a m-1"]);
   });
 
   it("keeps a shell visible when backend close fails", async () => {
@@ -528,13 +435,6 @@ describe("App", () => {
   });
 
   it("keeps sidebar shell order stable when focusing a sibling shell", async () => {
-    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
-      if (this.classList.contains("workspace-viewport")) {
-        return rect(1600, 1200);
-      }
-      return rect(240, 56);
-    });
-
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const path = String(input);
       if (path === "/v1/auth/session") {
@@ -580,79 +480,19 @@ describe("App", () => {
 
     let shellButtons = screen
       .getAllByRole("button")
-      .filter((button) => button.classList.contains("machine-shell-focus"));
-    expect(shellButtons.map((button) => button.textContent?.trim())).toEqual(["Shell 1", "Shell 2"]);
+      .filter((button) => button.classList.contains("sidebar-shell-focus"));
+    expect(shellButtons.map((button) => button.textContent?.trim())).toEqual(["Shell 1 m-1", "Shell 2 m-1"]);
 
     fireEvent.click(screen.getByRole("button", { name: "Shell 1" }));
 
     await waitFor(() => {
-      expect(useWorkspaceStore.getState().viewport.scale).toBeGreaterThan(1);
+      expect(HTMLElement.prototype.scrollIntoView).toHaveBeenCalled();
     });
 
     shellButtons = screen
       .getAllByRole("button")
-      .filter((button) => button.classList.contains("machine-shell-focus"));
-    expect(shellButtons.map((button) => button.textContent?.trim())).toEqual(["Shell 1", "Shell 2"]);
-  });
-
-  it("focuses a shell from the window header", async () => {
-    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
-      if (this.classList.contains("workspace-viewport")) {
-        return rect(1600, 1200);
-      }
-      return rect(240, 56);
-    });
-
-    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const path = String(input);
-      if (path === "/v1/auth/session") {
-        return jsonResponse({ user: { id: "user-1", email: "dev@example.com", is_admin: false } });
-      }
-      if (path === "/v1/machines") {
-        return jsonResponse({
-          machines: [
-            {
-              id: "machine-1",
-              name: "m-1",
-              state: "RUNNING",
-              primary_port: 3000,
-              created_at: "2026-03-22T00:00:00Z",
-              updated_at: "2026-03-22T00:00:00Z",
-            },
-          ],
-        });
-      }
-      if (path === "/v1/snapshots") {
-        return jsonResponse({ snapshots: [] });
-      }
-      if (path === "/v1/env-vars") {
-        return jsonResponse({ env_vars: [] });
-      }
-      if (path === "/v1/workspaces/default") {
-        if (init?.method === "PUT") {
-          const body = JSON.parse(String(init.body)) as { layout: unknown };
-          return jsonResponse({ name: "default", layout: body.layout });
-        }
-        return jsonResponse({ name: "default", layout: { version: 2, windows: [], viewport: { x: 120, y: 96, scale: 1 } } });
-      }
-      throw new Error(`unexpected request ${path}`);
-    });
-    vi.stubGlobal("fetch", fetchMock);
-
-    renderApp();
-
-    fireEvent.click(await screen.findByRole("button", { name: "New shell" }));
-    expect(await screen.findByTestId("terminal-m-1")).toBeTruthy();
-
-    const closeButton = await screen.findByRole("button", { name: "Close shell" });
-    const header = closeButton.closest(".window-frame")?.querySelector(".window-header");
-    expect(header).toBeTruthy();
-    fireEvent.doubleClick(header!);
-
-    await waitFor(() => {
-      expect(useWorkspaceStore.getState().viewport.scale).toBeGreaterThan(1);
-    });
-    expect(useWorkspaceStore.getState().viewportFocusRequest).toBeNull();
+      .filter((button) => button.classList.contains("sidebar-shell-focus"));
+    expect(shellButtons.map((button) => button.textContent?.trim())).toEqual(["Shell 1 m-1", "Shell 2 m-1"]);
   });
 
   it("streams unified file diffs inline and keeps wheel scroll inside the panel", async () => {

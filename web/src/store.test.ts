@@ -24,7 +24,7 @@ describe("workspace store", () => {
     });
   });
 
-  it("opens terminals as distinct windows", () => {
+  it("opens terminals as distinct ordered shells", () => {
     useWorkspaceStore.getState().openTerminal("m-1");
     useWorkspaceStore.getState().openTerminal("m-1");
 
@@ -32,8 +32,8 @@ describe("workspace store", () => {
     expect(windows).toHaveLength(2);
     expect(windows[0].id).not.toEqual(windows[1].id);
     expect(overlaps(windows[0], windows[1])).toBe(false);
-    expect(windows[1].x).toBe(windows[0].x);
-    expect(windows[1].y - windows[0].y).toBe(windows[0].height);
+    expect(windows[1].x).toBeGreaterThan(windows[0].x);
+    expect(windows[1].y).toBe(windows[0].y);
   });
 
   it("hydrates only once", () => {
@@ -57,9 +57,45 @@ describe("workspace store", () => {
 
     expect(useWorkspaceStore.getState().windows).toHaveLength(1);
     expect(useWorkspaceStore.getState().windows[0].sessionId).toBe("term-1");
-    expect(useWorkspaceStore.getState().windows[0].width).toBe(1297);
-    expect(useWorkspaceStore.getState().windows[0].height).toBe(907);
+    expect(useWorkspaceStore.getState().windows[0].width).toBe(796);
+    expect(useWorkspaceStore.getState().windows[0].height).toBe(900);
     expect(useWorkspaceStore.getState().viewport).toEqual({ x: 120, y: 96, scale: 1 });
+  });
+
+  it("collapses legacy freeform layouts into left-to-right shell order", () => {
+    useWorkspaceStore.getState().hydrate({
+      version: 2,
+      windows: [
+        {
+          id: "b",
+          machineName: "m-2",
+          title: "m-2 shell",
+          sessionId: "term-2",
+          x: 980,
+          y: 280,
+          width: 600,
+          height: 400,
+          z: 2,
+        },
+        {
+          id: "a",
+          machineName: "m-1",
+          title: "m-1 shell",
+          sessionId: "term-1",
+          x: 120,
+          y: 40,
+          width: 600,
+          height: 400,
+          z: 1,
+        },
+      ],
+    });
+
+    const { windows } = useWorkspaceStore.getState();
+    expect(windows.map((window) => window.id)).toEqual(["a", "b"]);
+    expect(windows[0].x).toBe(0);
+    expect(windows[1].x).toBeGreaterThan(windows[0].x);
+    expect(windows.every((window) => window.y === 0)).toBe(true);
   });
 
   it("stores terminal session ids on windows", () => {
@@ -110,7 +146,7 @@ describe("workspace store", () => {
     expect(useWorkspaceStore.getState().gitDiffSidebar).toEqual({ windowID: null, selectedPath: null });
   });
 
-  it("persists canvas viewport state", () => {
+  it("persists compatibility viewport state separately from shell order", () => {
     useWorkspaceStore.getState().hydrate({
       version: 2,
       windows: [],
@@ -138,17 +174,17 @@ describe("workspace store", () => {
     expect(useWorkspaceStore.getState().viewportFocusRequest).toBeNull();
   });
 
-  it("prevents windows from overlapping when moved", () => {
+  it("moves shells to a target index without overlapping them", () => {
     useWorkspaceStore.getState().openTerminal("m-1");
     useWorkspaceStore.getState().openTerminal("m-2");
 
     const windows = useWorkspaceStore.getState().windows;
     const target = windows[1];
-    useWorkspaceStore.getState().moveWindow(target.id, windows[0].x, windows[0].y);
+    useWorkspaceStore.getState().moveWindowToIndex(target.id, 0);
 
-    const moved = useWorkspaceStore.getState().windows[1];
-    expect(overlaps(windows[0], moved)).toBe(false);
-    expect(moved.x).toBe(windows[0].x);
-    expect(moved.y - windows[0].y).toBe(windows[0].height);
+    const reordered = useWorkspaceStore.getState().windows;
+    expect(reordered[0].id).toBe(target.id);
+    expect(overlaps(reordered[0], reordered[1])).toBe(false);
+    expect(reordered[0].x).toBeLessThan(reordered[1].x);
   });
 });

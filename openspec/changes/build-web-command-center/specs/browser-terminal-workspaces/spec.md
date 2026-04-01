@@ -1,17 +1,22 @@
 ## ADDED Requirements
 
-### Requirement: Fascinate SHALL provide a canvas-style terminal workspace
-Fascinate SHALL provide a browser workspace where a user can keep multiple terminal windows visible at once and arrange them freely on a canvas-like surface.
+### Requirement: Fascinate SHALL provide an ordered horizontal terminal workspace
+Fascinate SHALL provide a browser workspace where a user can keep multiple terminal windows visible at once in a rigid left-to-right strip and reorder them without using a freeform canvas.
 
 #### Scenario: User keeps multiple terminal windows visible
 - **WHEN** a user opens terminals for multiple machines or multiple shells of the same machine
 - **THEN** Fascinate shows those terminals as separate windows in the workspace
 - **AND** the user can keep them visible at the same time
 
-#### Scenario: User repositions and resizes terminal windows
-- **WHEN** a user drags or resizes a terminal window in the workspace
+#### Scenario: User reorders terminal windows
+- **WHEN** a user drags a shell header to change the order of terminal windows in the workspace
 - **THEN** the terminal remains usable during that interaction
-- **AND** Fascinate preserves the updated window position and dimensions for later use
+- **AND** Fascinate preserves the updated shell order for later use
+
+#### Scenario: User scans open shells separately from machine inventory
+- **WHEN** a user opens the browser workspace with one or more live shells
+- **THEN** Fascinate shows those shells in a dedicated shell list ordered the same way as the horizontal workspace
+- **AND** machine management actions remain available in a separate machine inventory section rather than nesting open shells inside each machine card
 
 ### Requirement: Fascinate SHALL support multiple browser terminal sessions per machine
 Fascinate SHALL allow a user to open more than one browser terminal session into the same machine at the same time.
@@ -37,7 +42,15 @@ Fascinate SHALL stream browser terminal input and output through a dedicated int
 #### Scenario: Terminal input is not coupled to general page renders
 - **WHEN** terminal output is streaming into the workspace
 - **THEN** Fascinate does not require whole-page rerenders to display that output
-- **AND** the rest of the workspace remains responsive to drag, resize, focus, and other interactions
+- **AND** the rest of the workspace remains responsive to reorder, focus, scroll, and other interactions
+
+### Requirement: Fascinate SHALL support standard copy shortcuts for terminal selections
+Fascinate SHALL copy the active xterm selection to the local browser clipboard when the user presses the platform copy shortcut inside the browser workspace.
+
+#### Scenario: User copies a selected terminal region
+- **WHEN** a user highlights text inside a terminal window and presses `Cmd-C` on macOS or `Ctrl-C` on other platforms
+- **THEN** Fascinate copies the selected terminal text to the local clipboard
+- **AND** Fascinate does not send an interrupt into the shell for that shortcut while the selection is active
 
 ### Requirement: Fascinate SHALL persist workspace layout independently from live sessions
 Fascinate SHALL persist the user's workspace layout separately from the live terminal session state.
@@ -50,4 +63,4 @@ Fascinate SHALL persist the user's workspace layout separately from the live ter
 #### Scenario: Session failure does not destroy layout
 - **WHEN** a terminal session exits or fails
 - **THEN** Fascinate preserves the surrounding workspace layout
-- **AND** the user can reopen a terminal in that workspace without rebuilding the whole canvas manually
+- **AND** the user can reopen a terminal in that workspace without rebuilding the shell strip manually
