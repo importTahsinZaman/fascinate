@@ -263,11 +263,6 @@ export function TerminalView({ machineName, title, sessionId, onSessionId, onCwd
 
       event.preventDefault();
       event.stopPropagation();
-
-      if (typeof document.execCommand === "function" && document.execCommand("copy")) {
-        return;
-      }
-
       void copyToLocalClipboard(terminal.getSelection());
     };
 

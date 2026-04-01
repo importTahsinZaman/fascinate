@@ -328,22 +328,14 @@ describe("TerminalView", () => {
 
   it("copies the selected terminal text on ctrl+c", async () => {
     const onSessionId = vi.fn();
-    const setData = vi.fn();
-    const execCommand = vi.fn((command: string) => {
-      if (command !== "copy") {
-        return false;
-      }
-      const copyEvent = new Event("copy", { bubbles: true, cancelable: true });
-      Object.defineProperty(copyEvent, "clipboardData", {
-        configurable: true,
-        value: { setData },
-      });
-      document.dispatchEvent(copyEvent);
-      return true;
-    });
-    Object.defineProperty(document, "execCommand", {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(globalThis, "navigator", {
       configurable: true,
-      value: execCommand,
+      value: {
+        clipboard: {
+          writeText,
+        },
+      },
     });
 
     render(<TerminalView machineName="m-1" title="m-1 shell" onSessionId={onSessionId} />);
@@ -367,8 +359,7 @@ describe("TerminalView", () => {
       document.dispatchEvent(keyEvent);
     });
 
-    expect(execCommand).toHaveBeenCalledWith("copy");
-    expect(setData).toHaveBeenCalledWith("text/plain", "selected text");
+    expect(writeText).toHaveBeenCalledWith("selected text");
   });
 
   it("keeps ctrl+c available for the shell when there is no selection", async () => {
