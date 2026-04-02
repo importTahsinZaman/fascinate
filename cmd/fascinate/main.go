@@ -67,7 +67,6 @@ func runServe(ctx context.Context, cfg config.Config) error {
 	}
 	defer controlPlane.Close()
 
-	log.Printf("fascinate listening on %s", cfg.HTTPAddr)
 	return controlPlane.Run(ctx)
 }
 

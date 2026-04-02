@@ -1361,7 +1361,38 @@ func processAlive(pid int) bool {
 		return false
 	}
 	err := syscall.Kill(pid, 0)
-	return err == nil || errors.Is(err, syscall.EPERM)
+	if err != nil && !errors.Is(err, syscall.EPERM) {
+		return false
+	}
+	zombie, zombieErr := processIsZombie(pid)
+	if zombieErr == nil {
+		return !zombie
+	}
+	return true
+}
+
+func processIsZombie(pid int) (bool, error) {
+	state, err := readProcStatState(pid)
+	if err != nil {
+		return false, err
+	}
+	return state == 'Z', nil
+}
+
+func readProcStatState(pid int) (byte, error) {
+	body, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if err != nil {
+		return 0, err
+	}
+	return parseProcStatState(body)
+}
+
+func parseProcStatState(body []byte) (byte, error) {
+	closingIndex := bytes.LastIndexByte(body, ')')
+	if closingIndex == -1 || closingIndex+2 >= len(body) {
+		return 0, fmt.Errorf("invalid /proc stat payload")
+	}
+	return body[closingIndex+2], nil
 }
 
 func loadOrCreateGuestSSHKey(path string) (string, error) {

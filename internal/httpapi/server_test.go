@@ -29,6 +29,11 @@ type fakeRuntime struct {
 	machines  []machineruntime.Machine
 }
 
+type fakeReadiness struct {
+	ready  bool
+	status string
+}
+
 func (f *fakeRuntime) HealthCheck(context.Context) error {
 	return f.healthErr
 }
@@ -38,6 +43,10 @@ func (f *fakeRuntime) ListMachines(context.Context) ([]machineruntime.Machine, e
 		return nil, f.listErr
 	}
 	return f.machines, nil
+}
+
+func (f *fakeReadiness) ReadinessStatus() (bool, string) {
+	return f.ready, f.status
 }
 
 type fakeMachineManager struct {
@@ -407,7 +416,7 @@ func TestListMachinesEndpointUsesBrowserSessionOwnerWithoutOwnerEmail(t *testing
 	handler := newTestHandlerWithExtras(t, config.Config{
 		BaseDomain:           "fascinate.dev",
 		WebSessionCookieName: "fascinate_session",
-	}, &fakeRuntime{}, manager, auth, nil, nil)
+	}, &fakeRuntime{}, manager, auth, nil, nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/machines", nil)
 	req.AddCookie(&http.Cookie{Name: "fascinate_session", Value: "session-token"})
@@ -439,7 +448,7 @@ func TestListMachinesEndpointRejectsMismatchedOwnerEmailForBrowserSession(t *tes
 	handler := newTestHandlerWithExtras(t, config.Config{
 		BaseDomain:           "fascinate.dev",
 		WebSessionCookieName: "fascinate_session",
-	}, &fakeRuntime{}, &fakeMachineManager{}, auth, nil, nil)
+	}, &fakeRuntime{}, &fakeMachineManager{}, auth, nil, nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/machines?owner_email=other@example.com", nil)
 	req.AddCookie(&http.Cookie{Name: "fascinate_session", Value: "session-token"})
@@ -689,6 +698,26 @@ func TestReadyzReturnsUnavailableWhenRuntimeFails(t *testing.T) {
 	}
 }
 
+func TestReadyzReturnsUnavailableDuringStartupRecovery(t *testing.T) {
+	t.Parallel()
+
+	handler := newTestHandlerWithExtras(t, config.Config{BaseDomain: "fascinate.dev"}, &fakeRuntime{}, &fakeMachineManager{}, nil, nil, nil, &fakeReadiness{
+		ready:  false,
+		status: "startup recovery in progress",
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "startup recovery in progress") {
+		t.Fatalf("expected startup recovery body, got %q", rec.Body.String())
+	}
+}
+
 func TestMachineSubdomainProxiesToRuntime(t *testing.T) {
 	t.Parallel()
 
@@ -926,10 +955,10 @@ func newTestHandler(t *testing.T, runtime *fakeRuntime, machines *fakeMachineMan
 
 func newTestHandlerWithConfig(t *testing.T, cfg config.Config, runtime *fakeRuntime, machines *fakeMachineManager) http.Handler {
 	t.Helper()
-	return newTestHandlerWithExtras(t, cfg, runtime, machines, nil, nil, nil)
+	return newTestHandlerWithExtras(t, cfg, runtime, machines, nil, nil, nil, nil)
 }
 
-func newTestHandlerWithExtras(t *testing.T, cfg config.Config, runtime *fakeRuntime, machines *fakeMachineManager, auth browserAuthService, terminals terminalManager, seed func(context.Context, *database.Store)) http.Handler {
+func newTestHandlerWithExtras(t *testing.T, cfg config.Config, runtime *fakeRuntime, machines *fakeMachineManager, auth browserAuthService, terminals terminalManager, seed func(context.Context, *database.Store), readiness readinessChecker) http.Handler {
 	t.Helper()
 
 	ctx := context.Background()
@@ -949,7 +978,7 @@ func newTestHandlerWithExtras(t *testing.T, cfg config.Config, runtime *fakeRunt
 		seed(ctx, store)
 	}
 
-	return New(cfg, store, runtime, machines, auth, terminals)
+	return New(cfg, store, runtime, machines, auth, terminals, readiness)
 }
 
 func TestVerifyBrowserLoginSetsSessionCookie(t *testing.T) {
@@ -970,7 +999,7 @@ func TestVerifyBrowserLoginSetsSessionCookie(t *testing.T) {
 	handler := newTestHandlerWithExtras(t, config.Config{
 		BaseDomain:           "fascinate.dev",
 		WebSessionCookieName: "fascinate_session",
-	}, &fakeRuntime{}, &fakeMachineManager{}, auth, nil, nil)
+	}, &fakeRuntime{}, &fakeMachineManager{}, auth, nil, nil, nil)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/auth/verify", strings.NewReader(`{"email":"dev@example.com","code":"123456"}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -1010,7 +1039,7 @@ func TestWorkspaceEndpointPersistsLayoutForBrowserSession(t *testing.T) {
 			UserID:    user.ID,
 			UserEmail: user.Email,
 		}
-	})
+	}, nil)
 
 	putReq := httptest.NewRequest(http.MethodPut, "/v1/workspaces/default", strings.NewReader(`{"layout":{"version":1,"windows":[{"id":"one","machineName":"m-1","title":"m-1 shell","x":1,"y":2,"width":320,"height":220,"z":1}]}}`))
 	putReq.Header.Set("Content-Type", "application/json")
@@ -1061,7 +1090,7 @@ func TestCreateTerminalSessionUsesBrowserSession(t *testing.T) {
 	handler := newTestHandlerWithExtras(t, config.Config{
 		BaseDomain:           "fascinate.dev",
 		WebSessionCookieName: "fascinate_session",
-	}, &fakeRuntime{}, &fakeMachineManager{}, auth, terminals, nil)
+	}, &fakeRuntime{}, &fakeMachineManager{}, auth, terminals, nil, nil)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/terminal/sessions", strings.NewReader(`{"machine_name":"m-1","cols":120,"rows":40}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -1103,7 +1132,7 @@ func TestReattachTerminalSessionUsesBrowserSession(t *testing.T) {
 	handler := newTestHandlerWithExtras(t, config.Config{
 		BaseDomain:           "fascinate.dev",
 		WebSessionCookieName: "fascinate_session",
-	}, &fakeRuntime{}, &fakeMachineManager{}, auth, terminals, nil)
+	}, &fakeRuntime{}, &fakeMachineManager{}, auth, terminals, nil, nil)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/terminal/sessions/term-1/attach", strings.NewReader(`{"cols":160,"rows":60}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -1137,7 +1166,7 @@ func TestCloseTerminalSessionUsesBrowserSession(t *testing.T) {
 	handler := newTestHandlerWithExtras(t, config.Config{
 		BaseDomain:           "fascinate.dev",
 		WebSessionCookieName: "fascinate_session",
-	}, &fakeRuntime{}, &fakeMachineManager{}, auth, terminals, nil)
+	}, &fakeRuntime{}, &fakeMachineManager{}, auth, terminals, nil, nil)
 
 	req := httptest.NewRequest(http.MethodDelete, "/v1/terminal/sessions/term-1", nil)
 	req.AddCookie(&http.Cookie{Name: "fascinate_session", Value: "session-token"})
@@ -1181,7 +1210,7 @@ func TestTerminalGitStatusUsesBrowserSession(t *testing.T) {
 	handler := newTestHandlerWithExtras(t, config.Config{
 		BaseDomain:           "fascinate.dev",
 		WebSessionCookieName: "fascinate_session",
-	}, &fakeRuntime{}, &fakeMachineManager{}, auth, terminals, nil)
+	}, &fakeRuntime{}, &fakeMachineManager{}, auth, terminals, nil, nil)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/terminal/sessions/term-1/git/status", strings.NewReader(`{"cwd":"/home/ubuntu/project/web"}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -1228,7 +1257,7 @@ func TestTerminalGitDiffBatchUsesBrowserSession(t *testing.T) {
 	handler := newTestHandlerWithExtras(t, config.Config{
 		BaseDomain:           "fascinate.dev",
 		WebSessionCookieName: "fascinate_session",
-	}, &fakeRuntime{}, &fakeMachineManager{}, auth, terminals, nil)
+	}, &fakeRuntime{}, &fakeMachineManager{}, auth, terminals, nil, nil)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/terminal/sessions/term-1/git/diffs", strings.NewReader(`{"cwd":"/home/ubuntu/project/web","repo_root":"/home/ubuntu/project","files":[{"path":"web/src/app.tsx","kind":"modified","worktree_status":"M"},{"path":"README.md","kind":"modified","worktree_status":"M"}]}`))
 	req.Header.Set("Content-Type", "application/json")

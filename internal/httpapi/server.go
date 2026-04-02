@@ -59,7 +59,11 @@ type terminalManager interface {
 	Diagnostics() browserterm.Diagnostics
 }
 
-func New(cfg config.Config, store *database.Store, runtime runtimeChecker, machines machineManager, auth browserAuthService, terminals terminalManager) http.Handler {
+type readinessChecker interface {
+	ReadinessStatus() (ready bool, status string)
+}
+
+func New(cfg config.Config, store *database.Store, runtime runtimeChecker, machines machineManager, auth browserAuthService, terminals terminalManager, readiness readinessChecker) http.Handler {
 	mux := http.NewServeMux()
 	diagnostics, _ := machines.(diagnosticsManager)
 
@@ -83,6 +87,19 @@ func New(cfg config.Config, store *database.Store, runtime runtimeChecker, machi
 				"status": "runtime unavailable",
 			})
 			return
+		}
+
+		if readiness != nil {
+			ready, status := readiness.ReadinessStatus()
+			if !ready {
+				if strings.TrimSpace(status) == "" {
+					status = "startup recovery in progress"
+				}
+				writeJSON(w, http.StatusServiceUnavailable, map[string]string{
+					"status": status,
+				})
+				return
+			}
 		}
 
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})

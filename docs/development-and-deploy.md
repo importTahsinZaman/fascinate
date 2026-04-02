@@ -37,6 +37,12 @@ By default the proxy target is `http://127.0.0.1:8080`. Override it if your back
 FASCINATE_DEV_PROXY_TARGET=http://127.0.0.1:9090 make web-dev
 ```
 
+Readiness behavior:
+
+- `/healthz` reports whether the web process is up
+- `/readyz` reports whether the control plane is ready for normal traffic
+- during startup VM recovery, the server now binds HTTP first, so the site can stay reachable while `/readyz` temporarily returns `startup recovery in progress`
+
 ### UI-only mock mode
 
 For layout, styling, and interaction work that does not need a live backend or real machines:
@@ -122,3 +128,9 @@ sudo systemctl is-active caddy
 curl -fsS http://127.0.0.1:8080/healthz
 curl -fsS http://127.0.0.1:8080/readyz
 ```
+
+Interpretation:
+
+- `healthz=ok` and `readyz=ready` means the control plane is fully up
+- `healthz=ok` and `readyz=startup recovery in progress` means the web/API layer is serving, but initial VM recovery is still running in the background
+- if the public site ever returns `502`, first confirm whether `127.0.0.1:8080` is actually listening before debugging Caddy

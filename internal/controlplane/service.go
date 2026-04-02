@@ -24,10 +24,11 @@ var machineNamePattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9]
 var memoryLimitPattern = regexp.MustCompile(`(?i)^([0-9]+(?:\.[0-9]+)?)\s*([kmgt]i?b?|b)?$`)
 
 const (
-	machineStateCreating = "CREATING"
-	machineStateRunning  = "RUNNING"
-	machineStateStopped  = "STOPPED"
-	machineStateFailed   = "FAILED"
+	machineStateCreating            = "CREATING"
+	machineStateRunning             = "RUNNING"
+	machineStateStopped             = "STOPPED"
+	machineStateFailed              = "FAILED"
+	reconcileMachineRecoveryTimeout = 90 * time.Second
 
 	snapshotStateCreating = "CREATING"
 	snapshotStateReady    = "READY"
@@ -893,7 +894,9 @@ func (s *Service) ReconcileRuntimeState(ctx context.Context) error {
 				"machine_name": record.Name,
 				"runtime_name": runtimeName,
 			})
-			recovered, err := executor.StartMachine(ctx, runtimeName)
+			recoverCtx, cancel := context.WithTimeout(ctx, reconcileMachineRecoveryTimeout)
+			recovered, err := executor.StartMachine(recoverCtx, runtimeName)
+			cancel()
 			if err != nil {
 				log.Printf("fascinate: recover machine %s failed: %v", runtimeName, err)
 				s.recordEventBestEffort(&record.OwnerUserID, &record.ID, "machine.recover.failed", map[string]any{

@@ -176,6 +176,34 @@ func TestMachineFromMetadataUsesRunningState(t *testing.T) {
 	}
 }
 
+func TestParseProcStatState(t *testing.T) {
+	t.Parallel()
+
+	runningState, err := parseProcStatState([]byte("1234 (cloud-hypervisor) S 1 2 3 4"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runningState != 'S' {
+		t.Fatalf("expected running state marker S, got %q", runningState)
+	}
+
+	zombieState, err := parseProcStatState([]byte("9876 (cloud-hypervisor) Z 1 2 3 4"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if zombieState != 'Z' {
+		t.Fatalf("expected zombie state marker Z, got %q", zombieState)
+	}
+}
+
+func TestParseProcStatStateRejectsMalformedInput(t *testing.T) {
+	t.Parallel()
+
+	if _, err := parseProcStatState([]byte("not-a-proc-stat-line")); err == nil {
+		t.Fatalf("expected malformed proc stat payload to fail")
+	}
+}
+
 func TestNewUsesVMDefaults(t *testing.T) {
 	t.Parallel()
 

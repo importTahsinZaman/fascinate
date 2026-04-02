@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"fascinate/internal/browserauth"
@@ -21,12 +23,17 @@ import (
 )
 
 const runtimeReconcileInterval = 30 * time.Second
+const initialRuntimeReconcileTimeout = 2 * time.Minute
 
 type App struct {
 	cfg        config.Config
 	db         *database.Store
 	control    *controlplane.Service
 	httpServer *http.Server
+	readiness  *startupReadiness
+
+	listen           func(network, address string) (net.Listener, error)
+	initialReconcile func(context.Context) error
 }
 
 func New(ctx context.Context, cfg config.Config) (*App, error) {
@@ -76,17 +83,11 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 		log.Printf("fascinate: initial host heartbeat: %v", err)
 	}
 	hostCancel()
-	reconcileCtx, reconcileCancel := context.WithTimeout(context.Background(), 15*time.Minute)
-	if err := controlPlane.ReconcileRuntimeState(reconcileCtx); err != nil {
-		reconcileCancel()
-		store.Close()
-		return nil, err
-	}
-	reconcileCancel()
 	emailClient := email.NewResendClient(cfg.ResendBaseURL, cfg.ResendAPIKey, cfg.EmailFrom)
 	browserAuth := browserauth.New(cfg, store, emailClient)
 	terminalGateway := browserterm.New(cfg, controlPlane)
-	handler := httpapi.New(cfg, store, runtimeClient, controlPlane, browserAuth, terminalGateway)
+	readiness := newStartupReadiness()
+	handler := httpapi.New(cfg, store, runtimeClient, controlPlane, browserAuth, terminalGateway, readiness)
 
 	httpServer := &http.Server{
 		Addr:              cfg.HTTPAddr,
@@ -99,14 +100,28 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 		db:         store,
 		control:    controlPlane,
 		httpServer: httpServer,
+		readiness:  readiness,
+		listen:     net.Listen,
+		initialReconcile: func(ctx context.Context) error {
+			return controlPlane.ReconcileRuntimeState(ctx)
+		},
 	}, nil
 }
 
 func (a *App) Run(ctx context.Context) error {
 	errCh := make(chan error, 1)
+	listen := a.listen
+	if listen == nil {
+		listen = net.Listen
+	}
+	listener, err := listen("tcp", a.httpServer.Addr)
+	if err != nil {
+		return err
+	}
+	log.Printf("fascinate listening on %s", listener.Addr().String())
 
 	go func() {
-		err := a.httpServer.ListenAndServe()
+		err := a.httpServer.Serve(listener)
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err
 			return
@@ -114,6 +129,7 @@ func (a *App) Run(ctx context.Context) error {
 		errCh <- nil
 	}()
 
+	go a.runInitialRuntimeReconcile(ctx)
 	go a.runToolAuthSyncLoop(ctx)
 	go a.runRuntimeReconcileLoop(ctx)
 	go a.runHostHeartbeatLoop(ctx)
@@ -125,6 +141,26 @@ func (a *App) Run(ctx context.Context) error {
 		return a.httpServer.Shutdown(shutdownCtx)
 	case err := <-errCh:
 		return err
+	}
+}
+
+func (a *App) runInitialRuntimeReconcile(ctx context.Context) {
+	if a == nil || a.readiness == nil {
+		return
+	}
+	reconcile := a.initialReconcile
+	if reconcile == nil {
+		a.readiness.MarkReady()
+		return
+	}
+
+	reconcileCtx, cancel := context.WithTimeout(ctx, initialRuntimeReconcileTimeout)
+	defer cancel()
+	if err := reconcile(reconcileCtx); err != nil && !errors.Is(err, context.Canceled) {
+		log.Printf("fascinate: initial runtime reconcile: %v", err)
+	}
+	if ctx.Err() == nil {
+		a.readiness.MarkReady()
 	}
 }
 
@@ -153,6 +189,13 @@ func (a *App) runToolAuthSyncLoop(ctx context.Context) {
 func (a *App) runRuntimeReconcileLoop(ctx context.Context) {
 	if a == nil || a.control == nil || runtimeReconcileInterval <= 0 {
 		return
+	}
+	if a.readiness != nil {
+		select {
+		case <-ctx.Done():
+			return
+		case <-a.readiness.Done():
+		}
 	}
 
 	ticker := time.NewTicker(runtimeReconcileInterval)
@@ -218,6 +261,52 @@ func logRequests(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r)
 		log.Printf("%s %s %s", r.Method, r.URL.Path, time.Since(start))
 	})
+}
+
+type startupReadiness struct {
+	mu     sync.RWMutex
+	ready  bool
+	status string
+	done   chan struct{}
+}
+
+func newStartupReadiness() *startupReadiness {
+	return &startupReadiness{
+		status: "startup recovery in progress",
+		done:   make(chan struct{}),
+	}
+}
+
+func (r *startupReadiness) MarkReady() {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.ready {
+		return
+	}
+	r.ready = true
+	r.status = "ready"
+	close(r.done)
+}
+
+func (r *startupReadiness) ReadinessStatus() (bool, string) {
+	if r == nil {
+		return true, "ready"
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.ready, r.status
+}
+
+func (r *startupReadiness) Done() <-chan struct{} {
+	if r == nil {
+		ch := make(chan struct{})
+		close(ch)
+		return ch
+	}
+	return r.done
 }
 
 func isAdminEmail(adminEmails []string, email string) bool {

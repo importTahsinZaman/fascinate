@@ -197,6 +197,13 @@ sudo ./ops/host/deploy-web.sh
 
 Use the frontend-only deploy when you are only shipping web changes and want to avoid disconnecting active browser shell attachments. It installs a fresh `web/dist`, preserves older hashed assets for already-open tabs, swaps `index.html` last, and leaves the running `fascinate` process alone.
 
+Startup and readiness:
+
+- Fascinate now binds the HTTP server before initial VM recovery runs.
+- `/healthz` tells you whether the web process is serving.
+- `/readyz` tells you whether startup recovery is finished.
+- During startup recovery, the site can stay reachable while `/readyz` temporarily reports `startup recovery in progress`.
+
 Important for Cloudflare:
 - the generated wildcard Caddy block uses `tls internal`
 - that means Cloudflare should use `Full` mode for proxied wildcard traffic unless you replace the wildcard TLS block with an Origin CA certificate
