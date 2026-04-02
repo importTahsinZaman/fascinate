@@ -38,6 +38,7 @@ export function TerminalView({ machineName, title, sessionId, onSessionId, onCwd
   const socketRef = useRef<WebSocket | null>(null);
   const dataListenerRef = useRef<{ dispose(): void } | null>(null);
   const resizeListenerRef = useRef<{ dispose(): void } | null>(null);
+  const selectionListenerRef = useRef<{ dispose(): void } | null>(null);
   const webglAddonRef = useRef<WebglAddon | null>(null);
   const webglContextLossRef = useRef<{ dispose(): void } | null>(null);
   const sessionIdRef = useRef(sessionId ?? "");
@@ -129,6 +130,7 @@ export function TerminalView({ machineName, title, sessionId, onSessionId, onCwd
         cursor: "#f3f1eb",
         cursorAccent: "#161616",
         selectionBackground: "rgba(255, 255, 255, 0.14)",
+        selectionInactiveBackground: "rgba(255, 255, 255, 0.14)",
         green: "#18E37D",
         brightGreen: "#18E37D",
       },
@@ -153,6 +155,9 @@ export function TerminalView({ machineName, title, sessionId, onSessionId, onCwd
       // fall back to default renderer
     }
     terminal.open(hostRef.current);
+    selectionListenerRef.current = terminal.onSelectionChange(() => {
+      syncSelectionIntoTextarea(terminal);
+    });
     fitAddon.fit();
     terminalRef.current = terminal;
     fitRef.current = fitAddon;
@@ -160,6 +165,7 @@ export function TerminalView({ machineName, title, sessionId, onSessionId, onCwd
     return () => {
       dataListenerRef.current?.dispose();
       resizeListenerRef.current?.dispose();
+      selectionListenerRef.current?.dispose();
       webglContextLossRef.current?.dispose();
       webglAddonRef.current?.dispose();
       socketRef.current?.close();
@@ -171,6 +177,7 @@ export function TerminalView({ machineName, title, sessionId, onSessionId, onCwd
       fitRef.current = null;
       dataListenerRef.current = null;
       resizeListenerRef.current = null;
+      selectionListenerRef.current = null;
       webglContextLossRef.current = null;
       webglAddonRef.current = null;
       decoderRef.current = null;
@@ -385,6 +392,32 @@ function getTerminalOverlay(stats: TerminalStats) {
     actionLabel: "Retry",
     tone: "error" as const,
   };
+}
+
+function syncSelectionIntoTextarea(terminal: Terminal) {
+  const textarea = terminal.textarea;
+  if (!textarea) {
+    return;
+  }
+
+  if (!terminal.hasSelection()) {
+    textarea.value = "";
+    return;
+  }
+
+  const selection = terminal.getSelection();
+  if (!selection) {
+    textarea.value = "";
+    return;
+  }
+
+  textarea.value = selection;
+  try {
+    textarea.focus({ preventScroll: true });
+  } catch {
+    textarea.focus();
+  }
+  textarea.select();
 }
 
 function parseTerminalMetadata(chunk: string) {

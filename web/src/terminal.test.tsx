@@ -38,6 +38,7 @@ const {
   class MockTerminal {
     cols = 120;
     rows = 40;
+    textarea = document.createElement("textarea");
     focus = vi.fn();
     writeln = vi.fn();
     write = vi.fn();
@@ -47,6 +48,23 @@ const {
     dispose = vi.fn();
     onData = vi.fn(() => ({ dispose: vi.fn() }));
     onResize = vi.fn(() => ({ dispose: vi.fn() }));
+    hasSelection = vi.fn(() => false);
+    getSelection = vi.fn(() => "");
+    private selectionChangeListener: (() => void) | null = null;
+    onSelectionChange = vi.fn((listener: () => void) => {
+      this.selectionChangeListener = listener;
+      return {
+        dispose: vi.fn(() => {
+          if (this.selectionChangeListener === listener) {
+            this.selectionChangeListener = null;
+          }
+        }),
+      };
+    });
+
+    emitSelectionChange() {
+      this.selectionChangeListener?.();
+    }
   }
 
   const terminalInstances: MockTerminal[] = [];
@@ -315,6 +333,28 @@ describe("TerminalView", () => {
     });
 
     expect((terminalInstances[0] as unknown as { attachCustomKeyEventHandler?: unknown }).attachCustomKeyEventHandler).toBeUndefined();
+  });
+
+  it("mirrors terminal selections into xterm's hidden textarea for browser copy", async () => {
+    render(<TerminalView machineName="m-1" title="m-1 shell" onSessionId={vi.fn()} />);
+
+    await waitFor(() => {
+      expect(createTerminalSession).toHaveBeenCalledWith("m-1", 120, 40);
+    });
+
+    const terminal = terminalInstances[0];
+    terminal.hasSelection.mockReturnValue(true);
+    terminal.getSelection.mockReturnValue("echo hello");
+    const focusSpy = vi.spyOn(terminal.textarea, "focus");
+    const selectSpy = vi.spyOn(terminal.textarea, "select");
+
+    await act(async () => {
+      terminal.emitSelectionChange();
+    });
+
+    expect(terminal.textarea.value).toBe("echo hello");
+    expect(focusSpy).toHaveBeenCalled();
+    expect(selectSpy).toHaveBeenCalled();
   });
 
   it("shows a visible notice when the browser blocks clipboard access", async () => {
