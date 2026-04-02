@@ -74,7 +74,8 @@ The main workspace will be implemented as a horizontally scrollable DOM strip wi
 
 Why:
 - Browser terminals need focus, text selection, IME handling, copy/paste, accessibility semantics, and independent rendering lifecycles.
-- Terminal copy shortcuts should resolve from xterm selection state at the document level, rather than depending on the hidden xterm textarea to keep keyboard focus after a mouse selection.
+- Persistent tmux-backed shells should leave tmux mouse mode off so ordinary browser drag selection works without modifier keys.
+- Terminal copy shortcuts should resolve from xterm selection state at the document level, rather than stealing the visible selection into the hidden xterm textarea after a mouse selection.
 - `xterm.js` is designed to own a DOM container; avoiding a scaled/transformed canvas removes an entire class of terminal hit-testing and selection bugs.
 - A rigid strip matches the product need better than a whiteboard metaphor because users primarily switch contexts, reorder shells, and scan left-to-right.
 

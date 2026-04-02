@@ -141,15 +141,15 @@ func TestCloseSessionRemovesSession(t *testing.T) {
 	}
 }
 
-func TestPersistentGuestShellCommandDisablesTmuxStatusBar(t *testing.T) {
+func TestPersistentGuestShellCommandDisablesTmuxStatusBarAndMouseMode(t *testing.T) {
 	t.Parallel()
 
 	command := persistentGuestShellCommand("fascinate-test", "exec bash -l")
 	if !strings.Contains(command, `tmux set-option -t "$session" status off`) {
 		t.Fatalf("expected tmux status bar to be disabled, command was %q", command)
 	}
-	if !strings.Contains(command, `tmux set-option -t "$session" mouse on`) {
-		t.Fatalf("expected tmux mouse mode to be enabled, command was %q", command)
+	if !strings.Contains(command, `tmux set-option -t "$session" mouse off`) {
+		t.Fatalf("expected tmux mouse mode to be disabled, command was %q", command)
 	}
 	if !strings.Contains(command, `#{pane_current_path}`) {
 		t.Fatalf("expected tmux current path lookup to be included, command was %q", command)

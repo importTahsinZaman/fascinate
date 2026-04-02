@@ -341,7 +341,7 @@ describe("TerminalView", () => {
     expect((terminalInstances[0] as unknown as { attachCustomKeyEventHandler?: unknown }).attachCustomKeyEventHandler).toBeUndefined();
   });
 
-  it("mirrors terminal selections into xterm's hidden textarea for browser copy", async () => {
+  it("does not mirror xterm selections into the hidden helper textarea", async () => {
     render(<TerminalView machineName="m-1" title="m-1 shell" onSessionId={vi.fn()} />);
 
     await waitFor(() => {
@@ -351,19 +351,15 @@ describe("TerminalView", () => {
     const terminal = terminalInstances[0];
     terminal.hasSelection.mockReturnValue(true);
     terminal.getSelection.mockReturnValue("echo hello");
-    const focusSpy = vi.spyOn(terminal.textarea, "focus");
-    const selectSpy = vi.spyOn(terminal.textarea, "select");
 
     await act(async () => {
       terminal.emitSelectionChange();
     });
 
-    expect(terminal.textarea.value).toBe("echo hello");
-    expect(focusSpy).toHaveBeenCalled();
-    expect(selectSpy).toHaveBeenCalled();
+    expect(terminal.textarea.value).toBe("");
   });
 
-  it("copies from the focused xterm helper textarea on cmd+c", async () => {
+  it("copies from the focused xterm selection on cmd+c", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(globalThis, "navigator", {
       configurable: true,
@@ -381,9 +377,13 @@ describe("TerminalView", () => {
     });
 
     const terminal = terminalInstances[0];
-    terminal.textarea.value = "copy-test";
+    terminal.hasSelection.mockReturnValue(true);
+    terminal.getSelection.mockReturnValue("copy-test");
     terminal.textarea.focus();
-    terminal.textarea.setSelectionRange(0, terminal.textarea.value.length);
+
+    await act(async () => {
+      terminal.emitSelectionChange();
+    });
 
     await act(async () => {
       terminal.textarea.dispatchEvent(

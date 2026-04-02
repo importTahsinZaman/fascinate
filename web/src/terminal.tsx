@@ -42,6 +42,7 @@ export function TerminalView({ machineName, title, sessionId, onSessionId, onCwd
   const webglAddonRef = useRef<WebglAddon | null>(null);
   const webglContextLossRef = useRef<{ dispose(): void } | null>(null);
   const sessionIdRef = useRef(sessionId ?? "");
+  const selectionTextRef = useRef("");
   const decoderRef = useRef<TextDecoder | null>(null);
   const pendingMetadataRef = useRef("");
   const promptLineRef = useRef("");
@@ -94,9 +95,6 @@ export function TerminalView({ machineName, title, sessionId, onSessionId, onCwd
           : "Clipboard copy requires a secure browser context.",
       });
     }
-  });
-  const syncTerminalSelection = useEffectEvent((terminal: Terminal) => {
-    syncSelectionIntoTextarea(terminal);
   });
   const retryConnection = useEffectEvent((mode: "reuse" | "new") => {
     if (mode === "new") {
@@ -159,7 +157,7 @@ export function TerminalView({ machineName, title, sessionId, onSessionId, onCwd
     }
     terminal.open(hostRef.current);
     selectionListenerRef.current = terminal.onSelectionChange(() => {
-      syncTerminalSelection(terminal);
+      selectionTextRef.current = terminal.hasSelection() ? terminal.getSelection() : "";
     });
     fitAddon.fit();
     terminalRef.current = terminal;
@@ -186,6 +184,7 @@ export function TerminalView({ machineName, title, sessionId, onSessionId, onCwd
       decoderRef.current = null;
       pendingMetadataRef.current = "";
       promptLineRef.current = "";
+      selectionTextRef.current = "";
       clipboardNoticeTimerRef.current = null;
     };
   }, []);
@@ -197,7 +196,7 @@ export function TerminalView({ machineName, title, sessionId, onSessionId, onCwd
         return;
       }
 
-      const selection = selectedHelperTextareaText(terminal.textarea);
+      const selection = selectedTerminalText(terminal, selectionTextRef.current);
       if (!selection) {
         return;
       }
@@ -215,7 +214,7 @@ export function TerminalView({ machineName, title, sessionId, onSessionId, onCwd
         return;
       }
 
-      const selection = selectedHelperTextareaText(terminal.textarea);
+      const selection = selectedTerminalText(terminal, selectionTextRef.current);
       if (!selection) {
         return;
       }
@@ -440,32 +439,6 @@ function getTerminalOverlay(stats: TerminalStats) {
   };
 }
 
-function syncSelectionIntoTextarea(terminal: Terminal) {
-  const textarea = terminal.textarea;
-  if (!textarea) {
-    return;
-  }
-
-  if (!terminal.hasSelection()) {
-    textarea.value = "";
-    return;
-  }
-
-  const selection = terminal.getSelection();
-  if (!selection) {
-    textarea.value = "";
-    return;
-  }
-
-  textarea.value = selection;
-  try {
-    textarea.focus({ preventScroll: true });
-  } catch {
-    textarea.focus();
-  }
-  textarea.select();
-}
-
 function shouldCopyShortcut(event: KeyboardEvent) {
   if (event.type !== "keydown") {
     return false;
@@ -473,16 +446,18 @@ function shouldCopyShortcut(event: KeyboardEvent) {
   return !event.altKey && event.key.toLowerCase() === "c" && (event.ctrlKey || event.metaKey);
 }
 
-function selectedHelperTextareaText(textarea: HTMLTextAreaElement | undefined) {
+function selectedTerminalText(terminal: Terminal, cachedSelection: string) {
+  const textarea = terminal.textarea;
   if (!textarea || !textarea.classList.contains("xterm-helper-textarea")) {
     return "";
   }
-  const start = textarea.selectionStart ?? 0;
-  const end = textarea.selectionEnd ?? 0;
-  if (end > start) {
-    return textarea.value.slice(start, end);
+  if (cachedSelection) {
+    return cachedSelection;
   }
-  return textarea.value;
+  if (terminal.hasSelection()) {
+    return terminal.getSelection();
+  }
+  return "";
 }
 
 function parseTerminalMetadata(chunk: string) {
