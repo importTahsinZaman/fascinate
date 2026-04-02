@@ -141,7 +141,7 @@ func TestCloseSessionRemovesSession(t *testing.T) {
 	}
 }
 
-func TestPersistentGuestShellCommandDisablesTmuxStatusBarAndMouseMode(t *testing.T) {
+func TestPersistentGuestShellCommandDisablesTmuxStatusBarAndConfiguresHistoryScrollKeys(t *testing.T) {
 	t.Parallel()
 
 	command := persistentGuestShellCommand("fascinate-test", "exec bash -l")
@@ -150,6 +150,12 @@ func TestPersistentGuestShellCommandDisablesTmuxStatusBarAndMouseMode(t *testing
 	}
 	if !strings.Contains(command, `tmux set-option -t "$session" mouse off`) {
 		t.Fatalf("expected tmux mouse mode to be disabled, command was %q", command)
+	}
+	if !strings.Contains(command, `tmux bind-key -n PageUp if-shell -F '#{pane_in_mode}' 'send-keys -X -N 3 scroll-up' 'copy-mode -e \; send-keys -X -N 3 scroll-up'`) {
+		t.Fatalf("expected PageUp to scroll tmux history, command was %q", command)
+	}
+	if !strings.Contains(command, `tmux bind-key -n PageDown if-shell -F '#{pane_in_mode}' 'send-keys -X -N 3 scroll-down' 'copy-mode -e \; send-keys -X -N 3 scroll-down'`) {
+		t.Fatalf("expected PageDown to scroll tmux history back down, command was %q", command)
 	}
 	if !strings.Contains(command, `#{pane_current_path}`) {
 		t.Fatalf("expected tmux current path lookup to be included, command was %q", command)

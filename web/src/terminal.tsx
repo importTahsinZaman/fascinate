@@ -3,6 +3,7 @@ import { Terminal } from "xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { attachTerminalSession, createTerminalSession, HttpError, toWebSocketURL } from "./api";
+import { getMockTerminalPresentation, isMockUIEnabled } from "./mock-control-plane";
 
 type Props = {
   machineName: string;
@@ -22,16 +23,26 @@ type TerminalStats = {
 
 const cwdSequencePrefix = "\u001b]1337;FascinateCwd=";
 const osc52SequencePrefix = "\u001b]52;";
+const pageUpSequence = "\u001b[5~";
+const pageDownSequence = "\u001b[6~";
 const ansiSequencePattern = /\u001b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|[ -/]*[@-~])/g;
 const promptPathPattern = /^[^\s@]+@[^:\s]+:(.+?)[#$]\s?$/;
 const clipboardNoticeDurationMs = 2_400;
+const wheelHistoryThreshold = 96;
+const maxWheelHistoryStepsPerEvent = 3;
 
 type ClipboardNotice = {
   tone: "success" | "error";
   message: string;
 };
 
+type MockPresentation = {
+  cwd: string;
+  lines: string[];
+};
+
 export function TerminalView({ machineName, title, sessionId, onSessionId, onCwdChange }: Props) {
+  const mockUIEnabled = isMockUIEnabled();
   const hostRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -47,6 +58,8 @@ export function TerminalView({ machineName, title, sessionId, onSessionId, onCwd
   const pendingMetadataRef = useRef("");
   const promptLineRef = useRef("");
   const clipboardNoticeTimerRef = useRef<number | null>(null);
+  const wheelHistoryRemainderRef = useRef(0);
+  const [mockPresentation, setMockPresentation] = useState<MockPresentation | null>(null);
   const [connectionAttempt, setConnectionAttempt] = useState(0);
   const [stats, setStats] = useState<TerminalStats>({
     status: "connecting",
@@ -116,6 +129,9 @@ export function TerminalView({ machineName, title, sessionId, onSessionId, onCwd
   }, [sessionId]);
 
   useLayoutEffect(() => {
+    if (mockUIEnabled) {
+      return;
+    }
     if (!hostRef.current || terminalRef.current) {
       return;
     }
@@ -156,6 +172,29 @@ export function TerminalView({ machineName, title, sessionId, onSessionId, onCwd
       // fall back to default renderer
     }
     terminal.open(hostRef.current);
+    const hostElement = hostRef.current;
+    const handleWheelCapture = (event: WheelEvent) => {
+      const historyScrollResult = consumeWheelHistorySequence(
+        terminal,
+        event,
+        wheelHistoryRemainderRef.current,
+      );
+      wheelHistoryRemainderRef.current = historyScrollResult.remainder;
+      if (!historyScrollResult.consume) {
+        return;
+      }
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      const historyScrollSequence = historyScrollResult.sequence;
+      if (!historyScrollSequence) {
+        return;
+      }
+      const socket = socketRef.current;
+      if (socket?.readyState === WebSocket.OPEN) {
+        socket.send(new TextEncoder().encode(historyScrollSequence));
+      }
+    };
+    hostElement.addEventListener("wheel", handleWheelCapture, { capture: true, passive: false });
     selectionListenerRef.current = terminal.onSelectionChange(() => {
       selectionTextRef.current = terminal.hasSelection() ? terminal.getSelection() : "";
     });
@@ -173,6 +212,7 @@ export function TerminalView({ machineName, title, sessionId, onSessionId, onCwd
       if (clipboardNoticeTimerRef.current) {
         window.clearTimeout(clipboardNoticeTimerRef.current);
       }
+      hostElement.removeEventListener("wheel", handleWheelCapture, true);
       terminal.dispose();
       terminalRef.current = null;
       fitRef.current = null;
@@ -185,11 +225,74 @@ export function TerminalView({ machineName, title, sessionId, onSessionId, onCwd
       pendingMetadataRef.current = "";
       promptLineRef.current = "";
       selectionTextRef.current = "";
+      wheelHistoryRemainderRef.current = 0;
       clipboardNoticeTimerRef.current = null;
     };
-  }, []);
+  }, [mockUIEnabled]);
 
   useEffect(() => {
+    if (!mockUIEnabled) {
+      return;
+    }
+
+    let cancelled = false;
+
+    const start = async () => {
+      try {
+        const existingSessionId = sessionIdRef.current;
+        setStats({
+          status: "connecting",
+          phase: existingSessionId !== "" ? "reconnecting" : "connecting",
+          error: null,
+        });
+        const init =
+          existingSessionId !== ""
+            ? await attachTerminalSession(existingSessionId, 120, 40).catch(async (error) => {
+                if (!(error instanceof HttpError) || (error.status !== 400 && error.status !== 404)) {
+                  throw error;
+                }
+                return createTerminalSession(machineName, 120, 40);
+              })
+            : await createTerminalSession(machineName, 120, 40);
+        if (cancelled) {
+          return;
+        }
+        sessionIdRef.current = init.id;
+        persistSessionId(init.id);
+        const presentation = getMockTerminalPresentation(init.id, machineName);
+        persistCwd(presentation.cwd);
+        setMockPresentation({
+          cwd: presentation.cwd,
+          lines: presentation.lines,
+        });
+        setStats({
+          status: "ready",
+          phase: existingSessionId !== "" ? "reconnecting" : "connecting",
+          error: null,
+        });
+      } catch (error) {
+        if (cancelled) {
+          return;
+        }
+        setStats({
+          status: "error",
+          phase: sessionIdRef.current !== "" ? "reconnecting" : "connecting",
+          error: error instanceof Error ? error.message : "failed to create terminal session",
+        });
+      }
+    };
+
+    start();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [connectionAttempt, machineName, mockUIEnabled, persistCwd, persistSessionId]);
+
+  useEffect(() => {
+    if (mockUIEnabled) {
+      return;
+    }
     const handleCopy = (event: ClipboardEvent) => {
       const terminal = terminalRef.current;
       if (!terminal || event.target !== terminal.textarea) {
@@ -230,9 +333,12 @@ export function TerminalView({ machineName, title, sessionId, onSessionId, onCwd
       document.removeEventListener("copy", handleCopy);
       document.removeEventListener("keydown", handleKeyDown, true);
     };
-  }, [copyToLocalClipboard]);
+  }, [copyToLocalClipboard, mockUIEnabled]);
 
   useEffect(() => {
+    if (mockUIEnabled) {
+      return;
+    }
     if (!terminalRef.current || !fitRef.current) {
       return;
     }
@@ -377,13 +483,25 @@ export function TerminalView({ machineName, title, sessionId, onSessionId, onCwd
       socketRef.current?.close();
       socketRef.current = null;
     };
-  }, [connectionAttempt, label, machineName]);
+  }, [connectionAttempt, label, machineName, mockUIEnabled]);
 
   const overlay = getTerminalOverlay(stats);
 
   return (
     <div className="terminal-shell">
-      <div className="terminal-host" ref={hostRef} />
+      {mockUIEnabled ? (
+        <div className="terminal-host terminal-host--mock" data-terminal-mode="mock">
+          <div className="terminal-mock-meta">
+            <span>{mockPresentation?.cwd?.replace("/home/ubuntu", "~") ?? `~/${machineName}`}</span>
+            <span>mock PTY</span>
+          </div>
+          <pre className="terminal-mock-output">
+            {(mockPresentation?.lines ?? ["Starting mock shell…"]).join("\n")}
+          </pre>
+        </div>
+      ) : (
+        <div className="terminal-host" ref={hostRef} />
+      )}
       {clipboardNotice ? (
         <div className="terminal-notice" data-tone={clipboardNotice.tone} role="status" aria-live="polite">
           {clipboardNotice.message}
@@ -458,6 +576,47 @@ function selectedTerminalText(terminal: Terminal, cachedSelection: string) {
     return terminal.getSelection();
   }
   return "";
+}
+
+export function shouldSuppressWheelHistory(terminal: Terminal, event: WheelEvent) {
+  if (event.deltaY === 0 || event.shiftKey) {
+    return false;
+  }
+  if (terminal.modes.mouseTrackingMode !== "none") {
+    return false;
+  }
+  const activeBuffer = terminal.buffer.active;
+  return activeBuffer.baseY === 0 && activeBuffer.viewportY === 0;
+}
+
+export function getWheelHistorySequence(terminal: Terminal, event: WheelEvent) {
+  if (!shouldSuppressWheelHistory(terminal, event)) {
+    return "";
+  }
+  return event.deltaY < 0 ? pageUpSequence : pageDownSequence;
+}
+
+export function consumeWheelHistorySequence(terminal: Terminal, event: WheelEvent, remainder: number) {
+  if (!shouldSuppressWheelHistory(terminal, event)) {
+    return { sequence: "", remainder: 0, consume: false };
+  }
+
+  const nextRemainder = remainder + event.deltaY;
+  const steps = Math.min(
+    maxWheelHistoryStepsPerEvent,
+    Math.trunc(Math.abs(nextRemainder) / wheelHistoryThreshold),
+  );
+  if (steps === 0) {
+    return { sequence: "", remainder: nextRemainder, consume: true };
+  }
+
+  const sequence = nextRemainder < 0 ? pageUpSequence : pageDownSequence;
+  const remainingMagnitude = Math.abs(nextRemainder) - steps * wheelHistoryThreshold;
+  return {
+    sequence: sequence.repeat(steps),
+    remainder: Math.sign(nextRemainder) * remainingMagnitude,
+    consume: true,
+  };
 }
 
 function parseTerminalMetadata(chunk: string) {

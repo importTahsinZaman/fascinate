@@ -1,6 +1,11 @@
 import { act, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { TerminalView } from "./terminal";
+import {
+  consumeWheelHistorySequence,
+  getWheelHistorySequence,
+  shouldSuppressWheelHistory,
+  TerminalView,
+} from "./terminal";
 
 const {
   attachTerminalSession,
@@ -39,6 +44,17 @@ const {
     cols = 120;
     rows = 40;
     textarea = document.createElement("textarea");
+    modes = { mouseTrackingMode: "none" as const };
+    buffer = {
+      active: {
+        type: "normal" as const,
+        viewportY: 0,
+        baseY: 0,
+        length: 40,
+        getLine: vi.fn(),
+        getNullCell: vi.fn(),
+      },
+    };
     focus = vi.fn();
     writeln = vi.fn();
     write = vi.fn();
@@ -114,8 +130,13 @@ const {
 
   class MockWebSocket {
     static instances: MockWebSocket[] = [];
+    static CONNECTING = 0;
+    static OPEN = 1;
+    static CLOSING = 2;
+    static CLOSED = 3;
 
     binaryType = "blob";
+    readyState = MockWebSocket.CONNECTING;
     private listeners = new Map<string, Set<(event?: any) => void>>();
 
     constructor(public url: string) {
@@ -132,6 +153,12 @@ const {
     close = vi.fn();
 
     emit(type: string, event?: any) {
+      if (type === "open") {
+        this.readyState = MockWebSocket.OPEN;
+      }
+      if (type === "close") {
+        this.readyState = MockWebSocket.CLOSED;
+      }
       for (const listener of this.listeners.get(type) ?? []) {
         listener(event);
       }
@@ -290,6 +317,102 @@ describe("TerminalView", () => {
 
     expect(onCwdChange).toHaveBeenNthCalledWith(1, "/home/ubuntu/space-shooter");
     expect(onCwdChange).toHaveBeenNthCalledWith(2, "~/space-shooter");
+  });
+
+  it("suppresses wheel input when the terminal has no scrollback", async () => {
+    render(<TerminalView machineName="m-1" title="m-1 shell" onSessionId={vi.fn()} />);
+
+    await waitFor(() => {
+      expect(createTerminalSession).toHaveBeenCalledWith("m-1", 120, 40);
+    });
+
+    const terminal = terminalInstances[0];
+    const wheelEvent = new WheelEvent("wheel", {
+      deltaY: 120,
+      bubbles: true,
+      cancelable: true,
+    });
+
+    expect(shouldSuppressWheelHistory(terminal as unknown as any, wheelEvent)).toBe(true);
+    expect(getWheelHistorySequence(terminal as unknown as any, wheelEvent)).toBe("\u001b[6~");
+  });
+
+  it("accumulates small wheel deltas before scrolling tmux history", async () => {
+    render(<TerminalView machineName="m-1" title="m-1 shell" onSessionId={vi.fn()} />);
+
+    await waitFor(() => {
+      expect(createTerminalSession).toHaveBeenCalledWith("m-1", 120, 40);
+    });
+
+    const terminal = terminalInstances[0];
+    const subtleWheelEvent = new WheelEvent("wheel", {
+      deltaY: 24,
+      bubbles: true,
+      cancelable: true,
+    });
+    const assertiveWheelEvent = new WheelEvent("wheel", {
+      deltaY: 120,
+      bubbles: true,
+      cancelable: true,
+    });
+
+    expect(consumeWheelHistorySequence(terminal as unknown as any, subtleWheelEvent, 0)).toEqual({
+      consume: true,
+      sequence: "",
+      remainder: 24,
+    });
+    expect(consumeWheelHistorySequence(terminal as unknown as any, assertiveWheelEvent, 24)).toEqual({
+      consume: true,
+      sequence: "\u001b[6~",
+      remainder: 48,
+    });
+  });
+
+  it("consumes subtle wheel events before xterm can turn them into prompt history", async () => {
+    render(<TerminalView machineName="m-1" title="m-1 shell" onSessionId={vi.fn()} />);
+
+    await waitFor(() => {
+      expect(createTerminalSession).toHaveBeenCalledWith("m-1", 120, 40);
+    });
+
+    await act(async () => {
+      MockWebSocket.instances[0].emit("open");
+    });
+
+    const host = document.querySelector(".terminal-host");
+    expect(host).not.toBeNull();
+
+    const subtleWheelEvent = new WheelEvent("wheel", {
+      deltaY: 24,
+      bubbles: true,
+      cancelable: true,
+    });
+
+    const dispatchResult = host!.dispatchEvent(subtleWheelEvent);
+
+    expect(dispatchResult).toBe(false);
+    expect(subtleWheelEvent.defaultPrevented).toBe(true);
+    expect(MockWebSocket.instances[0].send).not.toHaveBeenCalled();
+  });
+
+  it("allows wheel scroll when the terminal has scrollback", async () => {
+    render(<TerminalView machineName="m-1" title="m-1 shell" onSessionId={vi.fn()} />);
+
+    await waitFor(() => {
+      expect(createTerminalSession).toHaveBeenCalledWith("m-1", 120, 40);
+    });
+
+    const terminal = terminalInstances[0];
+    terminal.buffer.active.baseY = 24;
+
+    const wheelEvent = new WheelEvent("wheel", {
+      deltaY: 120,
+      bubbles: true,
+      cancelable: true,
+    });
+
+    expect(shouldSuppressWheelHistory(terminal as unknown as any, wheelEvent)).toBe(false);
+    expect(getWheelHistorySequence(terminal as unknown as any, wheelEvent)).toBe("");
   });
 
   it("copies OSC 52 clipboard writes to the local browser clipboard", async () => {

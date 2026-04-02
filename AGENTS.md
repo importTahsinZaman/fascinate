@@ -9,10 +9,13 @@ This repo uses Go modules at the root and a dedicated `web/` package that uses `
 - Test a changed Go package: `go test ./path/to/package/...`
 - Run the full backend suite: `go test ./...`
 - Install web dependencies: `make web-install`
+- Run the web app against a live local backend: `make web-dev`
+- Run the web app in UI-only mock mode: `make web-dev-mock`
 - Test the web app: `make web-test`
 - Build the web app: `make web-build`
 - Build the full product (Go binary + web app): `make build`
 - Verify ops scripts: `make verify-ops`
+- Frontend-only no-restart deploy (configured host only): `sudo ./ops/host/deploy-web.sh`
 - Host lifecycle smoke (configured host only): `bash ops/host/smoke.sh`
 - Host workload stress (configured host only): `bash ops/host/stress.sh`
 - Host benchmark (configured host only): `bash ops/host/benchmark.sh`
@@ -40,6 +43,7 @@ This repo uses Go modules at the root and a dedicated `web/` package that uses `
 - `internal/toolauth/` — persisted auth adapters for Claude, Codex, and GitHub CLI
 - `web/` — React/Vite browser command center, workspace canvas, and xterm-based terminal windows
 - `ops/host/` — bootstrap, deploy, verify, and live smoke scripts
+- `docs/development-and-deploy.md` — local frontend workflow and deploy guidance
 - `docs/stress-matrix.md` — expectation matrix and live validation guidance
 - `openspec/` — active and archived change/spec history
 

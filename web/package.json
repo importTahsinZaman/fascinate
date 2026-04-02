@@ -6,6 +6,7 @@
   "packageManager": "pnpm@10.18.0",
   "scripts": {
     "dev": "vite",
+    "dev:mock": "VITE_FASCINATE_UI_MOCK=1 vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "test": "vitest run --environment jsdom",

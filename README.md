@@ -6,6 +6,7 @@ This repo now contains:
 - a React/Vite web app under [`web/`](/Users/tahsin/Desktop/vmcloud/web)
 - a reproducible host bootstrap path under [`ops/host/bootstrap.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/bootstrap.sh)
 - a host redeploy path under [`ops/host/install-control-plane.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/install-control-plane.sh)
+- a no-restart frontend-only deploy path under [`ops/host/deploy-web.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/deploy-web.sh)
 - a Caddy config writer under [`ops/host/write-caddyfile.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/write-caddyfile.sh)
 - a VM base image builder under [`ops/cloudhypervisor/build-base-image.sh`](/Users/tahsin/Desktop/vmcloud/ops/cloudhypervisor/build-base-image.sh)
 - a Go control plane under [`cmd/fascinate/main.go`](/Users/tahsin/Desktop/vmcloud/cmd/fascinate/main.go)
@@ -77,6 +78,7 @@ Current browser HTTP API:
 - [`ops/host/verify.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/verify.sh): checks the host after bootstrap
 - [`ops/host/write-caddyfile.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/write-caddyfile.sh): writes the host Caddy config for Fascinate
 - [`ops/host/install-control-plane.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/install-control-plane.sh): builds and installs the Fascinate service and web bundle on a host
+- [`ops/host/deploy-web.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/deploy-web.sh): deploys `web/dist` without restarting `fascinate`
 - [`ops/host/smoke.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/smoke.sh): validates the basic create, route, restart, and delete lifecycle
 - [`ops/host/benchmark.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/benchmark.sh): prints structured timing metrics for create, snapshot, restore, and fork
 - [`ops/host/stress.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/stress.sh): validates realistic app, local DB, Docker, restart, snapshot, restore, fork, divergence, and cleanup behavior
@@ -84,6 +86,7 @@ Current browser HTTP API:
 - [`ops/host/smoke-tool-auth.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/smoke-tool-auth.sh): targeted persistence harness for Claude, Codex, and GitHub auth across later VMs
 - [`ops/host/smoke-snapshots.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/smoke-snapshots.sh): validates saved snapshots, create-from-snapshot, and true fork flows
 - [`docs/stress-matrix.md`](/Users/tahsin/Desktop/vmcloud/docs/stress-matrix.md): expectation matrix and operator guidance for live validation
+- [`docs/development-and-deploy.md`](/Users/tahsin/Desktop/vmcloud/docs/development-and-deploy.md): local UI development loop and deploy workflow guidance
 - [`ops/cloudhypervisor/build-base-image.sh`](/Users/tahsin/Desktop/vmcloud/ops/cloudhypervisor/build-base-image.sh): builds an agent-ready qcow2 guest image
 - [`ops/systemd/fascinate.service`](/Users/tahsin/Desktop/vmcloud/ops/systemd/fascinate.service): example systemd unit
 - [`cmd/fascinate/main.go`](/Users/tahsin/Desktop/vmcloud/cmd/fascinate/main.go): entrypoint
@@ -177,7 +180,7 @@ sudo ./ops/host/configure-admin-ssh.sh
 After that:
 - host admin SSH uses `ssh -p 2220 root@fascinate.dev`
 
-Deploy or redeploy the Fascinate service:
+Deploy or redeploy the full Fascinate service:
 
 ```bash
 export FASCINATE_BASE_DOMAIN=fascinate.dev
@@ -186,6 +189,14 @@ export FASCINATE_ADMIN_EMAILS=you@example.com
 sudo ./ops/host/install-control-plane.sh
 ```
 
+For frontend-only changes, prefer the no-restart path:
+
+```bash
+sudo ./ops/host/deploy-web.sh
+```
+
+Use the frontend-only deploy when you are only shipping web changes and want to avoid disconnecting active browser shell attachments. It installs a fresh `web/dist`, preserves older hashed assets for already-open tabs, swaps `index.html` last, and leaves the running `fascinate` process alone.
+
 Important for Cloudflare:
 - the generated wildcard Caddy block uses `tls internal`
 - that means Cloudflare should use `Full` mode for proxied wildcard traffic unless you replace the wildcard TLS block with an Origin CA certificate
@@ -193,7 +204,13 @@ Important for Cloudflare:
 
 ### Local Development
 
-Build the browser app and control plane locally:
+The documented local workflow lives in [`docs/development-and-deploy.md`](/Users/tahsin/Desktop/vmcloud/docs/development-and-deploy.md). The short version is:
+
+- `make run` for the local Go server
+- `make web-dev` for the Vite frontend dev server with API and WebSocket proxying to `http://127.0.0.1:8080`
+- `make web-dev-mock` for UI-only work with a seeded mock control plane and browser-rendered mock terminals
+
+If you want a local production-style build of the browser app and control plane:
 
 ```bash
 make build
@@ -205,7 +222,7 @@ For backend-only development you can still run:
 make run
 ```
 
-If you want the browser UI locally, build the web bundle first with `make web-build` (or just run `make build`) so the Go server can serve `web/dist`. 
+If you want the Go server to serve local production assets directly, build the web bundle first with `make web-build` (or just run `make build`) so the server can serve `web/dist`.
 
 Then check:
 

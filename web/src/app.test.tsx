@@ -104,6 +104,17 @@ async function seedShellSession(windowIndex: number, sessionId: string, cwd: str
   });
 }
 
+function getSidebarShellLabels() {
+  return screen
+    .getAllByRole("button")
+    .filter((button) => button.classList.contains("sidebar-shell-focus"))
+    .map((button) => {
+      const cwd = button.querySelector(".sidebar-shell-cwd")?.textContent?.trim() ?? "";
+      const machineName = button.querySelector(".sidebar-shell-machine-name")?.textContent?.trim() ?? "";
+      return `${cwd} ${machineName}`.trim();
+    });
+}
+
 describe("App", () => {
   beforeEach(() => {
     Object.defineProperty(window, "matchMedia", {
@@ -325,10 +336,7 @@ describe("App", () => {
     fireEvent.pointerUp(headers[1], { pointerId: 1, clientX: 40 });
 
     expect(useWorkspaceStore.getState().windows.map((window) => window.title)).toEqual(["m-1 shell 2", "m-1 shell"]);
-    const shellButtons = screen
-      .getAllByRole("button")
-      .filter((button) => button.classList.contains("sidebar-shell-focus"));
-    expect(shellButtons.map((button) => button.textContent?.trim())).toEqual(["~/repo-b m-1", "~/repo-a m-1"]);
+    expect(getSidebarShellLabels()).toEqual(["~/repo-b m-1", "~/repo-a m-1"]);
   });
 
   it("reorders shells by dragging the sidebar shell list", async () => {
@@ -365,10 +373,7 @@ describe("App", () => {
     fireEvent.pointerUp(shellButtons[1], { pointerId: 1, clientY: 8 });
 
     expect(useWorkspaceStore.getState().windows.map((window) => window.title)).toEqual(["m-1 shell 2", "m-1 shell"]);
-    shellButtons = screen
-      .getAllByRole("button")
-      .filter((button) => button.classList.contains("sidebar-shell-focus"));
-    expect(shellButtons.map((button) => button.textContent?.trim())).toEqual(["~/repo-b m-1", "~/repo-a m-1"]);
+    expect(getSidebarShellLabels()).toEqual(["~/repo-b m-1", "~/repo-a m-1"]);
   });
 
   it("keeps a shell visible when backend close fails", async () => {
@@ -478,10 +483,7 @@ describe("App", () => {
 
     expect(await screen.findAllByTestId("terminal-m-1")).toHaveLength(2);
 
-    let shellButtons = screen
-      .getAllByRole("button")
-      .filter((button) => button.classList.contains("sidebar-shell-focus"));
-    expect(shellButtons.map((button) => button.textContent?.trim())).toEqual(["Shell 1 m-1", "Shell 2 m-1"]);
+    expect(getSidebarShellLabels()).toEqual(["Shell 1 m-1", "Shell 2 m-1"]);
 
     fireEvent.click(screen.getByRole("button", { name: "Shell 1" }));
 
@@ -489,10 +491,7 @@ describe("App", () => {
       expect(HTMLElement.prototype.scrollIntoView).toHaveBeenCalled();
     });
 
-    shellButtons = screen
-      .getAllByRole("button")
-      .filter((button) => button.classList.contains("sidebar-shell-focus"));
-    expect(shellButtons.map((button) => button.textContent?.trim())).toEqual(["Shell 1 m-1", "Shell 2 m-1"]);
+    expect(getSidebarShellLabels()).toEqual(["Shell 1 m-1", "Shell 2 m-1"]);
   });
 
   it("streams unified file diffs inline and keeps wheel scroll inside the panel", async () => {

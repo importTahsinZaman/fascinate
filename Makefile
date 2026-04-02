@@ -1,8 +1,9 @@
 GO ?= go
 BINARY ?= fascinate
 PNPM ?= pnpm
+FASCINATE_DEV_PROXY_TARGET ?= http://127.0.0.1:8080
 
-.PHONY: fmt test build run web-install web-build web-test verify-ops smoke-host smoke-snapshots smoke-tool-auth stress-host benchmark-host
+.PHONY: fmt test build run web-install web-dev web-dev-mock web-build web-test verify-ops smoke-host smoke-snapshots smoke-tool-auth stress-host benchmark-host
 
 fmt:
 	gofmt -w cmd internal
@@ -22,6 +23,12 @@ run:
 web-install:
 	cd web && $(PNPM) install
 
+web-dev: web-install
+	cd web && FASCINATE_DEV_PROXY_TARGET=$(FASCINATE_DEV_PROXY_TARGET) $(PNPM) dev
+
+web-dev-mock: web-install
+	cd web && VITE_FASCINATE_UI_MOCK=1 $(PNPM) dev
+
 web-build: web-install
 	cd web && $(PNPM) build
 
@@ -39,6 +46,7 @@ verify-ops:
 	bash -n ops/host/smoke-tool-auth.sh
 	bash -n ops/host/verify.sh
 	bash -n ops/host/write-caddyfile.sh
+	bash -n ops/host/deploy-web.sh
 	bash -n ops/host/install-control-plane.sh
 	bash -n ops/cloudhypervisor/build-base-image.sh
 

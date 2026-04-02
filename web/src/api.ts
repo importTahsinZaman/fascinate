@@ -1,3 +1,29 @@
+import {
+  attachMockTerminalSession,
+  createMockMachine,
+  createMockSnapshot,
+  createMockTerminalSession,
+  deleteMockEnvVar,
+  deleteMockMachine,
+  deleteMockSnapshot,
+  deleteMockTerminalSession,
+  forkMockMachine,
+  getMockDefaultWorkspace,
+  getMockMachineEnv,
+  getMockSession,
+  getMockTerminalGitDiffBatch,
+  getMockTerminalGitStatus,
+  isMockUIEnabled,
+  listMockEnvVars,
+  listMockMachines,
+  listMockSnapshots,
+  mockLogout,
+  requestMockLoginCode,
+  saveMockDefaultWorkspace,
+  setMockEnvVar,
+  verifyMockLogin,
+} from "./mock-control-plane";
+
 export type User = {
   id: string;
   email: string;
@@ -147,6 +173,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export async function getSession(): Promise<User | null> {
+  if (isMockUIEnabled()) {
+    return getMockSession();
+  }
   try {
     const body = await request<{ user: User }>("/v1/auth/session");
     return body.user;
@@ -159,6 +188,9 @@ export async function getSession(): Promise<User | null> {
 }
 
 export async function requestLoginCode(email: string) {
+  if (isMockUIEnabled()) {
+    return requestMockLoginCode(email);
+  }
   return request<{ status: string }>("/v1/auth/request-code", {
     method: "POST",
     body: JSON.stringify({ email }),
@@ -166,6 +198,9 @@ export async function requestLoginCode(email: string) {
 }
 
 export async function verifyLogin(email: string, code: string) {
+  if (isMockUIEnabled()) {
+    return verifyMockLogin(email, code);
+  }
   return request<{ user: User; expires_at: string }>("/v1/auth/verify", {
     method: "POST",
     body: JSON.stringify({ email, code }),
@@ -173,15 +208,24 @@ export async function verifyLogin(email: string, code: string) {
 }
 
 export async function logout() {
+  if (isMockUIEnabled()) {
+    return mockLogout();
+  }
   return request<void>("/v1/auth/logout", { method: "POST" });
 }
 
 export async function listMachines() {
+  if (isMockUIEnabled()) {
+    return listMockMachines();
+  }
   const body = await request<{ machines: Machine[] }>("/v1/machines");
   return body.machines;
 }
 
 export async function createMachine(name: string, snapshotName?: string) {
+  if (isMockUIEnabled()) {
+    return createMockMachine(name, snapshotName);
+  }
   return request<Machine>("/v1/machines", {
     method: "POST",
     body: JSON.stringify({ name, snapshot_name: snapshotName ?? "" }),
@@ -189,12 +233,18 @@ export async function createMachine(name: string, snapshotName?: string) {
 }
 
 export async function deleteMachine(name: string) {
+  if (isMockUIEnabled()) {
+    return deleteMockMachine(name);
+  }
   return request<void>(`/v1/machines/${encodeURIComponent(name)}`, {
     method: "DELETE",
   });
 }
 
 export async function forkMachine(sourceName: string, targetName: string) {
+  if (isMockUIEnabled()) {
+    return forkMockMachine(sourceName, targetName);
+  }
   return request<Machine>(`/v1/machines/${encodeURIComponent(sourceName)}/fork`, {
     method: "POST",
     body: JSON.stringify({ target_name: targetName }),
@@ -202,11 +252,17 @@ export async function forkMachine(sourceName: string, targetName: string) {
 }
 
 export async function listSnapshots() {
+  if (isMockUIEnabled()) {
+    return listMockSnapshots();
+  }
   const body = await request<{ snapshots: Snapshot[] }>("/v1/snapshots");
   return body.snapshots;
 }
 
 export async function createSnapshot(machineName: string, snapshotName: string) {
+  if (isMockUIEnabled()) {
+    return createMockSnapshot(machineName, snapshotName);
+  }
   return request<Snapshot>("/v1/snapshots", {
     method: "POST",
     body: JSON.stringify({ machine_name: machineName, snapshot_name: snapshotName }),
@@ -214,17 +270,26 @@ export async function createSnapshot(machineName: string, snapshotName: string) 
 }
 
 export async function deleteSnapshot(name: string) {
+  if (isMockUIEnabled()) {
+    return deleteMockSnapshot(name);
+  }
   return request<void>(`/v1/snapshots/${encodeURIComponent(name)}`, {
     method: "DELETE",
   });
 }
 
 export async function listEnvVars() {
+  if (isMockUIEnabled()) {
+    return listMockEnvVars();
+  }
   const body = await request<{ env_vars: { key: string; value: string }[] }>("/v1/env-vars");
   return body.env_vars;
 }
 
 export async function setEnvVar(key: string, value: string) {
+  if (isMockUIEnabled()) {
+    return setMockEnvVar(key, value);
+  }
   return request<EnvVar>("/v1/env-vars", {
     method: "PUT",
     body: JSON.stringify({ key, value }),
@@ -232,21 +297,33 @@ export async function setEnvVar(key: string, value: string) {
 }
 
 export async function deleteEnvVar(key: string) {
+  if (isMockUIEnabled()) {
+    return deleteMockEnvVar(key);
+  }
   return request<void>(`/v1/env-vars/${encodeURIComponent(key)}`, {
     method: "DELETE",
   });
 }
 
 export async function getMachineEnv(name: string) {
+  if (isMockUIEnabled()) {
+    return getMockMachineEnv(name);
+  }
   return request<MachineEnv>(`/v1/machines/${encodeURIComponent(name)}/env`);
 }
 
 export async function getDefaultWorkspace() {
+  if (isMockUIEnabled()) {
+    return getMockDefaultWorkspace();
+  }
   const body = await request<{ name: string; layout: WorkspaceLayout }>("/v1/workspaces/default");
   return body.layout;
 }
 
 export async function saveDefaultWorkspace(layout: WorkspaceLayout) {
+  if (isMockUIEnabled()) {
+    return saveMockDefaultWorkspace(layout);
+  }
   return request<{ name: string; layout: WorkspaceLayout }>("/v1/workspaces/default", {
     method: "PUT",
     body: JSON.stringify({ layout }),
@@ -254,6 +331,9 @@ export async function saveDefaultWorkspace(layout: WorkspaceLayout) {
 }
 
 export async function createTerminalSession(machineName: string, cols: number, rows: number) {
+  if (isMockUIEnabled()) {
+    return createMockTerminalSession(machineName, cols, rows);
+  }
   return request<TerminalSession>("/v1/terminal/sessions", {
     method: "POST",
     body: JSON.stringify({ machine_name: machineName, cols, rows }),
@@ -261,6 +341,9 @@ export async function createTerminalSession(machineName: string, cols: number, r
 }
 
 export async function attachTerminalSession(sessionId: string, cols: number, rows: number) {
+  if (isMockUIEnabled()) {
+    return attachMockTerminalSession(sessionId, cols, rows);
+  }
   return request<TerminalSession>("/v1/terminal/sessions/" + encodeURIComponent(sessionId) + "/attach", {
     method: "POST",
     body: JSON.stringify({ cols, rows }),
@@ -268,12 +351,18 @@ export async function attachTerminalSession(sessionId: string, cols: number, row
 }
 
 export async function deleteTerminalSession(sessionId: string) {
+  if (isMockUIEnabled()) {
+    return deleteMockTerminalSession(sessionId);
+  }
   return request<void>("/v1/terminal/sessions/" + encodeURIComponent(sessionId), {
     method: "DELETE",
   });
 }
 
 export async function getTerminalGitStatus(sessionId: string, cwd: string) {
+  if (isMockUIEnabled()) {
+    return getMockTerminalGitStatus(sessionId, cwd);
+  }
   return request<GitRepoStatus>("/v1/terminal/sessions/" + encodeURIComponent(sessionId) + "/git/status", {
     method: "POST",
     body: JSON.stringify({ cwd }),
@@ -281,6 +370,9 @@ export async function getTerminalGitStatus(sessionId: string, cwd: string) {
 }
 
 export async function getTerminalGitDiffBatch(sessionId: string, diffRequest: GitDiffBatchRequest) {
+  if (isMockUIEnabled()) {
+    return getMockTerminalGitDiffBatch(sessionId, diffRequest);
+  }
   return request<{ diffs: GitFileDiff[] }>("/v1/terminal/sessions/" + encodeURIComponent(sessionId) + "/git/diffs", {
     method: "POST",
     body: JSON.stringify(diffRequest),

@@ -10,7 +10,7 @@ import {
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from "react";
-import { Camera, GitDiff as GitDiffIcon, GitFork, Trash, X } from "@phosphor-icons/react";
+import { Camera, GitFork, Trash, X } from "@phosphor-icons/react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   forkMachine,
@@ -749,9 +749,9 @@ function CommandCenter() {
                       onPointerCancel={(event) => finishSidebarShellDrag(event, window.id)}
                     >
                       <span className="sidebar-shell-cwd">{shellLabel}</span>
-                      {" "}
                       <span className="sidebar-shell-machine" aria-hidden="true">
-                        {window.machineName}
+                        <span className="machine-color-dot sidebar-shell-machine-dot" />
+                        <span className="sidebar-shell-machine-name">{window.machineName}</span>
                       </span>
                     </button>
                   </div>
@@ -841,7 +841,7 @@ function CommandCenter() {
 
         <section className="control-sidebar-footer">
           <div className="control-sidebar-manage">
-            <span className="control-sidebar-manage-label">Manage</span>
+            <h2 className="control-sidebar-manage-label">Manage</h2>
             <div className="control-sidebar-manage-actions">
               <button type="button" onClick={() => setModal({ type: "env-vars" })}>
                 Env vars
@@ -1136,11 +1136,19 @@ function WorkspaceRail({
   );
 }
 
-function formatShellListLabel(cwd: string | undefined, index: number) {
+function formatCwdDisplay(cwd: string | undefined) {
   if (!cwd) {
-    return `Shell ${index}`;
+    return undefined;
   }
   return cwd.replace(/^\/home\/ubuntu(?=\/|$)/, "~");
+}
+
+function formatShellListLabel(cwd: string | undefined, index: number) {
+  const displayCwd = formatCwdDisplay(cwd);
+  if (!displayCwd) {
+    return `Shell ${index}`;
+  }
+  return displayCwd;
 }
 
 function WindowFrame({
@@ -1176,6 +1184,8 @@ function WindowFrame({
   isDragging: boolean;
   cwd?: string;
 }) {
+  const displayCwd = formatCwdDisplay(cwd) ?? layoutWindow.title;
+
   return (
     <div
       className="window-frame"
@@ -1207,10 +1217,7 @@ function WindowFrame({
           </button>
         </div>
         <div className="window-header-title">
-          <div className="window-header-machine-title">
-            <span className="machine-color-dot" aria-hidden="true" />
-            <strong>{layoutWindow.title}</strong>
-          </div>
+          <strong title={displayCwd}>{displayCwd}</strong>
         </div>
         <div className="window-header-actions window-header-actions-end">
           <WindowGitDiffButton
@@ -1221,6 +1228,10 @@ function WindowFrame({
             isActive={isGitDiffActive}
             onOpen={onOpenGitDiff}
           />
+          <div className="window-header-machine-meta" aria-hidden="true">
+            <span className="machine-color-dot window-header-machine-dot" />
+            <span className="window-header-machine-name">{layoutWindow.machineName}</span>
+          </div>
         </div>
       </header>
       <div className="window-body">{children}</div>
@@ -1271,9 +1282,6 @@ function WindowGitDiffButton({
       onDoubleClick={(event) => event.stopPropagation()}
       onClick={onOpen}
     >
-      <span className="window-git-diff-button-icon-shell" aria-hidden="true">
-        <GitDiffIcon className="icon-svg" weight="regular" />
-      </span>
       <span className="window-git-diff-button-stat window-git-diff-button-stat-added">
         +{additions.toLocaleString()}
       </span>
