@@ -43,9 +43,15 @@ const {
     writeln = vi.fn();
     write = vi.fn();
     refresh = vi.fn();
-    open = vi.fn();
+    open = vi.fn((host?: Element) => {
+      this.textarea.setAttribute("aria-label", "Terminal input");
+      this.textarea.className = "xterm-helper-textarea";
+      host?.appendChild(this.textarea);
+    });
     loadAddon = vi.fn();
-    dispose = vi.fn();
+    dispose = vi.fn(() => {
+      this.textarea.remove();
+    });
     onData = vi.fn(() => ({ dispose: vi.fn() }));
     onResize = vi.fn(() => ({ dispose: vi.fn() }));
     hasSelection = vi.fn(() => false);
@@ -355,6 +361,44 @@ describe("TerminalView", () => {
     expect(terminal.textarea.value).toBe("echo hello");
     expect(focusSpy).toHaveBeenCalled();
     expect(selectSpy).toHaveBeenCalled();
+  });
+
+  it("copies from the focused xterm helper textarea on cmd+c", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(globalThis, "navigator", {
+      configurable: true,
+      value: {
+        clipboard: {
+          writeText,
+        },
+      },
+    });
+
+    render(<TerminalView machineName="m-1" title="m-1 shell" onSessionId={vi.fn()} />);
+
+    await waitFor(() => {
+      expect(createTerminalSession).toHaveBeenCalledWith("m-1", 120, 40);
+    });
+
+    const terminal = terminalInstances[0];
+    terminal.textarea.value = "copy-test";
+    terminal.textarea.focus();
+    terminal.textarea.setSelectionRange(0, terminal.textarea.value.length);
+
+    await act(async () => {
+      terminal.textarea.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "c",
+          metaKey: true,
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+    });
+
+    await waitFor(() => {
+      expect(writeText).toHaveBeenCalledWith("copy-test");
+    });
   });
 
   it("shows a visible notice when the browser blocks clipboard access", async () => {

@@ -95,6 +95,9 @@ export function TerminalView({ machineName, title, sessionId, onSessionId, onCwd
       });
     }
   });
+  const syncTerminalSelection = useEffectEvent((terminal: Terminal) => {
+    syncSelectionIntoTextarea(terminal);
+  });
   const retryConnection = useEffectEvent((mode: "reuse" | "new") => {
     if (mode === "new") {
       sessionIdRef.current = "";
@@ -156,7 +159,7 @@ export function TerminalView({ machineName, title, sessionId, onSessionId, onCwd
     }
     terminal.open(hostRef.current);
     selectionListenerRef.current = terminal.onSelectionChange(() => {
-      syncSelectionIntoTextarea(terminal);
+      syncTerminalSelection(terminal);
     });
     fitAddon.fit();
     terminalRef.current = terminal;
@@ -186,6 +189,49 @@ export function TerminalView({ machineName, title, sessionId, onSessionId, onCwd
       clipboardNoticeTimerRef.current = null;
     };
   }, []);
+
+  useEffect(() => {
+    const handleCopy = (event: ClipboardEvent) => {
+      const terminal = terminalRef.current;
+      if (!terminal || event.target !== terminal.textarea) {
+        return;
+      }
+
+      const selection = selectedHelperTextareaText(terminal.textarea);
+      if (!selection) {
+        return;
+      }
+
+      if (event.clipboardData) {
+        event.preventDefault();
+        event.stopPropagation();
+        event.clipboardData.setData("text/plain", selection);
+      }
+    };
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      const terminal = terminalRef.current;
+      if (!terminal || event.target !== terminal.textarea || !shouldCopyShortcut(event)) {
+        return;
+      }
+
+      const selection = selectedHelperTextareaText(terminal.textarea);
+      if (!selection) {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+      void copyToLocalClipboard(selection);
+    };
+
+    document.addEventListener("copy", handleCopy);
+    document.addEventListener("keydown", handleKeyDown, true);
+    return () => {
+      document.removeEventListener("copy", handleCopy);
+      document.removeEventListener("keydown", handleKeyDown, true);
+    };
+  }, [copyToLocalClipboard]);
 
   useEffect(() => {
     if (!terminalRef.current || !fitRef.current) {
@@ -418,6 +464,25 @@ function syncSelectionIntoTextarea(terminal: Terminal) {
     textarea.focus();
   }
   textarea.select();
+}
+
+function shouldCopyShortcut(event: KeyboardEvent) {
+  if (event.type !== "keydown") {
+    return false;
+  }
+  return !event.altKey && event.key.toLowerCase() === "c" && (event.ctrlKey || event.metaKey);
+}
+
+function selectedHelperTextareaText(textarea: HTMLTextAreaElement | undefined) {
+  if (!textarea || !textarea.classList.contains("xterm-helper-textarea")) {
+    return "";
+  }
+  const start = textarea.selectionStart ?? 0;
+  const end = textarea.selectionEnd ?? 0;
+  if (end > start) {
+    return textarea.value.slice(start, end);
+  }
+  return textarea.value;
 }
 
 function parseTerminalMetadata(chunk: string) {
