@@ -363,7 +363,9 @@ function GitDiffFileCard({
       {!isCollapsed ? (
         <div className="git-diff-file-body">
           {isPending ? (
-            <SidebarStateCard title="Loading file diff" description="Fetching this file patch." compact />
+            <div className="git-diff-file-loading" role="status" aria-live="polite">
+              <span>Loading file diff</span>
+            </div>
           ) : error ? (
             <SidebarStateCard
               title="Unable to load this file diff"

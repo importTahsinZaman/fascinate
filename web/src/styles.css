@@ -959,31 +959,31 @@ a {
 
 .workspace-empty-state {
   display: grid;
-  align-content: center;
-  gap: 10px;
-  min-width: min(720px, calc(100vw - 484px));
+  place-content: center;
+  justify-items: center;
+  gap: 8px;
+  width: min(420px, 100%);
+  max-width: calc(100vw - 56px);
   height: 100%;
-  padding: 28px 32px;
-  border-radius: 18px;
-  border: 1px solid var(--border-subtle);
-  background:
-    radial-gradient(circle at top right, rgba(255, 255, 255, 0.04), transparent 34%),
-    linear-gradient(180deg, rgba(31, 31, 31, 0.98), rgba(22, 22, 22, 0.98));
-  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.32);
+  margin: 0 auto;
+  padding: 0 28px;
+  text-align: center;
 }
 
 .workspace-empty-state strong {
-  font-size: 22px;
-  line-height: 28px;
-  letter-spacing: -0.03em;
+  color: var(--text-secondary);
+  font-size: 18px;
+  line-height: 24px;
+  font-weight: 500;
+  letter-spacing: -0.02em;
 }
 
 .workspace-empty-state p {
-  max-width: 44ch;
+  max-width: 36ch;
   margin: 0;
-  color: var(--text-secondary);
-  font-size: 14px;
-  line-height: 20px;
+  color: var(--text-tertiary);
+  font-size: 13px;
+  line-height: 19px;
 }
 
 .window-frame {
@@ -1361,6 +1361,20 @@ a {
   background: #1f1f1f;
   box-shadow: none;
   overflow: hidden;
+}
+
+.git-diff-file-loading {
+  min-height: 140px;
+  display: grid;
+  place-items: center;
+  padding: 18px 20px;
+  text-align: center;
+}
+
+.git-diff-file-loading span {
+  color: var(--text-secondary);
+  font-size: 0.875rem;
+  font-weight: 400;
 }
 
 .git-diff-state,
