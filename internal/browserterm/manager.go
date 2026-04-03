@@ -29,6 +29,11 @@ type machineManager interface {
 	GetMachine(context.Context, string, string) (controlplane.Machine, error)
 }
 
+var (
+	ErrTerminalSessionNotFound = errors.New("terminal session not found")
+	ErrTerminalSessionExpired  = errors.New("terminal session expired")
+)
+
 type Manager struct {
 	cfg             config.Config
 	machines        machineManager
@@ -288,7 +293,7 @@ func (m *Manager) ReattachSession(ctx context.Context, userEmail, sessionID stri
 
 	sess, ok := m.sessions[strings.TrimSpace(sessionID)]
 	if !ok || sess.userEmail != userEmail {
-		return SessionInit{}, fmt.Errorf("terminal session not found")
+		return SessionInit{}, ErrTerminalSessionNotFound
 	}
 	sess.tokenHash = hashToken(token)
 	sess.hostID = hostID
@@ -310,6 +315,9 @@ func (m *Manager) ReattachSession(ctx context.Context, userEmail, sessionID stri
 func (m *Manager) CloseSession(ctx context.Context, userEmail, sessionID string) error {
 	sess, err := m.removeSession(sessionID, userEmail, "CLOSED", nil)
 	if err != nil {
+		if errors.Is(err, ErrTerminalSessionNotFound) || errors.Is(err, ErrTerminalSessionExpired) {
+			return nil
+		}
 		return err
 	}
 	_ = m.destroyRemoteSession(ctx, sess)
@@ -646,12 +654,12 @@ func (m *Manager) loadSession(sessionID, userEmail string) (session, error) {
 
 	sess, ok := m.sessions[strings.TrimSpace(sessionID)]
 	if !ok || sess.userEmail != strings.TrimSpace(userEmail) {
-		return session{}, fmt.Errorf("terminal session not found")
+		return session{}, ErrTerminalSessionNotFound
 	}
 	if time.Now().UTC().After(sess.expiresAt) {
 		delete(m.sessions, sess.id)
 		m.totalAttachFailures++
-		return session{}, fmt.Errorf("terminal session expired")
+		return session{}, ErrTerminalSessionExpired
 	}
 	return cloneSession(sess), nil
 }
@@ -683,7 +691,7 @@ func (m *Manager) removeSession(sessionID, userEmail, status string, err error) 
 
 	sess, ok := m.sessions[strings.TrimSpace(sessionID)]
 	if !ok || sess.userEmail != strings.TrimSpace(userEmail) {
-		return session{}, fmt.Errorf("terminal session not found")
+		return session{}, ErrTerminalSessionNotFound
 	}
 	delete(m.sessions, sess.id)
 	sess.status = status
@@ -723,12 +731,12 @@ func (m *Manager) startSession(id, token string) (session, error) {
 
 	sess, ok := m.sessions[strings.TrimSpace(id)]
 	if !ok {
-		return session{}, fmt.Errorf("terminal session not found")
+		return session{}, ErrTerminalSessionNotFound
 	}
 	if time.Now().UTC().After(sess.expiresAt) {
 		delete(m.sessions, sess.id)
 		m.totalAttachFailures++
-		return session{}, fmt.Errorf("terminal session expired")
+		return session{}, ErrTerminalSessionExpired
 	}
 	if sess.tokenHash != hashToken(token) {
 		m.totalAttachFailures++

@@ -141,6 +141,19 @@ func TestCloseSessionRemovesSession(t *testing.T) {
 	}
 }
 
+func TestCloseSessionAllowsMissingSession(t *testing.T) {
+	t.Parallel()
+
+	manager := New(config.Config{HostID: "local-host", TerminalSessionTTL: 2 * time.Minute}, &fakeMachineManager{})
+
+	if err := manager.CloseSession(context.Background(), "dev@example.com", "missing-session"); err != nil {
+		t.Fatalf("expected missing session close to succeed, got %v", err)
+	}
+	if diag := manager.Diagnostics(); diag.ActiveSessions != 0 {
+		t.Fatalf("expected no active sessions, got %+v", diag)
+	}
+}
+
 func TestPersistentGuestShellCommandDisablesTmuxStatusBarAndConfiguresHistoryScrollKeys(t *testing.T) {
 	t.Parallel()
 
