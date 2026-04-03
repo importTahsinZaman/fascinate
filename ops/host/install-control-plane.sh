@@ -2,55 +2,24 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
+ARTIFACT_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
+source "${ARTIFACT_ROOT}/ops/release/lib.sh"
 
 INSTALL_DIR="${FASCINATE_INSTALL_DIR:-/opt/fascinate}"
 BIN_DIR="${INSTALL_DIR}/bin"
 BINARY_PATH="${BIN_DIR}/fascinate"
-WEB_SOURCE_DIR="${REPO_ROOT}/web"
-WEB_DIST_SOURCE_DIR="${WEB_SOURCE_DIR}/dist"
+RELEASES_DIR="${INSTALL_DIR}/releases"
+RELEASE_STATE_PATH="${FASCINATE_RELEASE_MANIFEST_PATH:-${INSTALL_DIR}/release-manifest.json}"
+PAYLOAD_DIR="${ARTIFACT_ROOT}/payload"
+PAYLOAD_BINARY_PATH="${PAYLOAD_DIR}/bin/fascinate"
+PAYLOAD_WEB_DIST_DIR="${PAYLOAD_DIR}/web/dist"
 WEB_DIST_TARGET_DIR="${INSTALL_DIR}/web/dist"
 CONFIG_DIR="${FASCINATE_CONFIG_DIR:-/etc/fascinate}"
 ENV_FILE="${FASCINATE_ENV_FILE:-${CONFIG_DIR}/fascinate.env}"
 DATA_DIR="${FASCINATE_DATA_DIR:-/var/lib/fascinate}"
 SERVICE_PATH="${FASCINATE_SERVICE_PATH:-/etc/systemd/system/fascinate.service}"
 OVERWRITE_ENV="${FASCINATE_OVERWRITE_ENV:-0}"
-
-resolve_pnpm() {
-  if command -v pnpm >/dev/null 2>&1; then
-    printf 'pnpm'
-    return
-  fi
-  if command -v corepack >/dev/null 2>&1; then
-    printf 'corepack pnpm'
-    return
-  fi
-  echo "pnpm or corepack is required to build the web app" >&2
-  exit 1
-}
-
-default_host_id() {
-  if [[ -n "${FASCINATE_HOST_ID:-}" ]]; then
-    printf '%s' "${FASCINATE_HOST_ID}"
-    return
-  fi
-  hostname -s
-}
-
-default_host_name() {
-  if [[ -n "${FASCINATE_HOST_NAME:-}" ]]; then
-    printf '%s' "${FASCINATE_HOST_NAME}"
-    return
-  fi
-  hostname -s
-}
-
-require_root() {
-  if [[ "${EUID}" -ne 0 ]]; then
-    echo "run as root" >&2
-    exit 1
-  fi
-}
+ARTIFACT_MANIFEST_PATH="${ARTIFACT_ROOT}/manifest.json"
 
 quote_env_value() {
   local value="${1//\\/\\\\}"
@@ -106,39 +75,86 @@ FASCINATE_WEB_DIST_DIR=$(quote_env_value "${FASCINATE_WEB_DIST_DIR:-${WEB_DIST_T
 EOF_ENV
 }
 
-install_binary() {
-  mkdir -p "${BIN_DIR}" "${DATA_DIR}"
-  (cd "${REPO_ROOT}" && go build -o "${BINARY_PATH}" ./cmd/fascinate)
-  chmod 0755 "${BINARY_PATH}"
+default_host_id() {
+  if [[ -n "${FASCINATE_HOST_ID:-}" ]]; then
+    printf '%s' "${FASCINATE_HOST_ID}"
+    return
+  fi
+  hostname -s
 }
 
-build_web_dist() {
-  local pnpm_cmd
-  pnpm_cmd="$(resolve_pnpm)"
-  (
-    cd "${WEB_SOURCE_DIR}"
-    rm -rf "${WEB_DIST_SOURCE_DIR}"
-    eval "${pnpm_cmd} install --frozen-lockfile"
-    eval "${pnpm_cmd} build"
-  )
+default_host_name() {
+  if [[ -n "${FASCINATE_HOST_NAME:-}" ]]; then
+    printf '%s' "${FASCINATE_HOST_NAME}"
+    return
+  fi
+  hostname -s
+}
+
+assert_artifact_layout() {
+  if [[ ! -f "${ARTIFACT_MANIFEST_PATH}" || ! -f "${PAYLOAD_BINARY_PATH}" || ! -f "${PAYLOAD_WEB_DIST_DIR}/index.html" ]]; then
+    echo "this installer must run from an unpacked full release artifact" >&2
+    echo "use ops/release/deploy-full-artifact.sh from a workstation or CI runner" >&2
+    exit 1
+  fi
+}
+
+stage_release_dir() {
+  local release_dir="$1"
+  local staging_dir
+
+  mkdir -p "${RELEASES_DIR}"
+  staging_dir="$(mktemp -d "${RELEASES_DIR}/.release.XXXXXX")"
+  cp -R "${ARTIFACT_ROOT}/." "${staging_dir}/"
+  rm -rf "${release_dir}"
+  mv "${staging_dir}" "${release_dir}"
+}
+
+install_binary() {
+  local release_dir="$1"
+  mkdir -p "${BIN_DIR}" "${DATA_DIR}"
+  install -m 0755 "${release_dir}/payload/bin/fascinate" "${BINARY_PATH}"
 }
 
 install_web_dist() {
-  build_web_dist
+  local release_dir="$1"
   rm -rf "${WEB_DIST_TARGET_DIR}"
   mkdir -p "${WEB_DIST_TARGET_DIR}"
-  cp -R "${WEB_DIST_SOURCE_DIR}/." "${WEB_DIST_TARGET_DIR}/"
+  cp -R "${release_dir}/payload/web/dist/." "${WEB_DIST_TARGET_DIR}/"
 }
 
 install_systemd_unit() {
-  install -m 0644 "${REPO_ROOT}/ops/systemd/fascinate.service" "${SERVICE_PATH}"
+  local release_dir="$1"
+  install -m 0644 "${release_dir}/ops/systemd/fascinate.service" "${SERVICE_PATH}"
+}
+
+persist_release_state() {
+  local release_dir="$1"
+  local installed_at
+
+  installed_at="$(utc_now)"
+  update_installed_release_state "${RELEASE_STATE_PATH}" "full" "${release_dir}/manifest.json" "${release_dir}" "${installed_at}"
 }
 
 main() {
   require_root
-  install_binary
-  install_web_dist
-  install_systemd_unit
+  require_command jq
+  assert_artifact_layout
+  bash "${ARTIFACT_ROOT}/ops/release/verify-artifact.sh" --expect-type full "${ARTIFACT_ROOT}" >/dev/null
+
+  local release_id
+  local release_dir
+  release_id="$(jq -r '.releaseID' "${ARTIFACT_MANIFEST_PATH}")"
+  if [[ -z "${release_id}" || "${release_id}" == "null" ]]; then
+    echo "artifact manifest is missing releaseID" >&2
+    exit 1
+  fi
+
+  release_dir="${RELEASES_DIR}/${release_id}"
+  stage_release_dir "${release_dir}"
+  install_binary "${release_dir}"
+  install_web_dist "${release_dir}"
+  install_systemd_unit "${release_dir}"
 
   if [[ ! -f "${ENV_FILE}" || "${OVERWRITE_ENV}" == "1" ]]; then
     write_env_file
@@ -149,17 +165,20 @@ main() {
   source "${ENV_FILE}"
   set +a
 
-  bash "${REPO_ROOT}/ops/host/write-caddyfile.sh"
+  bash "${release_dir}/ops/host/write-caddyfile.sh"
 
   systemctl daemon-reload
   systemctl enable --now fascinate
   systemctl restart fascinate
   systemctl reload caddy
 
-  echo "fascinate deployed"
+  persist_release_state "${release_dir}"
+
+  echo "fascinate deployed from artifact ${release_id}"
   echo "service: $(systemctl is-active fascinate)"
   echo "caddy: $(systemctl is-active caddy)"
   curl -fsS "http://${FASCINATE_HTTP_ADDR}/healthz"
+  persist_release_state "${release_dir}"
 }
 
 main "$@"

@@ -5,8 +5,12 @@
 This repo now contains:
 - a React/Vite web app under [`web/`](/Users/tahsin/Desktop/vmcloud/web)
 - a reproducible host bootstrap path under [`ops/host/bootstrap.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/bootstrap.sh)
-- a host redeploy path under [`ops/host/install-control-plane.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/install-control-plane.sh)
-- a no-restart frontend-only deploy path under [`ops/host/deploy-web.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/deploy-web.sh)
+- an off-host full-release artifact builder under [`ops/release/build-full-artifact.sh`](/Users/tahsin/Desktop/vmcloud/ops/release/build-full-artifact.sh)
+- an off-host full deploy wrapper under [`ops/release/deploy-full-artifact.sh`](/Users/tahsin/Desktop/vmcloud/ops/release/deploy-full-artifact.sh)
+- an off-host web-only artifact builder under [`ops/release/build-web-artifact.sh`](/Users/tahsin/Desktop/vmcloud/ops/release/build-web-artifact.sh)
+- an off-host web-only deploy wrapper under [`ops/release/deploy-web-artifact.sh`](/Users/tahsin/Desktop/vmcloud/ops/release/deploy-web-artifact.sh)
+- a packaged full-release installer under [`ops/host/install-control-plane.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/install-control-plane.sh)
+- a packaged no-restart web installer under [`ops/host/deploy-web.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/deploy-web.sh)
 - a Caddy config writer under [`ops/host/write-caddyfile.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/write-caddyfile.sh)
 - a VM base image builder under [`ops/cloudhypervisor/build-base-image.sh`](/Users/tahsin/Desktop/vmcloud/ops/cloudhypervisor/build-base-image.sh)
 - a Go control plane under [`cmd/fascinate/main.go`](/Users/tahsin/Desktop/vmcloud/cmd/fascinate/main.go)
@@ -76,13 +80,17 @@ Current browser HTTP API:
 - [`web/`](/Users/tahsin/Desktop/vmcloud/web): React/Vite browser command center and ordered xterm shell strip
 - [`ops/host/bootstrap.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/bootstrap.sh): installs host dependencies and baseline VM networking/runtime config
 - [`ops/host/verify.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/verify.sh): checks the host after bootstrap
+- [`ops/release/build-full-artifact.sh`](/Users/tahsin/Desktop/vmcloud/ops/release/build-full-artifact.sh): builds a versioned full release bundle off-host
+- [`ops/release/build-web-artifact.sh`](/Users/tahsin/Desktop/vmcloud/ops/release/build-web-artifact.sh): builds a versioned web-only bundle off-host
+- [`ops/release/deploy-full-artifact.sh`](/Users/tahsin/Desktop/vmcloud/ops/release/deploy-full-artifact.sh): uploads and installs a full release artifact over SSH
+- [`ops/release/deploy-web-artifact.sh`](/Users/tahsin/Desktop/vmcloud/ops/release/deploy-web-artifact.sh): uploads and installs a web-only artifact over SSH without restarting `fascinate`
 - [`ops/host/write-caddyfile.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/write-caddyfile.sh): writes the host Caddy config for Fascinate
-- [`ops/host/install-control-plane.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/install-control-plane.sh): builds and installs the Fascinate service and web bundle on a host
-- [`ops/host/deploy-web.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/deploy-web.sh): deploys `web/dist` without restarting `fascinate`
+- [`ops/host/install-control-plane.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/install-control-plane.sh): packaged installer executed from an unpacked full artifact on the host
+- [`ops/host/deploy-web.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/deploy-web.sh): packaged web-only installer executed from an unpacked artifact on the host
 - [`ops/host/smoke.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/smoke.sh): validates the basic create, route, restart, and delete lifecycle
 - [`ops/host/benchmark.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/benchmark.sh): prints structured timing metrics for create, snapshot, restore, and fork
 - [`ops/host/stress.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/stress.sh): validates realistic app, local DB, Docker, restart, snapshot, restore, fork, divergence, and cleanup behavior
-- [`ops/host/diagnostics.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/diagnostics.sh): queries host, machine, snapshot, tool-auth, terminal-session, and event diagnostics from a configured host
+- [`ops/host/diagnostics.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/diagnostics.sh): queries host, machine, snapshot, tool-auth, terminal-session, event, and installed-release diagnostics from a configured host
 - [`ops/host/smoke-tool-auth.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/smoke-tool-auth.sh): targeted persistence harness for Claude, Codex, and GitHub auth across later VMs
 - [`ops/host/smoke-snapshots.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/smoke-snapshots.sh): validates saved snapshots, create-from-snapshot, and true fork flows
 - [`docs/stress-matrix.md`](/Users/tahsin/Desktop/vmcloud/docs/stress-matrix.md): expectation matrix and operator guidance for live validation
@@ -151,6 +159,7 @@ sudo ./ops/host/diagnostics.sh machine you@example.com machine-name
 sudo ./ops/host/diagnostics.sh snapshot you@example.com snapshot-name
 sudo ./ops/host/diagnostics.sh tool-auth you@example.com
 sudo ./ops/host/diagnostics.sh events you@example.com 100
+sudo ./ops/host/diagnostics.sh release-manifest
 ```
 
 The `hosts` diagnostics output includes `placement_eligible`, which currently means the host is active, has a fresh heartbeat, and can fit a default-size Fascinate machine right now.
@@ -158,6 +167,8 @@ The `hosts` diagnostics output includes `placement_eligible`, which currently me
 Notes:
 - the bootstrap script assumes a fresh host or a host you are willing to standardize
 - it installs Cloud Hypervisor plus qcow2/cloud-init image tooling
+- it bootstraps artifact-consumer hosts, not host-local build machines
+- standard deploys do not require a synchronized repo checkout, Go, Node, `pnpm`, or `corepack` on the host
 - it enables the kernel and package prerequisites for the namespace-based VM runtime
 - guest NAT/forwarding rules are created lazily when the first VM boots
 - it does not manage DNS or Cloudflare for you
@@ -178,24 +189,31 @@ sudo ./ops/host/configure-admin-ssh.sh
 ```
 
 After that:
-- host admin SSH uses `ssh -p 2220 root@fascinate.dev`
+- host admin SSH typically uses `ssh -p 2220 ubuntu@fascinate.dev`
 
-Deploy or redeploy the full Fascinate service:
+Deploy or redeploy the full Fascinate service from a workstation or CI runner:
 
 ```bash
+export FASCINATE_DEPLOY_HOST=fascinate.dev
+export FASCINATE_DEPLOY_USER=ubuntu
+export FASCINATE_DEPLOY_PORT=2220
 export FASCINATE_BASE_DOMAIN=fascinate.dev
 export FASCINATE_ACME_EMAIL=you@example.com
 export FASCINATE_ADMIN_EMAILS=you@example.com
-sudo ./ops/host/install-control-plane.sh
+bash ./ops/release/deploy-full-artifact.sh
 ```
 
 For frontend-only changes, prefer the no-restart path:
 
 ```bash
-sudo ./ops/host/deploy-web.sh
+bash ./ops/release/deploy-web-artifact.sh
 ```
 
-Use the frontend-only deploy when you are only shipping web changes and want to avoid disconnecting active browser shell attachments. It installs a fresh `web/dist`, preserves older hashed assets for already-open tabs, swaps `index.html` last, and leaves the running `fascinate` process alone.
+Use the frontend-only deploy when you are only shipping web changes and want to avoid disconnecting active browser shell attachments. It uploads a prebuilt `web/dist`, preserves older hashed assets for already-open tabs, swaps `index.html` last, and leaves the running `fascinate` process alone.
+
+Artifact bundles are written to `.tmp/releases/` by default. Both deploy wrappers can either consume a supplied `.tar.gz` bundle or build a fresh artifact before upload.
+
+Each successful artifact install also records live release metadata under `/opt/fascinate/release-manifest.json` and keeps the full unpacked bundle under `/opt/fascinate/releases/<release-id>`.
 
 Startup and readiness:
 

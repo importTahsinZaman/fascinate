@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ENV_FILE="${FASCINATE_ENV_FILE:-/etc/fascinate/fascinate.env}"
+RELEASE_STATE_PATH="${FASCINATE_RELEASE_MANIFEST_PATH:-/opt/fascinate/release-manifest.json}"
 
 usage() {
   cat <<'EOF'
@@ -11,6 +12,7 @@ usage:
   diagnostics.sh snapshot <owner_email> <snapshot_name>
   diagnostics.sh tool-auth <owner_email>
   diagnostics.sh events <owner_email> [limit]
+  diagnostics.sh release-manifest
 EOF
 }
 
@@ -27,25 +29,39 @@ api_url() {
 }
 
 main() {
-  require_command curl
   require_command jq
-
-  if [[ ! -f "${ENV_FILE}" ]]; then
-    echo "missing env file: ${ENV_FILE}" >&2
-    exit 1
-  fi
-
-  set -a
-  # shellcheck disable=SC1090
-  source "${ENV_FILE}"
-  set +a
 
   local command="${1:-}"
   case "${command}" in
+    release-manifest)
+      if [[ ! -f "${RELEASE_STATE_PATH}" ]]; then
+        echo "missing release manifest: ${RELEASE_STATE_PATH}" >&2
+        exit 1
+      fi
+      jq . "${RELEASE_STATE_PATH}"
+      ;;
     hosts)
+      require_command curl
+      if [[ ! -f "${ENV_FILE}" ]]; then
+        echo "missing env file: ${ENV_FILE}" >&2
+        exit 1
+      fi
+      set -a
+      # shellcheck disable=SC1090
+      source "${ENV_FILE}"
+      set +a
       curl -fsS "$(api_url "/v1/diagnostics/hosts")" | jq .
       ;;
     machine)
+      require_command curl
+      if [[ ! -f "${ENV_FILE}" ]]; then
+        echo "missing env file: ${ENV_FILE}" >&2
+        exit 1
+      fi
+      set -a
+      # shellcheck disable=SC1090
+      source "${ENV_FILE}"
+      set +a
       local owner_email="${2:-}"
       local machine_name="${3:-}"
       if [[ -z "${owner_email}" || -z "${machine_name}" ]]; then
@@ -55,6 +71,15 @@ main() {
       curl -fsS "$(api_url "/v1/diagnostics/machines/${machine_name}?owner_email=${owner_email}")" | jq .
       ;;
     snapshot)
+      require_command curl
+      if [[ ! -f "${ENV_FILE}" ]]; then
+        echo "missing env file: ${ENV_FILE}" >&2
+        exit 1
+      fi
+      set -a
+      # shellcheck disable=SC1090
+      source "${ENV_FILE}"
+      set +a
       local owner_email="${2:-}"
       local snapshot_name="${3:-}"
       if [[ -z "${owner_email}" || -z "${snapshot_name}" ]]; then
@@ -64,6 +89,15 @@ main() {
       curl -fsS "$(api_url "/v1/diagnostics/snapshots/${snapshot_name}?owner_email=${owner_email}")" | jq .
       ;;
     tool-auth)
+      require_command curl
+      if [[ ! -f "${ENV_FILE}" ]]; then
+        echo "missing env file: ${ENV_FILE}" >&2
+        exit 1
+      fi
+      set -a
+      # shellcheck disable=SC1090
+      source "${ENV_FILE}"
+      set +a
       local owner_email="${2:-}"
       if [[ -z "${owner_email}" ]]; then
         usage
@@ -72,6 +106,15 @@ main() {
       curl -fsS "$(api_url "/v1/diagnostics/tool-auth?owner_email=${owner_email}")" | jq .
       ;;
     events)
+      require_command curl
+      if [[ ! -f "${ENV_FILE}" ]]; then
+        echo "missing env file: ${ENV_FILE}" >&2
+        exit 1
+      fi
+      set -a
+      # shellcheck disable=SC1090
+      source "${ENV_FILE}"
+      set +a
       local owner_email="${2:-}"
       local limit="${3:-50}"
       if [[ -z "${owner_email}" ]]; then

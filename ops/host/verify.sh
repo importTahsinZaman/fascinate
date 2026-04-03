@@ -3,6 +3,7 @@ set -euo pipefail
 
 VM_GUEST_CIDR="${FASCINATE_VM_GUEST_CIDR:-10.42.0.0/24}"
 VM_NAMESPACE_CIDR="${FASCINATE_VM_NAMESPACE_CIDR:-100.96.0.0/16}"
+RELEASE_STATE_PATH="${FASCINATE_RELEASE_MANIFEST_PATH:-/opt/fascinate/release-manifest.json}"
 
 require_root() {
   if [[ "${EUID}" -ne 0 ]]; then
@@ -35,6 +36,22 @@ echo
 
 echo "cloud-hypervisor:"
 cloud-hypervisor --version
+echo
+
+echo "local build toolchains:"
+if command -v go >/dev/null 2>&1; then
+  echo "go $(go version | awk '{print $3}')"
+else
+  echo "go not installed (expected on artifact-consumer hosts)"
+fi
+echo
+
+echo "installed release:"
+if [[ -f "${RELEASE_STATE_PATH}" ]]; then
+  jq . "${RELEASE_STATE_PATH}"
+else
+  echo "release manifest not present yet"
+fi
 echo
 
 echo "namespace network:"

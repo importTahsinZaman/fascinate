@@ -39,6 +39,12 @@ verify-ops:
 	bash -n ops/host/bootstrap.sh
 	bash -n ops/host/configure-admin-ssh.sh
 	bash -n ops/host/diagnostics.sh
+	bash -n ops/release/lib.sh
+	bash -n ops/release/verify-artifact.sh
+	bash -n ops/release/build-full-artifact.sh
+	bash -n ops/release/build-web-artifact.sh
+	bash -n ops/release/deploy-full-artifact.sh
+	bash -n ops/release/deploy-web-artifact.sh
 	bash -n ops/host/smoke.sh
 	bash -n ops/host/benchmark.sh
 	bash -n ops/host/stress.sh

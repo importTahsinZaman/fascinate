@@ -4,8 +4,8 @@ This is the default workflow moving forward:
 
 - use the Vite dev server for frontend work
 - use mock mode for UI-only iteration
-- use the frontend-only deploy path for web changes
-- use the full installer only when backend/runtime changes require it
+- use the artifact-based frontend-only deploy path for web changes
+- use the artifact-based full deploy path only when backend/runtime changes require it
 
 ## Local Development
 
@@ -80,15 +80,25 @@ make verify-ops
 
 ### Frontend-only deploy
 
-For UI-only changes on a bootstrapped host, deploy the web bundle without restarting `fascinate`:
+For UI-only changes on a bootstrapped host, build or upload a prebuilt web artifact and deploy it without restarting `fascinate`:
 
 ```bash
-sudo ./ops/host/deploy-web.sh
+export FASCINATE_DEPLOY_HOST=fascinate.dev
+export FASCINATE_DEPLOY_USER=ubuntu
+export FASCINATE_DEPLOY_PORT=2220
+bash ./ops/release/deploy-web-artifact.sh
+```
+
+If you only want to build the artifact without uploading it yet:
+
+```bash
+bash ./ops/release/build-web-artifact.sh
 ```
 
 What this does:
 
-- rebuilds `web/dist`
+- builds `web/dist` off-host
+- uploads the resulting artifact to the target host
 - copies new hashed assets into `/opt/fascinate/web/dist`
 - preserves old hashed assets so already-open tabs do not break while lazy-loading older chunks
 - swaps `index.html` last
@@ -98,17 +108,32 @@ This is the default deploy path for frontend work because it avoids disconnectin
 
 ### Full control-plane deploy
 
-Use the full installer only when backend, runtime, or service wiring changes require it:
+Use the full artifact deploy only when backend, runtime, or service wiring changes require it:
 
 ```bash
-sudo ./ops/host/install-control-plane.sh
+export FASCINATE_DEPLOY_HOST=fascinate.dev
+export FASCINATE_DEPLOY_USER=ubuntu
+export FASCINATE_DEPLOY_PORT=2220
+export FASCINATE_BASE_DOMAIN=fascinate.dev
+export FASCINATE_ACME_EMAIL=you@example.com
+export FASCINATE_ADMIN_EMAILS=you@example.com
+bash ./ops/release/deploy-full-artifact.sh
+```
+
+If you only want to build the bundle first:
+
+```bash
+bash ./ops/release/build-full-artifact.sh
 ```
 
 This path:
 
-- rebuilds the Go binary
-- rebuilds `web/dist`
+- cross-builds the Linux `fascinate` binary off-host
+- builds `web/dist` off-host
+- uploads a versioned release bundle to the host
 - installs both under `/opt/fascinate`
+- stores the unpacked artifact under `/opt/fascinate/releases/<release-id>`
+- updates `/opt/fascinate/release-manifest.json`
 - rewrites `/etc/fascinate/fascinate.env` if needed
 - reloads Caddy
 - restarts `fascinate`
@@ -127,6 +152,7 @@ sudo systemctl is-active fascinate
 sudo systemctl is-active caddy
 curl -fsS http://127.0.0.1:8080/healthz
 curl -fsS http://127.0.0.1:8080/readyz
+sudo ./ops/host/diagnostics.sh release-manifest
 ```
 
 Interpretation:
@@ -134,3 +160,7 @@ Interpretation:
 - `healthz=ok` and `readyz=ready` means the control plane is fully up
 - `healthz=ok` and `readyz=startup recovery in progress` means the web/API layer is serving, but initial VM recovery is still running in the background
 - if the public site ever returns `502`, first confirm whether `127.0.0.1:8080` is actually listening before debugging Caddy
+
+### Rollback
+
+Every deployed artifact is preserved under `/opt/fascinate/releases/<release-id>`. To roll back, redeploy a previously built artifact with the matching deploy wrapper or reinstall from a preserved release directory on the host.

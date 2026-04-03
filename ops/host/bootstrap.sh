@@ -6,7 +6,7 @@ HOSTNAME_VALUE="${FASCINATE_HOSTNAME:-fascinate-01}"
 VM_BRIDGE_CIDR="${FASCINATE_VM_BRIDGE_CIDR:-10.42.0.1/24}"
 VM_GUEST_CIDR="${FASCINATE_VM_GUEST_CIDR:-10.42.0.0/24}"
 VM_NAMESPACE_CIDR="${FASCINATE_VM_NAMESPACE_CIDR:-100.96.0.0/16}"
-INSTALL_GO="${FASCINATE_INSTALL_GO:-1}"
+INSTALL_GO="${FASCINATE_INSTALL_GO:-0}"
 HOST_ADMIN_SSH_PORT="${FASCINATE_HOST_ADMIN_SSH_PORT:-}"
 CLOUD_HYPERVISOR_VERSION="${FASCINATE_CLOUD_HYPERVISOR_VERSION:-v51.0}"
 CLOUD_HYPERVISOR_URL="${FASCINATE_CLOUD_HYPERVISOR_URL:-https://github.com/cloud-hypervisor/cloud-hypervisor/releases/download/${CLOUD_HYPERVISOR_VERSION}/cloud-hypervisor-static}"
@@ -113,6 +113,11 @@ print_summary() {
   echo
   echo "hostname: $(hostname)"
   echo "cloud-hypervisor version: $(cloud-hypervisor --version 2>/dev/null | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g')"
+  if command -v go >/dev/null 2>&1; then
+    echo "go version: $(go version 2>/dev/null)"
+  else
+    echo "go version: not installed (expected on artifact-consumer hosts)"
+  fi
   echo
   echo "guest network:"
   echo "  guest subnet: ${VM_GUEST_CIDR}"
