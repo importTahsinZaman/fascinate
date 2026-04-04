@@ -1079,6 +1079,35 @@ a {
   justify-content: flex-end;
 }
 
+.window-shell-status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  background: rgba(255, 255, 255, 0.02);
+  color: var(--text-secondary);
+  pointer-events: none;
+}
+
+.window-shell-status[data-state="reconnecting"] {
+  border-color: rgba(61, 162, 208, 0.18);
+  background: rgba(61, 162, 208, 0.08);
+  color: #8fc6dd;
+}
+
+.window-shell-status[data-state="error"] {
+  border-color: rgba(245, 162, 143, 0.18);
+  background: rgba(245, 162, 143, 0.08);
+  color: #f5b3a0;
+}
+
+.window-shell-status-icon-spinning {
+  animation: git-diff-sidebar-action-spin 0.9s linear infinite;
+}
+
 .workspace-shell-dragging,
 .workspace-shell-dragging * {
   user-select: none;

@@ -10,7 +10,7 @@ import {
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from "react";
-import { Camera, GitFork, Trash, X } from "@phosphor-icons/react";
+import { ArrowClockwise, Camera, GitFork, Trash, WarningCircle, X } from "@phosphor-icons/react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   forkMachine,
@@ -38,6 +38,7 @@ import {
 import { GitDiffSidebar } from "./git-diff-sidebar";
 import { getMachineColorStyle, getMachineColorStyles } from "./machine-colors";
 import { useWorkspaceStore } from "./store";
+import type { TerminalConnectionState } from "./terminal";
 
 const TerminalView = lazy(async () => import("./terminal").then((module) => ({ default: module.TerminalView })));
 
@@ -969,6 +970,23 @@ function WorkspaceRail({
     dragging: boolean;
   } | null>(null);
   const [draggingWindowID, setDraggingWindowID] = useState<string | null>(null);
+  const [windowConnectionStates, setWindowConnectionStates] = useState<Record<string, TerminalConnectionState>>({});
+
+  useEffect(() => {
+    const windowIDs = new Set(windows.map((window) => window.id));
+    setWindowConnectionStates((current) => {
+      let changed = false;
+      const next: Record<string, TerminalConnectionState> = {};
+      for (const [windowID, connectionState] of Object.entries(current)) {
+        if (!windowIDs.has(windowID)) {
+          changed = true;
+          continue;
+        }
+        next[windowID] = connectionState;
+      }
+      return changed ? next : current;
+    });
+  }, [windows]);
 
   useEffect(() => {
     if (!viewportFocusRequest) {
@@ -1117,6 +1135,7 @@ function WorkspaceRail({
                 isGitDiffActive={gitDiffSidebarWindowID === window.id}
                 isDragging={draggingWindowID === window.id}
                 cwd={windowCwds[window.id]}
+                connectionState={windowConnectionStates[window.id]}
               >
                 <Suspense fallback={<div className="terminal-loading">Opening terminal…</div>}>
                   <TerminalView
@@ -1125,6 +1144,17 @@ function WorkspaceRail({
                     sessionId={window.sessionId}
                     onSessionId={(sessionId) => setWindowSession(window.id, sessionId)}
                     onCwdChange={(cwd) => setWindowCwd(window.id, cwd)}
+                    onConnectionStateChange={(connectionState) => {
+                      setWindowConnectionStates((current) => {
+                        if (current[window.id] === connectionState) {
+                          return current;
+                        }
+                        return {
+                          ...current,
+                          [window.id]: connectionState,
+                        };
+                      });
+                    }}
                   />
                 </Suspense>
               </WindowFrame>
@@ -1167,6 +1197,7 @@ function WindowFrame({
   isGitDiffActive,
   isDragging,
   cwd,
+  connectionState,
 }: {
   window: WorkspaceWindow;
   machineColorStyle: CSSProperties;
@@ -1183,6 +1214,7 @@ function WindowFrame({
   isGitDiffActive: boolean;
   isDragging: boolean;
   cwd?: string;
+  connectionState?: TerminalConnectionState;
 }) {
   const displayCwd = formatCwdDisplay(cwd) ?? layoutWindow.title;
 
@@ -1228,6 +1260,7 @@ function WindowFrame({
             isActive={isGitDiffActive}
             onOpen={onOpenGitDiff}
           />
+          <WindowShellConnectionIndicator connectionState={connectionState} />
           <div className="window-header-machine-meta" aria-hidden="true">
             <span className="machine-color-dot window-header-machine-dot" />
             <span className="window-header-machine-name">{layoutWindow.machineName}</span>
@@ -1236,6 +1269,32 @@ function WindowFrame({
       </header>
       <div className="window-body">{children}</div>
     </div>
+  );
+}
+
+function WindowShellConnectionIndicator({ connectionState }: { connectionState?: TerminalConnectionState }) {
+  if (connectionState !== "reconnecting" && connectionState !== "error") {
+    return null;
+  }
+
+  const label =
+    connectionState === "reconnecting" ? "Reconnecting shell…" : "Shell needs attention before it can reconnect.";
+
+  return (
+    <span
+      className="window-shell-status"
+      data-state={connectionState}
+      role="status"
+      aria-live="polite"
+      aria-label={label}
+      title={label}
+    >
+      {connectionState === "reconnecting" ? (
+        <ArrowClockwise className="icon-svg window-shell-status-icon-spinning" weight="regular" />
+      ) : (
+        <WarningCircle className="icon-svg" weight="regular" />
+      )}
+    </span>
   );
 }
 

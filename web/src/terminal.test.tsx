@@ -24,11 +24,11 @@ const {
     }
   }
 
-  const attachTerminalSession = vi.fn(async () => ({
-    id: "term-existing",
+  const attachTerminalSession = vi.fn(async (sessionId: string) => ({
+    id: sessionId,
     machine_name: "m-1",
     host_id: "fascinate-01",
-    attach_url: "/v1/terminal/sessions/term-existing/stream?token=token-existing",
+    attach_url: `/v1/terminal/sessions/${sessionId}/stream?token=token-${sessionId}`,
     expires_at: "2026-03-22T00:00:00Z",
   }));
 
@@ -220,8 +220,22 @@ describe("TerminalView", () => {
     terminalInstances.length = 0;
     MockWebSocket.instances.length = 0;
     MockWebglAddon.instances.length = 0;
-    attachTerminalSession.mockClear();
-    createTerminalSession.mockClear();
+    attachTerminalSession.mockReset();
+    attachTerminalSession.mockImplementation(async (sessionId: string) => ({
+      id: sessionId,
+      machine_name: "m-1",
+      host_id: "fascinate-01",
+      attach_url: `/v1/terminal/sessions/${sessionId}/stream?token=token-${sessionId}`,
+      expires_at: "2026-03-22T00:00:00Z",
+    }));
+    createTerminalSession.mockReset();
+    createTerminalSession.mockImplementation(async () => ({
+      id: "term-1",
+      machine_name: "m-1",
+      host_id: "fascinate-01",
+      attach_url: "/v1/terminal/sessions/term-1/stream?token=token-1",
+      expires_at: "2026-03-22T00:00:00Z",
+    }));
   });
 
   afterEach(() => {
@@ -268,13 +282,21 @@ describe("TerminalView", () => {
     expect(screen.getByText("Reconnecting…")).toBeTruthy();
   });
 
-  it("creates a fresh session when the saved session can no longer be reattached", async () => {
+  it("asks the user to start a new shell when the saved session can no longer be reattached", async () => {
     attachTerminalSession.mockRejectedValueOnce(new HttpError(404, "not found"));
     const onSessionId = vi.fn();
 
     render(
       <TerminalView machineName="m-1" title="m-1 shell" sessionId="term-stale" onSessionId={onSessionId} />,
     );
+
+    expect(await screen.findByText("Shell ended")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Start new shell" })).toBeTruthy();
+    expect(createTerminalSession).not.toHaveBeenCalled();
+
+    await act(async () => {
+      screen.getByRole("button", { name: "Start new shell" }).click();
+    });
 
     await waitFor(() => {
       expect(createTerminalSession).toHaveBeenCalledWith("m-1", 120, 40);
@@ -559,44 +581,70 @@ describe("TerminalView", () => {
     expect(await screen.findByText("Clipboard access was blocked by the browser.")).toBeTruthy();
   });
 
-  it("shows a retry overlay when the terminal websocket fails", async () => {
+  it("silently reattaches when a live shell socket closes", async () => {
     const onSessionId = vi.fn();
+    const onConnectionStateChange = vi.fn();
 
-    render(<TerminalView machineName="m-1" title="m-1 shell" onSessionId={onSessionId} />);
+    render(
+      <TerminalView
+        machineName="m-1"
+        title="m-1 shell"
+        onSessionId={onSessionId}
+        onConnectionStateChange={onConnectionStateChange}
+      />,
+    );
 
     await waitFor(() => {
       expect(createTerminalSession).toHaveBeenCalledTimes(1);
     });
 
     await act(async () => {
-      MockWebSocket.instances[0].emit("error");
-    });
-
-    expect(screen.getByText("Connection failed")).toBeTruthy();
-
-    await act(async () => {
-      screen.getByRole("button", { name: "Retry" }).click();
-    });
-
-    await waitFor(() => {
-      expect(attachTerminalSession).toHaveBeenCalledWith("term-1", 120, 40);
-    });
-  });
-
-  it("shows a reconnect overlay when the shell closes", async () => {
-    const onSessionId = vi.fn();
-
-    render(<TerminalView machineName="m-1" title="m-1 shell" onSessionId={onSessionId} />);
-
-    await waitFor(() => {
-      expect(createTerminalSession).toHaveBeenCalledTimes(1);
+      MockWebSocket.instances[0].emit("open");
     });
 
     await act(async () => {
       MockWebSocket.instances[0].emit("close");
     });
 
-    expect(screen.getByText("Shell disconnected")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Reconnect" })).toBeTruthy();
+    expect(screen.queryByText("Shell disconnected")).toBeNull();
+    expect(onConnectionStateChange).toHaveBeenCalledWith("reconnecting");
+
+    await waitFor(() => {
+      expect(attachTerminalSession).toHaveBeenCalledWith("term-1", 120, 40);
+    });
+
+    await act(async () => {
+      MockWebSocket.instances[1].emit("open");
+    });
+
+    expect(onConnectionStateChange).toHaveBeenLastCalledWith("ready");
+  });
+
+  it("retries reuse when reconnecting fails and the user chooses Retry", async () => {
+    attachTerminalSession.mockRejectedValueOnce(new Error("gateway down"));
+
+    render(<TerminalView machineName="m-1" title="m-1 shell" onSessionId={vi.fn()} />);
+
+    await waitFor(() => {
+      expect(createTerminalSession).toHaveBeenCalledTimes(1);
+    });
+
+    await act(async () => {
+      MockWebSocket.instances[0].emit("open");
+    });
+
+    await act(async () => {
+      MockWebSocket.instances[0].emit("close");
+    });
+
+    expect(await screen.findByText("Connection failed")).toBeTruthy();
+
+    await act(async () => {
+      screen.getByRole("button", { name: "Retry" }).click();
+    });
+
+    await waitFor(() => {
+      expect(attachTerminalSession).toHaveBeenCalledTimes(2);
+    });
   });
 });
