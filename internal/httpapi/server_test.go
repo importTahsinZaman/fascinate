@@ -93,6 +93,9 @@ type fakeMachineManager struct {
 	diagMachineName    string
 	diagMachineResult  controlplane.MachineDiagnostics
 	diagMachineErr     error
+	diagBudgetOwner    string
+	diagBudgetResult   controlplane.BudgetDiagnostics
+	diagBudgetErr      error
 	diagSnapshotOwner  string
 	diagSnapshotName   string
 	diagSnapshotResult controlplane.SnapshotDiagnostics
@@ -323,6 +326,14 @@ func (f *fakeMachineManager) GetMachineDiagnostics(_ context.Context, name, owne
 	return f.diagMachineResult, nil
 }
 
+func (f *fakeMachineManager) GetBudgetDiagnostics(_ context.Context, ownerEmail string) (controlplane.BudgetDiagnostics, error) {
+	f.diagBudgetOwner = ownerEmail
+	if f.diagBudgetErr != nil {
+		return controlplane.BudgetDiagnostics{}, f.diagBudgetErr
+	}
+	return f.diagBudgetResult, nil
+}
+
 func (f *fakeMachineManager) GetSnapshotDiagnostics(_ context.Context, name, ownerEmail string) (controlplane.SnapshotDiagnostics, error) {
 	f.diagSnapshotName = name
 	f.diagSnapshotOwner = ownerEmail
@@ -515,6 +526,29 @@ func TestCreateMachineEndpointRejectsUnknownFields(t *testing.T) {
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", rec.Code)
+	}
+}
+
+func TestBudgetDiagnosticsEndpointPassesOwnerEmail(t *testing.T) {
+	t.Parallel()
+
+	manager := &fakeMachineManager{
+		diagBudgetResult: controlplane.BudgetDiagnostics{
+			OwnerEmail: "dev@example.com",
+			Limits:     controlplane.BudgetSummary{CPU: "2"},
+		},
+	}
+	handler := newTestHandler(t, &fakeRuntime{}, manager)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/diagnostics/budgets?owner_email=dev@example.com", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if manager.diagBudgetOwner != "dev@example.com" {
+		t.Fatalf("expected owner email to be forwarded, got %q", manager.diagBudgetOwner)
 	}
 }
 

@@ -245,33 +245,16 @@ func (s *Service) collectLocalHostMetrics(ctx context.Context) (hostMetrics, boo
 		return metrics, false, &message
 	}
 
-	machines, err := executor.ListMachines(ctx)
+	usage, err := s.calculateHostUsage(ctx, s.localHostID)
 	if err != nil {
 		message := err.Error()
 		return metrics, false, &message
 	}
-	metrics.machineCount = len(machines)
-	for _, machine := range machines {
-		if cpu, err := parseCPUCount(machine.CPU); err == nil {
-			metrics.allocatedCPU += int(cpu)
-		}
-		if memory, err := parseByteSize(machine.Memory); err == nil {
-			metrics.allocatedMemoryBytes += memory
-		}
-		if disk, err := parseByteSize(machine.Disk); err == nil {
-			metrics.allocatedDiskBytes += disk
-		}
-	}
-
-	snapshots, err := s.store.ListSnapshots(ctx, "")
-	if err == nil {
-		for _, snapshot := range snapshots {
-			if snapshotHostID(snapshot) != s.localHostID {
-				continue
-			}
-			metrics.snapshotCount++
-		}
-	}
+	metrics.allocatedCPU = int(usage.CPU)
+	metrics.allocatedMemoryBytes = usage.MemoryBytes
+	metrics.allocatedDiskBytes = usage.DiskBytes
+	metrics.machineCount = usage.MachineCount
+	metrics.snapshotCount = usage.SnapshotCount
 
 	return metrics, true, nil
 }
@@ -365,7 +348,11 @@ func (s *Service) hostHasCapacity(record database.HostRecord, cpu, memory, disk 
 	if record.TotalDiskBytes > 0 && record.AllocatedDiskBytes+requestedDiskBytes > record.TotalDiskBytes {
 		return false
 	}
-	if record.AvailableDiskBytes > 0 && requestedDiskBytes > record.AvailableDiskBytes {
+	minFreeDiskBytes, err := s.hostMinFreeDiskBytes()
+	if err != nil {
+		return false
+	}
+	if record.AvailableDiskBytes > 0 && record.AvailableDiskBytes-requestedDiskBytes < minFreeDiskBytes {
 		return false
 	}
 

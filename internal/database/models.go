@@ -4,6 +4,11 @@ type User struct {
 	ID                  string  `json:"id"`
 	Email               string  `json:"email"`
 	IsAdmin             bool    `json:"is_admin"`
+	MaxCPU              string  `json:"max_cpu"`
+	MaxMemoryBytes      int64   `json:"max_memory_bytes"`
+	MaxDiskBytes        int64   `json:"max_disk_bytes"`
+	MaxMachineCount     int     `json:"max_machine_count"`
+	MaxSnapshotCount    int     `json:"max_snapshot_count"`
 	TutorialCompletedAt *string `json:"tutorial_completed_at,omitempty"`
 	CreatedAt           string  `json:"created_at"`
 }
@@ -17,6 +22,9 @@ type MachineRecord struct {
 	RuntimeName      string  `json:"runtime_name"`
 	SourceSnapshotID *string `json:"source_snapshot_id,omitempty"`
 	State            string  `json:"state"`
+	CPU              string  `json:"cpu"`
+	MemoryBytes      int64   `json:"memory_bytes"`
+	DiskBytes        int64   `json:"disk_bytes"`
 	PrimaryPort      int     `json:"primary_port"`
 	CreatedAt        string  `json:"created_at"`
 	UpdatedAt        string  `json:"updated_at"`
@@ -31,6 +39,9 @@ type CreateMachineParams struct {
 	RuntimeName      string
 	SourceSnapshotID *string
 	State            string
+	CPU              string
+	MemoryBytes      int64
+	DiskBytes        int64
 	PrimaryPort      int
 }
 
@@ -44,6 +55,9 @@ type SnapshotRecord struct {
 	SourceMachineName *string `json:"source_machine_name,omitempty"`
 	RuntimeName       string  `json:"runtime_name"`
 	State             string  `json:"state"`
+	CPU               string  `json:"cpu"`
+	MemoryBytes       int64   `json:"memory_bytes"`
+	DiskBytes         int64   `json:"disk_bytes"`
 	ArtifactDir       string  `json:"artifact_dir"`
 	DiskSizeBytes     int64   `json:"disk_size_bytes"`
 	MemorySizeBytes   int64   `json:"memory_size_bytes"`
@@ -62,11 +76,22 @@ type CreateSnapshotParams struct {
 	SourceMachineID *string
 	RuntimeName     string
 	State           string
+	CPU             string
+	MemoryBytes     int64
+	DiskBytes       int64
 	ArtifactDir     string
 	DiskSizeBytes   int64
 	MemorySizeBytes int64
 	RuntimeVersion  string
 	FirmwareVersion string
+}
+
+type UserBudgetDefaults struct {
+	MaxCPU           string
+	MaxMemoryBytes   int64
+	MaxDiskBytes     int64
+	MaxMachineCount  int
+	MaxSnapshotCount int
 }
 
 type EmailCodeRecord struct {

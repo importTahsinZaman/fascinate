@@ -48,6 +48,22 @@ type ToolAuthDiagnostics struct {
 	Events     []Event            `json:"events,omitempty"`
 }
 
+type BudgetSummary struct {
+	CPU           string `json:"cpu"`
+	MemoryBytes   int64  `json:"memory_bytes"`
+	DiskBytes     int64  `json:"disk_bytes"`
+	MachineCount  int    `json:"machine_count"`
+	SnapshotCount int    `json:"snapshot_count"`
+}
+
+type BudgetDiagnostics struct {
+	OwnerEmail           string        `json:"owner_email"`
+	Limits               BudgetSummary `json:"limits"`
+	Usage                BudgetSummary `json:"usage"`
+	Remaining            BudgetSummary `json:"remaining"`
+	HostMinFreeDiskBytes int64         `json:"host_min_free_disk_bytes"`
+}
+
 func (s *Service) GetHostDiagnostics(ctx context.Context) ([]Host, error) {
 	return s.ListHosts(ctx)
 }
@@ -176,6 +192,66 @@ func (s *Service) GetToolAuthDiagnostics(ctx context.Context, ownerEmail string)
 	return diag, nil
 }
 
+func (s *Service) GetBudgetDiagnostics(ctx context.Context, ownerEmail string) (BudgetDiagnostics, error) {
+	ownerEmail = normalizeEmail(ownerEmail)
+	if ownerEmail == "" {
+		return BudgetDiagnostics{}, errors.New("owner email is required")
+	}
+
+	user, userErr := s.store.GetUserByEmail(ctx, ownerEmail)
+	if userErr != nil && !errors.Is(userErr, database.ErrNotFound) {
+		return BudgetDiagnostics{}, userErr
+	}
+
+	budgetUser := user
+	if errors.Is(userErr, database.ErrNotFound) {
+		budgetUser.Email = ownerEmail
+	}
+	budget, err := s.userBudgetForUser(budgetUser)
+	if err != nil {
+		return BudgetDiagnostics{}, err
+	}
+
+	var usage userUsage
+	if !errors.Is(userErr, database.ErrNotFound) {
+		usage, err = s.calculateUserUsage(ctx, user.ID)
+		if err != nil {
+			return BudgetDiagnostics{}, err
+		}
+	}
+
+	minFreeDiskBytes, err := s.hostMinFreeDiskBytes()
+	if err != nil {
+		return BudgetDiagnostics{}, err
+	}
+
+	return BudgetDiagnostics{
+		OwnerEmail: ownerEmail,
+		Limits: BudgetSummary{
+			CPU:           budget.MaxCPUText,
+			MemoryBytes:   budget.MaxMemoryBytes,
+			DiskBytes:     budget.MaxDiskBytes,
+			MachineCount:  budget.MaxMachineCount,
+			SnapshotCount: budget.MaxSnapshotCount,
+		},
+		Usage: BudgetSummary{
+			CPU:           formatCPUCount(usage.CPU),
+			MemoryBytes:   usage.MemoryBytes,
+			DiskBytes:     usage.DiskBytes,
+			MachineCount:  usage.MachineCount,
+			SnapshotCount: usage.SnapshotCount,
+		},
+		Remaining: BudgetSummary{
+			CPU:           formatCPUCount(maxFloat64(budget.MaxCPU - usage.CPU)),
+			MemoryBytes:   maxInt64(budget.MaxMemoryBytes - usage.MemoryBytes),
+			DiskBytes:     maxInt64(budget.MaxDiskBytes - usage.DiskBytes),
+			MachineCount:  maxInt(budget.MaxMachineCount - usage.MachineCount),
+			SnapshotCount: maxInt(budget.MaxSnapshotCount - usage.SnapshotCount),
+		},
+		HostMinFreeDiskBytes: minFreeDiskBytes,
+	}, nil
+}
+
 func (s *Service) ListOwnerEvents(ctx context.Context, ownerEmail string, limit int) ([]Event, error) {
 	ownerEmail = normalizeEmail(ownerEmail)
 	if ownerEmail == "" {
@@ -255,4 +331,25 @@ func eventMatchesSnapshot(record database.EventRecord, snapshot database.Snapsho
 		}
 	}
 	return false
+}
+
+func maxInt(value int) int {
+	if value < 0 {
+		return 0
+	}
+	return value
+}
+
+func maxInt64(value int64) int64 {
+	if value < 0 {
+		return 0
+	}
+	return value
+}
+
+func maxFloat64(value float64) float64 {
+	if value < 0 {
+		return 0
+	}
+	return value
 }

@@ -8,6 +8,7 @@ usage() {
   cat <<'EOF'
 usage:
   diagnostics.sh hosts
+  diagnostics.sh budgets <owner_email>
   diagnostics.sh machine <owner_email> <machine_name>
   diagnostics.sh snapshot <owner_email> <snapshot_name>
   diagnostics.sh tool-auth <owner_email>
@@ -51,6 +52,23 @@ main() {
       source "${ENV_FILE}"
       set +a
       curl -fsS "$(api_url "/v1/diagnostics/hosts")" | jq .
+      ;;
+    budgets)
+      require_command curl
+      if [[ ! -f "${ENV_FILE}" ]]; then
+        echo "missing env file: ${ENV_FILE}" >&2
+        exit 1
+      fi
+      set -a
+      # shellcheck disable=SC1090
+      source "${ENV_FILE}"
+      set +a
+      local owner_email="${2:-}"
+      if [[ -z "${owner_email}" ]]; then
+        usage
+        exit 1
+      fi
+      curl -fsS "$(api_url "/v1/diagnostics/budgets?owner_email=${owner_email}")" | jq .
       ;;
     machine)
       require_command curl

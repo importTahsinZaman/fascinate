@@ -54,6 +54,7 @@ verify-ops:
 	bash -n ops/host/write-caddyfile.sh
 	bash -n ops/host/deploy-web.sh
 	bash -n ops/host/install-control-plane.sh
+	bash -n ops/host/reset-runtime-state.sh
 	bash -n ops/cloudhypervisor/build-base-image.sh
 
 smoke-host:

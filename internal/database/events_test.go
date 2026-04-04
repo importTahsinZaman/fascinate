@@ -31,6 +31,9 @@ func TestCreateAndListEvents(t *testing.T) {
 		OwnerUserID: user.ID,
 		RuntimeName: "habits",
 		State:       "RUNNING",
+		CPU:         "1",
+		MemoryBytes: 2 << 30,
+		DiskBytes:   20 << 30,
 		PrimaryPort: 3000,
 	})
 	if err != nil {

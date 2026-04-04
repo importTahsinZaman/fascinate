@@ -28,8 +28,21 @@ func TestMachineRecordLifecycle(t *testing.T) {
 	if !user.IsAdmin {
 		t.Fatalf("expected admin user")
 	}
+	if user.MaxCPU != "" || user.MaxMemoryBytes != 0 || user.MaxDiskBytes != 0 || user.MaxMachineCount != 0 || user.MaxSnapshotCount != 0 {
+		t.Fatalf("expected new user budgets to start unset, got %+v", user)
+	}
 	if user.TutorialCompletedAt != nil {
 		t.Fatalf("expected tutorial to start incomplete")
+	}
+
+	if err := store.ApplyUserBudgetDefaults(ctx, user.ID, UserBudgetDefaults{
+		MaxCPU:           "2",
+		MaxMemoryBytes:   8 << 30,
+		MaxDiskBytes:     50 << 30,
+		MaxMachineCount:  25,
+		MaxSnapshotCount: 5,
+	}); err != nil {
+		t.Fatal(err)
 	}
 
 	if err := store.MarkUserTutorialCompleted(ctx, user.ID); err != nil {
@@ -38,6 +51,9 @@ func TestMachineRecordLifecycle(t *testing.T) {
 	user, err = store.GetUserByEmail(ctx, "dev@example.com")
 	if err != nil {
 		t.Fatal(err)
+	}
+	if user.MaxCPU != "2" || user.MaxMemoryBytes != 8<<30 || user.MaxDiskBytes != 50<<30 || user.MaxMachineCount != 25 || user.MaxSnapshotCount != 5 {
+		t.Fatalf("unexpected user budgets: %+v", user)
 	}
 	if user.TutorialCompletedAt == nil {
 		t.Fatalf("expected tutorial completion timestamp")
@@ -49,6 +65,9 @@ func TestMachineRecordLifecycle(t *testing.T) {
 		OwnerUserID: user.ID,
 		RuntimeName: "habits",
 		State:       "RUNNING",
+		CPU:         "1",
+		MemoryBytes: 2 << 30,
+		DiskBytes:   20 << 30,
 		PrimaryPort: 3000,
 	})
 	if err != nil {
@@ -61,6 +80,9 @@ func TestMachineRecordLifecycle(t *testing.T) {
 	}
 	if got.OwnerEmail != "dev@example.com" {
 		t.Fatalf("unexpected owner email: %q", got.OwnerEmail)
+	}
+	if got.CPU != "1" || got.MemoryBytes != 2<<30 || got.DiskBytes != 20<<30 {
+		t.Fatalf("unexpected machine resources: %+v", got)
 	}
 
 	list, err := store.ListMachines(ctx, "dev@example.com")
@@ -91,6 +113,24 @@ func TestMachineRecordLifecycle(t *testing.T) {
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("expected ErrNotFound after delete, got %v", err)
 	}
+
+	recreated, err := store.CreateMachine(ctx, CreateMachineParams{
+		ID:          "machine-2",
+		Name:        "habits",
+		OwnerUserID: user.ID,
+		RuntimeName: "habits",
+		State:       "RUNNING",
+		CPU:         "1",
+		MemoryBytes: 2 << 30,
+		DiskBytes:   20 << 30,
+		PrimaryPort: 3000,
+	})
+	if err != nil {
+		t.Fatalf("expected machine name to be reusable after delete, got %v", err)
+	}
+	if recreated.ID != "machine-2" {
+		t.Fatalf("unexpected recreated machine %+v", recreated)
+	}
 }
 
 func TestHostLifecycleAndOwnershipAssignment(t *testing.T) {
@@ -118,6 +158,9 @@ func TestHostLifecycleAndOwnershipAssignment(t *testing.T) {
 		OwnerUserID: user.ID,
 		RuntimeName: "habits",
 		State:       "RUNNING",
+		CPU:         "1",
+		MemoryBytes: 2 << 30,
+		DiskBytes:   20 << 30,
 		PrimaryPort: 3000,
 	})
 	if err != nil {
@@ -130,6 +173,12 @@ func TestHostLifecycleAndOwnershipAssignment(t *testing.T) {
 		OwnerUserID:     user.ID,
 		RuntimeName:     "snapshot-runtime",
 		State:           "READY",
+		CPU:             machine.CPU,
+		MemoryBytes:     machine.MemoryBytes,
+		DiskBytes:       machine.DiskBytes,
+		ArtifactDir:     "/tmp/baseline",
+		DiskSizeBytes:   20 << 30,
+		MemorySizeBytes: 2 << 30,
 		SourceMachineID: &machine.ID,
 	})
 	if err != nil {
@@ -137,6 +186,9 @@ func TestHostLifecycleAndOwnershipAssignment(t *testing.T) {
 	}
 	if snapshot.HostID != nil {
 		t.Fatalf("expected snapshot host to start nil, got %+v", snapshot.HostID)
+	}
+	if snapshot.CPU != "1" || snapshot.MemoryBytes != 2<<30 || snapshot.DiskBytes != 20<<30 {
+		t.Fatalf("unexpected snapshot resources: %+v", snapshot)
 	}
 
 	host, err := store.UpsertHost(ctx, UpsertHostParams{
@@ -205,6 +257,86 @@ func TestHostLifecycleAndOwnershipAssignment(t *testing.T) {
 	}
 	if hosts[0].HeartbeatAt == nil {
 		t.Fatalf("expected heartbeat timestamp")
+	}
+}
+
+func TestSnapshotNameReusableAfterDelete(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, err := Open(ctx, filepath.Join(t.TempDir(), "fascinate.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	if err := store.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	user, err := store.UpsertUser(ctx, "dev@example.com", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	machine, err := store.CreateMachine(ctx, CreateMachineParams{
+		ID:          "machine-1",
+		Name:        "habits",
+		OwnerUserID: user.ID,
+		RuntimeName: "habits",
+		State:       "RUNNING",
+		CPU:         "1",
+		MemoryBytes: 2 << 30,
+		DiskBytes:   20 << 30,
+		PrimaryPort: 3000,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	snapshot, err := store.CreateSnapshot(ctx, CreateSnapshotParams{
+		ID:              "snapshot-1",
+		Name:            "baseline",
+		OwnerUserID:     user.ID,
+		RuntimeName:     "baseline-runtime",
+		State:           "READY",
+		CPU:             machine.CPU,
+		MemoryBytes:     machine.MemoryBytes,
+		DiskBytes:       machine.DiskBytes,
+		ArtifactDir:     "/tmp/baseline",
+		DiskSizeBytes:   20 << 30,
+		MemorySizeBytes: 2 << 30,
+		SourceMachineID: &machine.ID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := store.MarkSnapshotDeleted(ctx, snapshot.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.GetSnapshotByName(ctx, user.ID, "baseline"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound after snapshot delete, got %v", err)
+	}
+
+	recreated, err := store.CreateSnapshot(ctx, CreateSnapshotParams{
+		ID:              "snapshot-2",
+		Name:            "baseline",
+		OwnerUserID:     user.ID,
+		RuntimeName:     "baseline-runtime",
+		State:           "READY",
+		CPU:             machine.CPU,
+		MemoryBytes:     machine.MemoryBytes,
+		DiskBytes:       machine.DiskBytes,
+		ArtifactDir:     "/tmp/baseline-2",
+		DiskSizeBytes:   20 << 30,
+		MemorySizeBytes: 2 << 30,
+		SourceMachineID: &machine.ID,
+	})
+	if err != nil {
+		t.Fatalf("expected snapshot name to be reusable after delete, got %v", err)
+	}
+	if recreated.ID != "snapshot-2" {
+		t.Fatalf("unexpected recreated snapshot %+v", recreated)
 	}
 }
 

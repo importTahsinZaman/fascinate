@@ -7,6 +7,11 @@ SOURCE_NAME="${FASCINATE_SNAPSHOT_SOURCE_NAME:-snapshot-source-$(date +%s)}"
 SNAPSHOT_NAME="${FASCINATE_SNAPSHOT_NAME:-snapshot-$(date +%s)}"
 RESTORE_NAME="${FASCINATE_SNAPSHOT_RESTORE_NAME:-snapshot-restore-$(date +%s)}"
 FORK_NAME="${FASCINATE_SNAPSHOT_FORK_NAME:-snapshot-fork-$(date +%s)}"
+SMOKE_MAX_CPU="${FASCINATE_SMOKE_MAX_CPU:-4}"
+SMOKE_MAX_MEMORY_BYTES="${FASCINATE_SMOKE_MAX_MEMORY_BYTES:-17179869184}"
+SMOKE_MAX_DISK_BYTES="${FASCINATE_SMOKE_MAX_DISK_BYTES:-107374182400}"
+SMOKE_MAX_MACHINE_COUNT="${FASCINATE_SMOKE_MAX_MACHINE_COUNT:-25}"
+SMOKE_MAX_SNAPSHOT_COUNT="${FASCINATE_SMOKE_MAX_SNAPSHOT_COUNT:-5}"
 
 require_root() {
   if [[ "${EUID}" -ne 0 ]]; then
@@ -82,6 +87,23 @@ run_guest_command() {
     -p "${port}" \
     "${FASCINATE_GUEST_SSH_USER}@${host}" \
     "$@"
+}
+
+wait_for_guest_ready() {
+  local host="$1"
+  local port="$2"
+  local attempts=60
+
+  while (( attempts > 0 )); do
+    if run_guest_command "${host}" "${port}" "python3 --version >/dev/null 2>&1 && cat /proc/sys/kernel/random/boot_id >/dev/null 2>&1"; then
+      return 0
+    fi
+    attempts=$((attempts - 1))
+    sleep 2
+  done
+
+  echo "guest never became ready on ${host}:${port}" >&2
+  exit 1
 }
 
 wait_for_machine_ready() {
@@ -234,6 +256,19 @@ create_machine() {
     "$(api_url '/v1/machines')" >/dev/null
 }
 
+ensure_smoke_user_budget() {
+  sqlite3 "${FASCINATE_DB_PATH}" <<EOF_SQL
+UPDATE users
+SET
+  max_cpu = '${SMOKE_MAX_CPU}',
+  max_memory_bytes = ${SMOKE_MAX_MEMORY_BYTES},
+  max_disk_bytes = ${SMOKE_MAX_DISK_BYTES},
+  max_machine_count = ${SMOKE_MAX_MACHINE_COUNT},
+  max_snapshot_count = ${SMOKE_MAX_SNAPSHOT_COUNT}
+WHERE email = '${SMOKE_EMAIL}';
+EOF_SQL
+}
+
 main() {
   require_root
 
@@ -263,8 +298,10 @@ main() {
 
   echo "creating ${SOURCE_NAME}"
   create_machine "${SOURCE_NAME}"
+  ensure_smoke_user_budget
   local source_host source_port
   read -r source_host source_port <<<"$(wait_for_machine_ready "${SOURCE_NAME}")"
+  wait_for_guest_ready "${source_host}" "${source_port}"
 
   echo "starting long-lived app on ${SOURCE_NAME}"
   run_guest_command "${source_host}" "${source_port}" "python3 -c \"import pathlib, subprocess; root=pathlib.Path('/home/ubuntu/fascinate-snapshot-smoke'); root.mkdir(parents=True, exist_ok=True); (root / 'index.html').write_text('snapshot-smoke-${SOURCE_NAME}'); log=open('/tmp/fascinate-snapshot-smoke.log','ab', buffering=0); proc=subprocess.Popen(['python3','-m','http.server','3000','--bind','0.0.0.0','--directory',str(root)], stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, start_new_session=True); pathlib.Path('/tmp/fascinate-snapshot-smoke.pid').write_text(str(proc.pid)); print('started')\""
@@ -282,6 +319,7 @@ main() {
   create_machine "${RESTORE_NAME}" "${SNAPSHOT_NAME}"
   local restore_host restore_port
   read -r restore_host restore_port <<<"$(wait_for_machine_ready "${RESTORE_NAME}")"
+  wait_for_guest_ready "${restore_host}" "${restore_port}"
   wait_for_route_body "${RESTORE_NAME}" "snapshot-smoke-${SOURCE_NAME}"
 
   echo "forking ${SOURCE_NAME} to ${FORK_NAME}"
@@ -292,6 +330,7 @@ main() {
     "$(api_url "/v1/machines/${SOURCE_NAME}/fork")" >/dev/null
   local fork_host fork_port
   read -r fork_host fork_port <<<"$(wait_for_machine_ready "${FORK_NAME}")"
+  wait_for_guest_ready "${fork_host}" "${fork_port}"
   wait_for_route_body "${FORK_NAME}" "snapshot-smoke-${SOURCE_NAME}"
 
   echo "verifying restored runtime identity"

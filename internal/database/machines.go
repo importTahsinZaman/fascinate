@@ -9,9 +9,13 @@ import (
 
 func (s *Store) CreateMachine(ctx context.Context, params CreateMachineParams) (MachineRecord, error) {
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO machines (id, name, owner_user_id, host_id, runtime_name, source_snapshot_id, state, primary_port)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-	`, params.ID, params.Name, params.OwnerUserID, params.HostID, params.RuntimeName, params.SourceSnapshotID, params.State, params.PrimaryPort)
+		INSERT INTO machines (
+			id, name, owner_user_id, host_id, runtime_name, source_snapshot_id, state,
+			cpu, memory_bytes, disk_bytes, primary_port
+		)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, params.ID, params.Name, params.OwnerUserID, params.HostID, params.RuntimeName, params.SourceSnapshotID, params.State,
+		params.CPU, params.MemoryBytes, params.DiskBytes, params.PrimaryPort)
 	if err != nil {
 		if isUniqueConstraint(err) {
 			return MachineRecord{}, ErrConflict
@@ -34,6 +38,9 @@ func (s *Store) GetMachineByName(ctx context.Context, name string) (MachineRecor
 			m.runtime_name,
 			m.source_snapshot_id,
 			m.state,
+			m.cpu,
+			m.memory_bytes,
+			m.disk_bytes,
 			m.primary_port,
 			m.created_at,
 			m.updated_at,
@@ -50,6 +57,9 @@ func (s *Store) GetMachineByName(ctx context.Context, name string) (MachineRecor
 		&record.RuntimeName,
 		nullableString(&record.SourceSnapshotID),
 		&record.State,
+		&record.CPU,
+		&record.MemoryBytes,
+		&record.DiskBytes,
 		&record.PrimaryPort,
 		&record.CreatedAt,
 		&record.UpdatedAt,
@@ -76,6 +86,9 @@ func (s *Store) ListMachines(ctx context.Context, ownerEmail string) ([]MachineR
 			m.runtime_name,
 			m.source_snapshot_id,
 			m.state,
+			m.cpu,
+			m.memory_bytes,
+			m.disk_bytes,
 			m.primary_port,
 			m.created_at,
 			m.updated_at,
@@ -109,6 +122,9 @@ func (s *Store) ListMachines(ctx context.Context, ownerEmail string) ([]MachineR
 			&record.RuntimeName,
 			nullableString(&record.SourceSnapshotID),
 			&record.State,
+			&record.CPU,
+			&record.MemoryBytes,
+			&record.DiskBytes,
 			&record.PrimaryPort,
 			&record.CreatedAt,
 			&record.UpdatedAt,
@@ -145,8 +161,7 @@ func (s *Store) UpdateMachineState(ctx context.Context, id, state string) error 
 
 func (s *Store) MarkMachineDeleted(ctx context.Context, id string) error {
 	result, err := s.db.ExecContext(ctx, `
-		UPDATE machines
-		SET state = 'deleted', updated_at = CURRENT_TIMESTAMP, deleted_at = CURRENT_TIMESTAMP
+		DELETE FROM machines
 		WHERE id = ? AND deleted_at IS NULL
 	`, id)
 	if err != nil {

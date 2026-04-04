@@ -70,10 +70,13 @@ Current browser HTTP API:
 - `DELETE /v1/snapshots/{name}`
 - `GET /v1/diagnostics/events`
 - `GET /v1/diagnostics/hosts`
+- `GET /v1/diagnostics/budgets`
 - `GET /v1/diagnostics/tool-auth`
 - `GET /v1/diagnostics/machines/{name}`
 - `GET /v1/diagnostics/snapshots/{name}`
 - `GET /v1/diagnostics/terminal-sessions`
+
+Deleted machine and snapshot names are released immediately, so the same name can be reused after `DELETE /v1/machines/{name}` or `DELETE /v1/snapshots/{name}` succeeds.
 
 ## Repo Layout
 
@@ -86,11 +89,12 @@ Current browser HTTP API:
 - [`ops/release/deploy-web-artifact.sh`](/Users/tahsin/Desktop/vmcloud/ops/release/deploy-web-artifact.sh): uploads and installs a web-only artifact over SSH without restarting `fascinate`
 - [`ops/host/write-caddyfile.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/write-caddyfile.sh): writes the host Caddy config for Fascinate
 - [`ops/host/install-control-plane.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/install-control-plane.sh): packaged installer executed from an unpacked full artifact on the host
+- [`ops/host/reset-runtime-state.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/reset-runtime-state.sh): destructive clean-state helper for wiping persisted VM/snapshot runtime state before a rollout
 - [`ops/host/deploy-web.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/deploy-web.sh): packaged web-only installer executed from an unpacked artifact on the host
 - [`ops/host/smoke.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/smoke.sh): validates the basic create, route, restart, and delete lifecycle
 - [`ops/host/benchmark.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/benchmark.sh): prints structured timing metrics for create, snapshot, restore, and fork
 - [`ops/host/stress.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/stress.sh): validates realistic app, local DB, Docker, restart, snapshot, restore, fork, divergence, and cleanup behavior
-- [`ops/host/diagnostics.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/diagnostics.sh): queries host, machine, snapshot, tool-auth, terminal-session, event, and installed-release diagnostics from a configured host
+- [`ops/host/diagnostics.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/diagnostics.sh): queries host, budget, machine, snapshot, tool-auth, terminal-session, event, and installed-release diagnostics from a configured host
 - [`ops/host/smoke-tool-auth.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/smoke-tool-auth.sh): targeted persistence harness for Claude, Codex, and GitHub auth across later VMs
 - [`ops/host/smoke-snapshots.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/smoke-snapshots.sh): validates saved snapshots, create-from-snapshot, and true fork flows
 - [`docs/stress-matrix.md`](/Users/tahsin/Desktop/vmcloud/docs/stress-matrix.md): expectation matrix and operator guidance for live validation
@@ -155,6 +159,7 @@ Query live diagnostics from a configured host:
 
 ```bash
 sudo ./ops/host/diagnostics.sh hosts
+sudo ./ops/host/diagnostics.sh budgets you@example.com
 sudo ./ops/host/diagnostics.sh machine you@example.com machine-name
 sudo ./ops/host/diagnostics.sh snapshot you@example.com snapshot-name
 sudo ./ops/host/diagnostics.sh tool-auth you@example.com
@@ -283,10 +288,16 @@ export FASCINATE_DEFAULT_IMAGE=./data/images/fascinate-base.raw
 export FASCINATE_DEFAULT_MACHINE_CPU=1
 export FASCINATE_DEFAULT_MACHINE_RAM=2GiB
 export FASCINATE_DEFAULT_MACHINE_DISK=20GiB
-export FASCINATE_MAX_MACHINES_PER_USER=6
+export FASCINATE_DEFAULT_USER_MAX_CPU=2
+export FASCINATE_DEFAULT_USER_MAX_RAM=8GiB
+export FASCINATE_DEFAULT_USER_MAX_DISK=50GiB
+export FASCINATE_DEFAULT_USER_MAX_MACHINES=25
+export FASCINATE_DEFAULT_USER_MAX_SNAPSHOTS=5
+export FASCINATE_MAX_MACHINES_PER_USER=25
 export FASCINATE_MAX_MACHINE_CPU=2
 export FASCINATE_MAX_MACHINE_RAM=4GiB
 export FASCINATE_MAX_MACHINE_DISK=20GiB
+export FASCINATE_HOST_MIN_FREE_DISK=150GiB
 export FASCINATE_DEFAULT_PRIMARY_PORT=3000
 export FASCINATE_TOOL_AUTH_DIR=./data/tool-auth
 export FASCINATE_TOOL_AUTH_KEY_PATH=./data/tool_auth.key
@@ -389,6 +400,7 @@ Instead of hardcoding `https://<machine>.<base-domain>`.
 - Snapshot diagnostics surface artifact locations, runtime metadata, and recent snapshot lifecycle events.
 - Owner event diagnostics surface machine, snapshot, and tool-auth lifecycle history without needing manual host log forensics.
 - Host diagnostics surface registered hosts, heartbeat freshness, placement eligibility, and advertised capacity.
+- Budget diagnostics surface each user's aggregate CPU, memory, disk, machine-count, and snapshot-count limits plus current usage and remaining headroom.
 
 Host storage:
 - encrypted bundles live under `FASCINATE_TOOL_AUTH_DIR`

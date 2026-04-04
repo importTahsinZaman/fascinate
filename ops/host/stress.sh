@@ -7,6 +7,11 @@ SOURCE_NAME="${FASCINATE_STRESS_SOURCE_NAME:-stress-source-$(date +%s)}"
 SNAPSHOT_NAME="${FASCINATE_STRESS_SNAPSHOT_NAME:-stress-snapshot-$(date +%s)}"
 RESTORE_NAME="${FASCINATE_STRESS_RESTORE_NAME:-stress-restore-$(date +%s)}"
 FORK_NAME="${FASCINATE_STRESS_FORK_NAME:-stress-fork-$(date +%s)}"
+STRESS_MAX_CPU="${FASCINATE_STRESS_MAX_CPU:-4}"
+STRESS_MAX_MEMORY_BYTES="${FASCINATE_STRESS_MAX_MEMORY_BYTES:-17179869184}"
+STRESS_MAX_DISK_BYTES="${FASCINATE_STRESS_MAX_DISK_BYTES:-107374182400}"
+STRESS_MAX_MACHINE_COUNT="${FASCINATE_STRESS_MAX_MACHINE_COUNT:-25}"
+STRESS_MAX_SNAPSHOT_COUNT="${FASCINATE_STRESS_MAX_SNAPSHOT_COUNT:-5}"
 
 declare -A MACHINE_NAMESPACE=()
 declare -A MACHINE_HOST_VETH=()
@@ -100,6 +105,19 @@ create_machine() {
     -H 'Content-Type: application/json' \
     -d "${body}" \
     "$(api_url '/v1/machines')" >/dev/null
+}
+
+ensure_stress_user_budget() {
+  sqlite3 "${FASCINATE_DB_PATH}" <<EOF_SQL
+UPDATE users
+SET
+  max_cpu = '${STRESS_MAX_CPU}',
+  max_memory_bytes = ${STRESS_MAX_MEMORY_BYTES},
+  max_disk_bytes = ${STRESS_MAX_DISK_BYTES},
+  max_machine_count = ${STRESS_MAX_MACHINE_COUNT},
+  max_snapshot_count = ${STRESS_MAX_SNAPSHOT_COUNT}
+WHERE email = '${STRESS_EMAIL}';
+EOF_SQL
 }
 
 delete_machine() {
@@ -416,6 +434,7 @@ main() {
 
   echo "creating ${SOURCE_NAME}"
   create_machine "${SOURCE_NAME}"
+  ensure_stress_user_budget
   local source_host source_port
   read -r source_host source_port <<<"$(wait_for_machine_ready "${SOURCE_NAME}")"
   record_machine_artifacts "${SOURCE_NAME}"

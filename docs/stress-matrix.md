@@ -23,6 +23,7 @@ This document defines the current Fascinate product expectations and maps each e
 | Tool auth diagnostics | Capture/restore failures for Claude, Codex, or GitHub auth are visible to operators | `internal/httpapi/server_test.go`, `ops/host/diagnostics.sh` |
 | Lifecycle diagnostics | Operators can inspect machine/snapshot runtime handles, lifecycle failures, forwarder state, and recent events without manual host forensics | `internal/httpapi/server_test.go`, `ops/host/diagnostics.sh` |
 | Host diagnostics | Operators can inspect registered hosts, heartbeat freshness, and current default-machine placement eligibility | `internal/controlplane/hosts_test.go`, `internal/httpapi/server_test.go`, `ops/host/diagnostics.sh hosts` |
+| Budget diagnostics | Operators can inspect per-user aggregate resource budgets, retained snapshot count, and remaining headroom | `internal/controlplane/service_test.go`, `internal/httpapi/server_test.go`, `ops/host/diagnostics.sh budgets` |
 | Host reboot survival | After a full host reboot, the control plane restarts, stopped VMs are recovered, and guest workloads configured for guest boot come back without manual host repair | `internal/controlplane/service_test.go`, manual live reboot validation |
 
 ## Live Validation Entry Points
@@ -34,6 +35,7 @@ This document defines the current Fascinate product expectations and maps each e
 - Timing benchmark: `sudo ./ops/host/benchmark.sh`
 - Diagnostics helper:
   - `sudo ./ops/host/diagnostics.sh hosts`
+  - `sudo ./ops/host/diagnostics.sh budgets <owner_email>`
   - `sudo ./ops/host/diagnostics.sh machine <owner_email> <machine_name>`
   - `sudo ./ops/host/diagnostics.sh snapshot <owner_email> <snapshot_name>`
   - `sudo ./ops/host/diagnostics.sh tool-auth <owner_email>`

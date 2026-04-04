@@ -79,6 +79,7 @@ verify_required_paths() {
       required_paths=(
         "manifest.json"
         "ops/host/install-control-plane.sh"
+        "ops/host/reset-runtime-state.sh"
         "ops/host/write-caddyfile.sh"
         "ops/release/lib.sh"
         "ops/release/verify-artifact.sh"

@@ -10,11 +10,13 @@ import (
 func (s *Store) CreateSnapshot(ctx context.Context, params CreateSnapshotParams) (SnapshotRecord, error) {
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO snapshots (
-			id, name, owner_user_id, host_id, source_machine_id, runtime_name, state, artifact_dir,
-			disk_size_bytes, memory_size_bytes, runtime_version, firmware_version
+			id, name, owner_user_id, host_id, source_machine_id, runtime_name, state,
+			cpu, memory_bytes, disk_bytes, artifact_dir, disk_size_bytes, memory_size_bytes,
+			runtime_version, firmware_version
 		)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, params.ID, params.Name, params.OwnerUserID, params.HostID, params.SourceMachineID, params.RuntimeName, params.State, params.ArtifactDir,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, params.ID, params.Name, params.OwnerUserID, params.HostID, params.SourceMachineID, params.RuntimeName, params.State,
+		params.CPU, params.MemoryBytes, params.DiskBytes, params.ArtifactDir,
 		params.DiskSizeBytes, params.MemorySizeBytes, params.RuntimeVersion, params.FirmwareVersion)
 	if err != nil {
 		if isUniqueConstraint(err) {
@@ -39,6 +41,9 @@ func (s *Store) GetSnapshotByName(ctx context.Context, ownerUserID, name string)
 			m.name,
 			s.runtime_name,
 			s.state,
+			s.cpu,
+			s.memory_bytes,
+			s.disk_bytes,
 			s.artifact_dir,
 			s.disk_size_bytes,
 			s.memory_size_bytes,
@@ -61,6 +66,9 @@ func (s *Store) GetSnapshotByName(ctx context.Context, ownerUserID, name string)
 		nullableString(&record.SourceMachineName),
 		&record.RuntimeName,
 		&record.State,
+		&record.CPU,
+		&record.MemoryBytes,
+		&record.DiskBytes,
 		&record.ArtifactDir,
 		&record.DiskSizeBytes,
 		&record.MemorySizeBytes,
@@ -93,6 +101,9 @@ func (s *Store) GetSnapshotByID(ctx context.Context, id string) (SnapshotRecord,
 			m.name,
 			s.runtime_name,
 			s.state,
+			s.cpu,
+			s.memory_bytes,
+			s.disk_bytes,
 			s.artifact_dir,
 			s.disk_size_bytes,
 			s.memory_size_bytes,
@@ -115,6 +126,9 @@ func (s *Store) GetSnapshotByID(ctx context.Context, id string) (SnapshotRecord,
 		nullableString(&record.SourceMachineName),
 		&record.RuntimeName,
 		&record.State,
+		&record.CPU,
+		&record.MemoryBytes,
+		&record.DiskBytes,
 		&record.ArtifactDir,
 		&record.DiskSizeBytes,
 		&record.MemorySizeBytes,
@@ -146,6 +160,9 @@ func (s *Store) ListSnapshots(ctx context.Context, ownerEmail string) ([]Snapsho
 			m.name,
 			s.runtime_name,
 			s.state,
+			s.cpu,
+			s.memory_bytes,
+			s.disk_bytes,
 			s.artifact_dir,
 			s.disk_size_bytes,
 			s.memory_size_bytes,
@@ -185,6 +202,9 @@ func (s *Store) ListSnapshots(ctx context.Context, ownerEmail string) ([]Snapsho
 			nullableString(&record.SourceMachineName),
 			&record.RuntimeName,
 			&record.State,
+			&record.CPU,
+			&record.MemoryBytes,
+			&record.DiskBytes,
 			&record.ArtifactDir,
 			&record.DiskSizeBytes,
 			&record.MemorySizeBytes,
@@ -246,8 +266,7 @@ func (s *Store) UpdateSnapshotArtifacts(ctx context.Context, id string, diskSize
 
 func (s *Store) MarkSnapshotDeleted(ctx context.Context, id string) error {
 	result, err := s.db.ExecContext(ctx, `
-		UPDATE snapshots
-		SET state = 'deleted', updated_at = CURRENT_TIMESTAMP, deleted_at = CURRENT_TIMESTAMP
+		DELETE FROM snapshots
 		WHERE id = ? AND deleted_at IS NULL
 	`, strings.TrimSpace(id))
 	if err != nil {

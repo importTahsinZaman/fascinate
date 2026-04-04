@@ -28,6 +28,7 @@ copy_install_assets() {
     "${artifact_root}/payload/web"
 
   install -m 0755 "${REPO_ROOT}/ops/host/install-control-plane.sh" "${artifact_root}/ops/host/install-control-plane.sh"
+  install -m 0755 "${REPO_ROOT}/ops/host/reset-runtime-state.sh" "${artifact_root}/ops/host/reset-runtime-state.sh"
   install -m 0755 "${REPO_ROOT}/ops/host/write-caddyfile.sh" "${artifact_root}/ops/host/write-caddyfile.sh"
   install -m 0644 "${REPO_ROOT}/ops/systemd/fascinate.service" "${artifact_root}/ops/systemd/fascinate.service"
   install -m 0644 "${REPO_ROOT}/ops/release/lib.sh" "${artifact_root}/ops/release/lib.sh"
