@@ -141,9 +141,9 @@ func Load() Config {
 		DefaultUserMaxRAM:       getenv("FASCINATE_DEFAULT_USER_MAX_RAM", "10GiB"),
 		DefaultUserMaxDisk:      getenv("FASCINATE_DEFAULT_USER_MAX_DISK", "80GiB"),
 		HostSharedCPURatio:      getenv("FASCINATE_HOST_SHARED_CPU_RATIO", "1.67"),
-		DefaultUserMaxMachines:  getenvInt("FASCINATE_DEFAULT_USER_MAX_MACHINES", getenvInt("FASCINATE_MAX_MACHINES_PER_USER", 25)),
+		DefaultUserMaxMachines:  getenvInt("FASCINATE_DEFAULT_USER_MAX_MACHINES", getenvInt("FASCINATE_MAX_MACHINES_PER_USER", 5)),
 		DefaultUserMaxSnapshots: getenvInt("FASCINATE_DEFAULT_USER_MAX_SNAPSHOTS", 5),
-		MaxMachinesPerUser:      getenvInt("FASCINATE_MAX_MACHINES_PER_USER", 25),
+		MaxMachinesPerUser:      getenvInt("FASCINATE_MAX_MACHINES_PER_USER", 5),
 		MaxMachineCPU:           getenv("FASCINATE_MAX_MACHINE_CPU", "2"),
 		MaxMachineRAM:           getenv("FASCINATE_MAX_MACHINE_RAM", "4GiB"),
 		MaxMachineDisk:          getenv("FASCINATE_MAX_MACHINE_DISK", "20GiB"),
@@ -169,7 +169,7 @@ func (c Config) EffectiveDefaultUserMaxMachines() int {
 	if c.MaxMachinesPerUser > 0 {
 		return c.MaxMachinesPerUser
 	}
-	return 25
+	return 5
 }
 
 func getenv(key, fallback string) string {

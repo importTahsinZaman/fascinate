@@ -31,8 +31,6 @@ type machineManager interface {
 	GetPublicMachine(context.Context, string) (controlplane.Machine, error)
 	GetMachineEnv(context.Context, string, string) (controlplane.MachineEnv, error)
 	CreateMachine(context.Context, controlplane.CreateMachineInput) (controlplane.Machine, error)
-	StartMachine(context.Context, string, string) (controlplane.Machine, error)
-	StopMachine(context.Context, string, string) (controlplane.Machine, error)
 	DeleteMachine(context.Context, string, string) error
 	ForkMachine(context.Context, controlplane.ForkMachineInput) (controlplane.Machine, error)
 	ListSnapshots(context.Context, string) ([]controlplane.Snapshot, error)
@@ -602,53 +600,6 @@ func New(cfg config.Config, store *database.Store, runtime runtimeChecker, machi
 			return
 		}
 
-		if len(parts) == 2 && parts[1] == "start" {
-			if r.Method != http.MethodPost {
-				writeMethodNotAllowed(w, http.MethodPost)
-				return
-			}
-			ownerEmail, err := ownerEmailForRequest(r.Context(), r, cfg, auth, strings.TrimSpace(r.URL.Query().Get("owner_email")))
-			if err != nil {
-				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
-				return
-			}
-			ctx, cancel := context.WithTimeout(r.Context(), 15*time.Minute)
-			defer cancel()
-
-			machine, err := machines.StartMachine(ctx, name, ownerEmail)
-			if err != nil {
-				writeServiceError(w, err)
-				return
-			}
-			writeJSON(w, http.StatusOK, machine)
-			return
-		}
-
-		if len(parts) == 2 && parts[1] == "stop" {
-			if r.Method != http.MethodPost {
-				writeMethodNotAllowed(w, http.MethodPost)
-				return
-			}
-			ownerEmail, err := ownerEmailForRequest(r.Context(), r, cfg, auth, strings.TrimSpace(r.URL.Query().Get("owner_email")))
-			if err != nil {
-				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
-				return
-			}
-			ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
-			defer cancel()
-
-			machine, err := machines.StopMachine(ctx, name, ownerEmail)
-			if err != nil {
-				writeServiceError(w, err)
-				return
-			}
-			if terminals != nil {
-				_ = terminals.CloseMachineSessions(ctx, ownerEmail, name)
-			}
-			writeJSON(w, http.StatusOK, machine)
-			return
-		}
-
 		if len(parts) == 2 && parts[1] == "fork" {
 			if r.Method != http.MethodPost {
 				writeMethodNotAllowed(w, http.MethodPost)
@@ -1059,7 +1010,7 @@ func withMachineProxy(cfg config.Config, machines machineManager, next http.Hand
 		}
 		switch strings.ToUpper(strings.TrimSpace(machine.State)) {
 		case "STOPPED":
-			writeMachinePage(w, http.StatusServiceUnavailable, host, "Machine is stopped", "Start this machine in Fascinate before opening its public app URL.")
+			writeMachinePage(w, http.StatusServiceUnavailable, host, "Machine is stopped", "This machine is powered off and cannot serve its public app URL.")
 			return
 		case "CREATING", "STARTING", "STOPPING", "DELETING":
 			writeMachinePage(w, http.StatusServiceUnavailable, host, "Machine is busy", "This machine is transitioning and is not route-ready yet.")

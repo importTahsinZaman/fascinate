@@ -300,18 +300,6 @@ function scheduleMockMachineState(name: string, nextState: string, delayMs: numb
   return timeout;
 }
 
-function updateMockMachine(name: string, updater: (machine: Machine) => Machine) {
-  let updated: Machine | null = null;
-  state.machines = state.machines.map((machine) => {
-    if (machine.name !== name) {
-      return machine;
-    }
-    updated = updater(machine);
-    return updated;
-  });
-  return updated ? clone(updated) : null;
-}
-
 function removeMockMachineSessions(name: string) {
   state.workspace = {
     ...state.workspace,
@@ -392,33 +380,6 @@ export async function createMockMachine(name: string, snapshotName?: string) {
 export async function deleteMockMachine(name: string) {
   state.machines = state.machines.filter((machine) => machine.name !== name);
   removeMockMachineSessions(name);
-}
-
-export async function startMockMachine(name: string) {
-  const machine = updateMockMachine(name, (current) => ({
-    ...current,
-    state: "STARTING",
-    updated_at: new Date().toISOString(),
-  }));
-  if (!machine) {
-    throw new Error(`machine ${name} not found`);
-  }
-  pendingMachineReadyTimeouts = [...pendingMachineReadyTimeouts, scheduleMockMachineState(name, "RUNNING", 1_200)];
-  return machine;
-}
-
-export async function stopMockMachine(name: string) {
-  const machine = updateMockMachine(name, (current) => ({
-    ...current,
-    state: "STOPPING",
-    updated_at: new Date().toISOString(),
-  }));
-  if (!machine) {
-    throw new Error(`machine ${name} not found`);
-  }
-  removeMockMachineSessions(name);
-  pendingMachineReadyTimeouts = [...pendingMachineReadyTimeouts, scheduleMockMachineState(name, "STOPPED", 900)];
-  return machine;
 }
 
 export async function forkMockMachine(sourceName: string, targetName: string) {

@@ -30,8 +30,6 @@ import {
   requestLoginCode,
   saveDefaultWorkspace,
   setEnvVar,
-  startMachine,
-  stopMachine,
   verifyLogin,
   type Machine,
   type Snapshot,
@@ -257,46 +255,6 @@ function CommandCenter() {
       setModal(null);
       void queryClient.invalidateQueries({ queryKey: ["machines"] });
       void queryClient.invalidateQueries({ queryKey: ["snapshots"] });
-    },
-  });
-  const startMachineMutation = useMutation<Machine, Error, string, MachineMutationContext>({
-    mutationFn: startMachine,
-    onMutate: async (machineName) => {
-      await queryClient.cancelQueries({ queryKey: ["machines"] });
-      const previousMachines = queryClient.getQueryData<Machine[]>(["machines"]);
-      queryClient.setQueryData<Machine[]>(["machines"], (current) => updateMachineState(current, machineName, "STARTING"));
-      return { previousMachines, removedWindows: null };
-    },
-    onError: (_error, _machineName, context) => {
-      if (context?.previousMachines) {
-        queryClient.setQueryData(["machines"], context.previousMachines);
-      }
-    },
-    onSuccess: (machine) => {
-      queryClient.setQueryData<Machine[]>(["machines"], (current) => upsertMachineList(current, machine));
-      void queryClient.invalidateQueries({ queryKey: ["machines"] });
-    },
-  });
-  const stopMachineMutation = useMutation<Machine, Error, string, MachineMutationContext>({
-    mutationFn: stopMachine,
-    onMutate: async (machineName) => {
-      await queryClient.cancelQueries({ queryKey: ["machines"] });
-      const previousMachines = queryClient.getQueryData<Machine[]>(["machines"]);
-      const removedWindows = removeWindowsForMachine(machineName);
-      queryClient.setQueryData<Machine[]>(["machines"], (current) => updateMachineState(current, machineName, "STOPPING"));
-      return { previousMachines, removedWindows };
-    },
-    onError: (_error, _machineName, context) => {
-      if (context?.previousMachines) {
-        queryClient.setQueryData(["machines"], context.previousMachines);
-      }
-      if (context?.removedWindows) {
-        restoreRemovedWindows(context.removedWindows);
-      }
-    },
-    onSuccess: (machine) => {
-      queryClient.setQueryData<Machine[]>(["machines"], (current) => upsertMachineList(current, machine));
-      void queryClient.invalidateQueries({ queryKey: ["machines"] });
     },
   });
   const deleteMachineMutation = useMutation<void, Error, string, MachineMutationContext>({
@@ -881,7 +839,6 @@ function CommandCenter() {
                 const normalizedMachineState = machine.state.toUpperCase();
                 const isPendingMachine = ["CREATING", "STARTING", "STOPPING", "DELETING"].includes(normalizedMachineState);
                 const isRunningMachine = normalizedMachineState === "RUNNING" || normalizedMachineState === "READY";
-                const isStoppedMachine = normalizedMachineState === "STOPPED";
                 return (
                   <article
                     key={machine.id}
@@ -912,9 +869,6 @@ function CommandCenter() {
                                 <button type="button" onClick={() => openMachineShell(machine.name)}>
                                   New shell
                                 </button>
-                                <button type="button" onClick={() => stopMachineMutation.mutate(machine.name)}>
-                                  Stop
-                                </button>
                                 <button
                                   className="icon-action-button"
                                   type="button"
@@ -941,11 +895,6 @@ function CommandCenter() {
                                 </button>
                               </>
                             ) : null}
-                            {isStoppedMachine ? (
-                              <button type="button" onClick={() => startMachineMutation.mutate(machine.name)}>
-                                Start
-                              </button>
-                            ) : null}
                             <button
                               className="icon-action-button danger"
                               type="button"
@@ -964,7 +913,7 @@ function CommandCenter() {
               })}
             </div>
           )}
-          <StatusError mutationError={startMachineMutation.error ?? stopMachineMutation.error ?? deleteMachineMutation.error} />
+          <StatusError mutationError={deleteMachineMutation.error} />
         </section>
 
         <section className="control-sidebar-footer">

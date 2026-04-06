@@ -60,8 +60,6 @@ Current browser HTTP API:
 - `POST /v1/machines`
 - `GET /v1/machines/{name}`
 - `GET /v1/machines/{name}/env`
-- `POST /v1/machines/{name}/start`
-- `POST /v1/machines/{name}/stop`
 - `DELETE /v1/machines/{name}`
 - `POST /v1/machines/{name}/fork`
 - `GET /v1/env-vars`
@@ -82,7 +80,7 @@ Deleted machine and snapshot names are released immediately, so the same name ca
 Deleting a machine also closes any browser terminal sessions for that machine, removes their shell windows from the browser workspace immediately, and collapses the machine card to a right-edge spinner while the delete is in flight.
 Fresh machine creation now stays pending until guest bootstrap is actually ready, and the machine card shows only a right-edge spinner until the VM reaches a usable `running` state.
 Machines use hidden baseline sizing. CPU is now a soft per-user entitlement against a host-shared CPU ceiling, RAM remains a hard active-machine budget, and retained machine disk plus retained snapshot artifacts continue to count against disk limits.
-Stopped machines cannot open browser shells or serve public routes until they are started again.
+There is no user-facing stop/start control. To free active compute without keeping a live VM around, save a snapshot, delete the VM, and later restore a new VM from that snapshot.
 
 ## Repo Layout
 
@@ -97,7 +95,7 @@ Stopped machines cannot open browser shells or serve public routes until they ar
 - [`ops/host/install-control-plane.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/install-control-plane.sh): packaged installer executed from an unpacked full artifact on the host
 - [`ops/host/reset-runtime-state.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/reset-runtime-state.sh): destructive clean-state helper for wiping persisted VM/snapshot runtime state before a rollout
 - [`ops/host/deploy-web.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/deploy-web.sh): packaged web-only installer executed from an unpacked artifact on the host
-- [`ops/host/smoke.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/smoke.sh): validates the basic create, stop, start, route, restart, and delete lifecycle
+- [`ops/host/smoke.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/smoke.sh): validates the basic create, route, restart, and delete lifecycle
 - [`ops/host/benchmark.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/benchmark.sh): prints structured timing metrics for create, snapshot, restore, and fork
 - [`ops/host/stress.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/stress.sh): validates realistic app, local DB, Docker, restart, snapshot, restore, fork, divergence, and cleanup behavior
 - [`ops/host/diagnostics.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/diagnostics.sh): queries host, budget, machine, snapshot, tool-auth, terminal-session, event, and installed-release diagnostics from a configured host
@@ -294,12 +292,12 @@ export FASCINATE_DEFAULT_IMAGE=./data/images/fascinate-base.raw
 export FASCINATE_DEFAULT_MACHINE_CPU=1
 export FASCINATE_DEFAULT_MACHINE_RAM=2GiB
 export FASCINATE_DEFAULT_MACHINE_DISK=20GiB
-export FASCINATE_DEFAULT_USER_MAX_CPU=2
-export FASCINATE_DEFAULT_USER_MAX_RAM=8GiB
-export FASCINATE_DEFAULT_USER_MAX_DISK=50GiB
-export FASCINATE_DEFAULT_USER_MAX_MACHINES=25
+export FASCINATE_DEFAULT_USER_MAX_CPU=5
+export FASCINATE_DEFAULT_USER_MAX_RAM=10GiB
+export FASCINATE_DEFAULT_USER_MAX_DISK=80GiB
+export FASCINATE_DEFAULT_USER_MAX_MACHINES=5
 export FASCINATE_DEFAULT_USER_MAX_SNAPSHOTS=5
-export FASCINATE_MAX_MACHINES_PER_USER=25
+export FASCINATE_MAX_MACHINES_PER_USER=5
 export FASCINATE_MAX_MACHINE_CPU=2
 export FASCINATE_MAX_MACHINE_RAM=4GiB
 export FASCINATE_MAX_MACHINE_DISK=20GiB
@@ -364,7 +362,7 @@ Current scope:
 - running VM sync happens on shell/tutorial exit and on a background interval
 - later VMs for the same user restore the stored tool auth before the machine becomes `RUNNING`
 
-## Hidden Sizing And Power States
+## Hidden Sizing And Limits
 
 Fascinate now treats machine sizing as an internal baseline instead of a user-facing control.
 
@@ -372,9 +370,9 @@ Current behavior:
 - new machines are created from one hidden baseline shape
 - CPU is a soft user entitlement and a host-shared pool, not a strict reserved-per-user quota
 - RAM is a hard per-user active-machine limit
-- stopped machines free active CPU and RAM budget
+- deleting a machine frees active CPU and RAM budget; snapshots let users preserve state for later restore
 - retained machine disk plus retained snapshot artifacts still count against disk limits
-- the separate product cap of `25` machines and `5` retained snapshots per user still applies
+- the separate product cap of `5` machines and `5` retained snapshots per user still applies
 - browser shells, fork, snapshot, and public routes are only available when a machine is fully `RUNNING`
 
 Current single-box defaults are tuned for the live OVH host target of about `8` users with about `5` active default VMs each:

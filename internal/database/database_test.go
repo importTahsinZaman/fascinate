@@ -39,7 +39,7 @@ func TestMachineRecordLifecycle(t *testing.T) {
 		MaxCPU:           "2",
 		MaxMemoryBytes:   8 << 30,
 		MaxDiskBytes:     50 << 30,
-		MaxMachineCount:  25,
+		MaxMachineCount:  5,
 		MaxSnapshotCount: 5,
 	}); err != nil {
 		t.Fatal(err)
@@ -52,7 +52,7 @@ func TestMachineRecordLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if user.MaxCPU != "2" || user.MaxMemoryBytes != 8<<30 || user.MaxDiskBytes != 50<<30 || user.MaxMachineCount != 25 || user.MaxSnapshotCount != 5 {
+	if user.MaxCPU != "2" || user.MaxMemoryBytes != 8<<30 || user.MaxDiskBytes != 50<<30 || user.MaxMachineCount != 5 || user.MaxSnapshotCount != 5 {
 		t.Fatalf("unexpected user budgets: %+v", user)
 	}
 	if user.TutorialCompletedAt == nil {

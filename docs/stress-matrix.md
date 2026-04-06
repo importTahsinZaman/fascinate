@@ -10,7 +10,6 @@ This document defines the current Fascinate product expectations and maps each e
 | Concurrent multi-user create | Simultaneous creates across different users do not collide in runtime network allocation, and per-user machine limits are enforced independently | `internal/runtime/cloudhypervisor/runtime_test.go`, manual live concurrent-load validation |
 | Shared CPU target shape | On the one-box default config, users can exceed their soft CPU entitlement when host headroom exists, and the platform target is about `8` users with about `5` active default VMs each | `internal/controlplane/service_test.go`, manual live multi-user validation, `ops/host/diagnostics.sh hosts`, `ops/host/diagnostics.sh budgets <owner_email>` |
 | Guest readiness | A `RUNNING` machine has usable guest access for browser terminals, expected guest tooling, and stable forwarders | `internal/browserterm/manager_test.go`, `ops/host/smoke.sh`, `ops/host/stress.sh` |
-| Stop and start | Stopping a machine releases active compute budget without deleting retained state, and starting it later restores route and shell availability only after guest readiness returns | `internal/controlplane/service_test.go`, `ops/host/smoke.sh` |
 | Shell entry | Opening a browser shell works without malformed handoff or early-boot guest race failures | `internal/browserterm/manager_test.go`, `ops/host/smoke.sh`, `ops/host/stress.sh` |
 | Public app routing | `https://<machine>.<base-domain>` reaches the current primary-port workload or the fallback "No services detected" page | `internal/httpapi/server_test.go`, `ops/host/smoke.sh`, `ops/host/smoke-snapshots.sh`, `ops/host/stress.sh` |
 | Local workloads | A VM can run a public app server, a local database process, and Docker containers at the same time | `ops/host/stress.sh` |
@@ -26,8 +25,8 @@ This document defines the current Fascinate product expectations and maps each e
 | Lifecycle diagnostics | Operators can inspect machine/snapshot runtime handles, lifecycle failures, forwarder state, and recent events without manual host forensics | `internal/httpapi/server_test.go`, `ops/host/diagnostics.sh` |
 | Host diagnostics | Operators can inspect registered hosts, heartbeat freshness, and current default-machine placement eligibility | `internal/controlplane/hosts_test.go`, `internal/httpapi/server_test.go`, `ops/host/diagnostics.sh hosts` |
 | Budget diagnostics | Operators can inspect per-user soft CPU entitlement, nominal active CPU demand, hard RAM/storage usage, power-state counts, retained snapshot count, and remaining headroom | `internal/controlplane/service_test.go`, `internal/httpapi/server_test.go`, `ops/host/diagnostics.sh budgets` |
-| Shared CPU ceiling rejection | When the host shared CPU ceiling is saturated, create/start/fork/restore fail with an explicit shared host CPU pressure error instead of a stale per-user CPU quota message | `internal/controlplane/service_test.go`, manual live validation |
-| Host reboot survival | After a full host reboot, the control plane restarts, stopped VMs are recovered, and guest workloads configured for guest boot come back without manual host repair | `internal/controlplane/service_test.go`, manual live reboot validation |
+| Shared CPU ceiling rejection | When the host shared CPU ceiling is saturated, create/fork/restore fail with an explicit shared host CPU pressure error instead of a stale per-user CPU quota message | `internal/controlplane/service_test.go`, manual live validation |
+| Host reboot survival | After a full host reboot, the control plane restarts, running VMs are recovered, and guest workloads configured for guest boot come back without manual host repair | `internal/controlplane/service_test.go`, manual live reboot validation |
 
 ## Live Validation Entry Points
 
@@ -49,5 +48,5 @@ This document defines the current Fascinate product expectations and maps each e
 - If a machine is `RUNNING` but the app URL is wrong, inspect machine diagnostics first to distinguish forwarder failure from guest workload failure.
 - If a snapshot or fork fails, inspect both snapshot diagnostics and owner events; failure stage and error details should be recorded there.
 - If tool auth does not persist, inspect tool-auth diagnostics and owner events before touching guest files directly.
-- If create/start/fork/restore starts failing under load, check `shared_cpu_ceiling`, `nominal_active_cpu`, and `shared_cpu_remaining` on hosts before changing per-user budgets.
+- If create/fork/restore starts failing under load, check `shared_cpu_ceiling`, `nominal_active_cpu`, and `shared_cpu_remaining` on hosts before changing per-user budgets.
 - For one-box capacity validation, confirm that a user can exceed their soft CPU entitlement while `host_shared_cpu.remaining` is positive, and that the eventual rejection is reported as shared host CPU pressure rather than a hard user CPU quota.

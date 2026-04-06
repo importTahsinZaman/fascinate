@@ -32,14 +32,6 @@ delete_machine() {
   curl -fsS -X DELETE "$(api_url "/v1/machines/${SMOKE_NAME}?owner_email=${SMOKE_EMAIL}")" >/dev/null 2>&1 || true
 }
 
-start_machine() {
-  curl -fsS -X POST "$(api_url "/v1/machines/${SMOKE_NAME}/start?owner_email=${SMOKE_EMAIL}")" >/dev/null
-}
-
-stop_machine() {
-  curl -fsS -X POST "$(api_url "/v1/machines/${SMOKE_NAME}/stop?owner_email=${SMOKE_EMAIL}")" >/dev/null
-}
-
 guest_ssh_host() {
   curl -fsS "$(api_url "/v1/machines/${SMOKE_NAME}?owner_email=${SMOKE_EMAIL}")" | jq -r '.runtime.ssh_host // empty'
 }
@@ -201,20 +193,6 @@ main() {
   run_guest_command "${ssh_host}" "${ssh_port}" "python3 -c \"import subprocess; log=open('/tmp/fascinate-smoke.log','ab', buffering=0); subprocess.Popen(['python3','-m','http.server','3000','--bind','0.0.0.0'], stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, start_new_session=True); print('started')\""
 
   echo "waiting for routed app response"
-  wait_for_route
-
-  echo "stopping ${SMOKE_NAME}"
-  stop_machine
-  wait_for_machine_state "STOPPED"
-
-  echo "starting ${SMOKE_NAME}"
-  start_machine
-  read -r ssh_host ssh_port <<<"$(wait_for_machine_ready)"
-  echo "waiting for guest toolchain after restart on ${ssh_host}:${ssh_port}"
-  wait_for_guest "${ssh_host}" "${ssh_port}"
-
-  echo "starting smoke app again after restart"
-  run_guest_command "${ssh_host}" "${ssh_port}" "python3 -c \"import subprocess; log=open('/tmp/fascinate-smoke.log','ab', buffering=0); subprocess.Popen(['python3','-m','http.server','3000','--bind','0.0.0.0'], stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, start_new_session=True); print('started')\""
   wait_for_route
 
   echo "restarting fascinate"

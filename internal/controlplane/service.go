@@ -1026,7 +1026,7 @@ func ensureMachineRunningForAction(record database.MachineRecord, action string)
 		return fmt.Errorf("machine %q is still deleting", record.Name)
 	}
 	if strings.EqualFold(record.State, machineStateStopped) {
-		return fmt.Errorf("machine %q is stopped and must be started before it can be %s", record.Name, action)
+		return fmt.Errorf("machine %q is stopped and cannot be %s; restore it from a snapshot or delete it", record.Name, action)
 	}
 
 	state := strings.ToLower(strings.TrimSpace(record.State))
