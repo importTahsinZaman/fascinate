@@ -774,7 +774,12 @@ a {
 }
 
 .machine-delete-spinner {
-  animation: git-diff-sidebar-action-spin 0.9s linear infinite;
+  width: 14px;
+  height: 14px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 999px;
+  animation: git-diff-sidebar-action-spin 0.72s linear infinite;
 }
 
 .control-sidebar-footer {

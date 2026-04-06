@@ -857,7 +857,7 @@ function CommandCenter() {
                           onClick={() => deleteMachineMutation.mutate(machine.name)}
                         >
                           {isDeletingMachine ? (
-                            <ArrowClockwise className="icon-svg machine-delete-spinner" weight="regular" />
+                            <span className="machine-delete-spinner" aria-hidden="true" />
                           ) : (
                             <Trash className="icon-svg" weight="regular" />
                           )}
