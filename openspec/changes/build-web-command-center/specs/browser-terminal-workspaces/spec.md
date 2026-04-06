@@ -47,7 +47,7 @@ Fascinate SHALL stream browser terminal input and output through a dedicated int
 #### Scenario: Wheel scrolling reaches persistent shell history without stealing prompt input
 - **WHEN** a user scrolls inside a persistent tmux-backed browser shell that has no local xterm scrollback yet
 - **THEN** Fascinate translates that wheel input into tmux history navigation instead of prompt-history keypresses
-- **AND** the behavior remains usable for pixel-, line-, and page-based wheel devices
+- **AND** the behavior remains usable for pixel-, line-, and page-based wheel devices without jumping by a full page on the first wheel step
 
 ### Requirement: Fascinate SHALL support standard copy shortcuts for terminal selections
 Fascinate SHALL copy the active xterm selection to the local browser clipboard when the user presses the platform copy shortcut inside the browser workspace.

@@ -228,10 +228,10 @@ func TestPersistentGuestShellCommandDisablesTmuxStatusBarAndConfiguresHistoryScr
 	if !strings.Contains(command, `tmux set-option -t "$session" mouse off`) {
 		t.Fatalf("expected tmux mouse mode to be disabled, command was %q", command)
 	}
-	if !strings.Contains(command, `tmux bind-key -n PageUp if-shell -F '#{pane_in_mode}' 'send-keys -X -N 3 scroll-up' 'copy-mode -eu'`) {
+	if !strings.Contains(command, `tmux bind-key -n PageUp if-shell -F '#{pane_in_mode}' 'send-keys -X scroll-up' 'run-shell "tmux copy-mode -e -t #{pane_id}; tmux send-keys -X -t #{pane_id} scroll-up"'`) {
 		t.Fatalf("expected PageUp to scroll tmux history, command was %q", command)
 	}
-	if !strings.Contains(command, `tmux bind-key -n PageDown if-shell -F '#{pane_in_mode}' 'send-keys -X -N 3 scroll-down'`) {
+	if !strings.Contains(command, `tmux bind-key -n PageDown if-shell -F '#{pane_in_mode}' 'send-keys -X scroll-down'`) {
 		t.Fatalf("expected PageDown to scroll tmux history back down, command was %q", command)
 	}
 	if !strings.Contains(command, `#{pane_current_path}`) {
