@@ -550,6 +550,10 @@ a {
   padding: var(--space-4);
 }
 
+.sidebar-record > :first-child {
+  min-width: 0;
+}
+
 .sidebar-record-static {
   grid-template-columns: minmax(0, 1fr);
 }
@@ -608,6 +612,32 @@ a {
   font-size: 14px;
   line-height: 20px;
   color: var(--text-tertiary);
+}
+
+.env-var-record .actions {
+  align-self: start;
+  flex-shrink: 0;
+}
+
+.env-var-record-value {
+  font-family: var(--font-mono);
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.env-var-record-value-masked {
+  letter-spacing: 0.04em;
+  user-select: none;
+}
+
+@media (max-width: 720px) {
+  .env-var-record {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .env-var-record .actions {
+    justify-content: flex-start;
+  }
 }
 
 .machine-card-actions {

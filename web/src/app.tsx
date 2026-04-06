@@ -73,6 +73,10 @@ const builtinEnvVarExampleByKey: Record<string, string> = {
   FASCINATE_HOST_REGION: "ca-east",
 };
 
+function maskEnvValue(value: string) {
+  return "•".repeat(Math.min(Math.max(value.length, 12), 24));
+}
+
 function upsertMachineList(current: Machine[] | undefined, machine: Machine) {
   if (!current) {
     return [machine];
@@ -192,6 +196,7 @@ function CommandCenter() {
   const [snapshotName, setSnapshotName] = useState("");
   const [restoreTarget, setRestoreTarget] = useState("");
   const [envForm, setEnvForm] = useState({ key: "", value: "" });
+  const [revealedEnvVarKeys, setRevealedEnvVarKeys] = useState<Record<string, boolean>>({});
   const [shellCloseError, setShellCloseError] = useState<unknown>(null);
   const [closingShellIDs, setClosingShellIDs] = useState<string[]>([]);
 
@@ -242,6 +247,13 @@ function CommandCenter() {
     return () => {
       window.removeEventListener("keydown", handleKeyDown);
     };
+  }, [modal]);
+
+  useEffect(() => {
+    if (modal?.type === "env-vars") {
+      return;
+    }
+    setRevealedEnvVarKeys({});
   }, [modal]);
 
   useEffect(() => {
@@ -736,14 +748,30 @@ function CommandCenter() {
             </div>
             <div className="sidebar-record-list">
               {envList.map((entry) => (
-                <article key={entry.key} className="sidebar-record">
+                <article key={entry.key} className="sidebar-record env-var-record">
                   <div>
                     <div className="sidebar-record-heading">
                       <strong>{entry.key}</strong>
                     </div>
-                    <div className="muted">{entry.value}</div>
+                    <div
+                      className={`muted env-var-record-value${revealedEnvVarKeys[entry.key] ? "" : " env-var-record-value-masked"}`}
+                    >
+                      {revealedEnvVarKeys[entry.key] ? entry.value : maskEnvValue(entry.value)}
+                    </div>
                   </div>
                   <div className="actions">
+                    <button
+                      type="button"
+                      aria-label={`${revealedEnvVarKeys[entry.key] ? "Hide" : "Show"} value for ${entry.key}`}
+                      onClick={() =>
+                        setRevealedEnvVarKeys((current) => ({
+                          ...current,
+                          [entry.key]: !current[entry.key],
+                        }))
+                      }
+                    >
+                      {revealedEnvVarKeys[entry.key] ? "Hide" : "Show"}
+                    </button>
                     <button type="button" onClick={() => setEnvForm({ key: entry.key, value: entry.value })}>
                       Edit
                     </button>

@@ -228,7 +228,7 @@ describe("App", () => {
       }
       if (path === "/v1/env-vars") {
         return jsonResponse({
-          env_vars: [{ key: "FRONTEND_URL", value: "${FASCINATE_PUBLIC_URL}" }],
+          env_vars: [{ key: "OPEN_AI_KEY", value: "sk-proj-1234567890abcdefghij" }],
           builtin_env_vars: builtinEnvVarsResponse,
         });
       }
@@ -266,7 +266,10 @@ describe("App", () => {
     fireEvent.click(screen.getByRole("button", { name: "Env vars" }));
     expect(await screen.findByRole("dialog", { name: "Environment variables" })).toBeTruthy();
     expect(screen.getByText("Set env vars for every Fascinate VM. Use ${NAME} to reference.")).toBeTruthy();
-    expect(screen.getByText("FRONTEND_URL")).toBeTruthy();
+    expect(screen.getByText("OPEN_AI_KEY")).toBeTruthy();
+    expect(screen.queryByText("sk-proj-1234567890abcdefghij")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Show value for OPEN_AI_KEY" }));
+    expect(screen.getByText("sk-proj-1234567890abcdefghij")).toBeTruthy();
     expect(screen.getByText("FASCINATE_PUBLIC_URL")).toBeTruthy();
     expect(screen.getByText("Public HTTPS URL for the current VM, routed to its primary port. Example:")).toBeTruthy();
     expect(screen.getByText("https://tic-tac-toe.fascinate.dev")).toBeTruthy();
