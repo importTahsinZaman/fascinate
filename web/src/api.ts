@@ -21,6 +21,8 @@ import {
   requestMockLoginCode,
   saveMockDefaultWorkspace,
   setMockEnvVar,
+  startMockMachine,
+  stopMockMachine,
   verifyMockLogin,
 } from "./mock-control-plane";
 
@@ -34,6 +36,7 @@ export type Machine = {
   id: string;
   name: string;
   state: string;
+  disk_usage_bytes?: number;
   url?: string;
   primary_port: number;
   host_id?: string;
@@ -238,6 +241,24 @@ export async function deleteMachine(name: string) {
   }
   return request<void>(`/v1/machines/${encodeURIComponent(name)}`, {
     method: "DELETE",
+  });
+}
+
+export async function startMachine(name: string) {
+  if (isMockUIEnabled()) {
+    return startMockMachine(name);
+  }
+  return request<Machine>(`/v1/machines/${encodeURIComponent(name)}/start`, {
+    method: "POST",
+  });
+}
+
+export async function stopMachine(name: string) {
+  if (isMockUIEnabled()) {
+    return stopMockMachine(name);
+  }
+  return request<Machine>(`/v1/machines/${encodeURIComponent(name)}/stop`, {
+    method: "POST",
   });
 }
 

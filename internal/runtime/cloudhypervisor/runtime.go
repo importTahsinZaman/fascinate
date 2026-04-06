@@ -114,6 +114,7 @@ type Manager struct {
 	sshClientBinary   string
 	selfBinary        string
 	waitForGuest      func(context.Context, metadata) error
+	shutdownGuest     func(context.Context, metadata) error
 	now               func() time.Time
 	listHostAddrs     func() ([]netip.Addr, error)
 	networkMu         sync.Mutex
@@ -171,6 +172,7 @@ func New(cfg config.Config) (*Manager, error) {
 		listHostAddrs:     listHostInterfaceAddrs,
 	}
 	manager.waitForGuest = manager.waitForGuestSSH
+	manager.shutdownGuest = manager.requestGuestShutdown
 
 	if manager.binary == "" {
 		manager.binary = "cloud-hypervisor"
@@ -369,24 +371,39 @@ func (m *Manager) StartMachine(ctx context.Context, name string) (machineruntime
 		return machineruntime.Machine{}, err
 	}
 	if err := m.startVM(ctx, &meta); err != nil {
-		m.stopMachineRuntime(context.Background(), meta)
+		_ = m.stopMachineRuntime(context.Background(), &meta)
 		return machineruntime.Machine{}, err
 	}
 	m.networkMu.Unlock()
 	networkLocked = false
 	if err := m.startAppForwarder(ctx, &meta); err != nil {
-		m.stopMachineRuntime(context.Background(), meta)
+		_ = m.stopMachineRuntime(context.Background(), &meta)
 		return machineruntime.Machine{}, err
 	}
 	if err := m.startSSHForwarder(ctx, &meta); err != nil {
-		m.stopMachineRuntime(context.Background(), meta)
+		_ = m.stopMachineRuntime(context.Background(), &meta)
 		return machineruntime.Machine{}, err
 	}
 	if err := m.waitForGuest(ctx, meta); err != nil {
-		m.stopMachineRuntime(context.Background(), meta)
+		_ = m.stopMachineRuntime(context.Background(), &meta)
 		return machineruntime.Machine{}, err
 	}
 
+	return m.machineFromMetadata(meta), nil
+}
+
+func (m *Manager) StopMachine(ctx context.Context, name string) (machineruntime.Machine, error) {
+	meta, err := m.loadMetadata(strings.TrimSpace(name))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return machineruntime.Machine{}, machineruntime.ErrMachineNotFound
+		}
+		return machineruntime.Machine{}, err
+	}
+
+	if err := m.stopMachineRuntime(ctx, &meta); err != nil {
+		return machineruntime.Machine{}, err
+	}
 	return m.machineFromMetadata(meta), nil
 }
 
@@ -698,26 +715,92 @@ func (m *Manager) startVM(ctx context.Context, meta *metadata) error {
 	return m.storeMetadata(*meta)
 }
 
-func (m *Manager) stopMachineRuntime(ctx context.Context, meta metadata) {
-	_ = m.stopAppForwarder(ctx, &meta)
-	_ = m.stopSSHForwarder(ctx, &meta)
+func (m *Manager) stopMachineRuntime(ctx context.Context, meta *metadata) error {
+	if meta == nil {
+		return nil
+	}
+	_ = m.stopAppForwarder(ctx, meta)
+	_ = m.stopSSHForwarder(ctx, meta)
 	if meta.ProcessID > 0 {
-		if pgid, err := syscall.Getpgid(meta.ProcessID); err == nil {
-			_ = syscall.Kill(-pgid, syscall.SIGTERM)
-			time.Sleep(2 * time.Second)
-			_ = syscall.Kill(-pgid, syscall.SIGKILL)
-		} else {
-			_ = syscall.Kill(meta.ProcessID, syscall.SIGTERM)
-			time.Sleep(2 * time.Second)
-			_ = syscall.Kill(meta.ProcessID, syscall.SIGKILL)
+		if processAlive(meta.ProcessID) {
+			m.gracefulShutdownGuest(meta)
+		}
+		if processAlive(meta.ProcessID) {
+			terminateProcess(meta.ProcessID, syscall.SIGTERM)
+			waitForProcessExit(meta.ProcessID, 10*time.Second)
+		}
+		if processAlive(meta.ProcessID) {
+			terminateProcess(meta.ProcessID, syscall.SIGKILL)
 		}
 	}
+	meta.ProcessID = 0
+	m.deleteNamespaceNetwork(ctx, *meta)
+	return m.storeMetadata(*meta)
+}
 
-	m.deleteNamespaceNetwork(ctx, meta)
+func (m *Manager) gracefulShutdownGuest(meta *metadata) {
+	if m == nil || meta == nil || meta.ProcessID <= 0 || !processAlive(meta.ProcessID) {
+		return
+	}
+
+	shutdown := m.shutdownGuest
+	if shutdown == nil {
+		shutdown = m.requestGuestShutdown
+	}
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	_ = shutdown(shutdownCtx, *meta)
+	waitForProcessExit(meta.ProcessID, 45*time.Second)
+}
+
+func (m *Manager) requestGuestShutdown(ctx context.Context, meta metadata) error {
+	command := "sudo shutdown -h now || sudo poweroff || sudo systemctl poweroff"
+	err := m.runGuestCommand(ctx, meta, command)
+	if err == nil {
+		return nil
+	}
+	message := strings.ToLower(err.Error())
+	if strings.Contains(message, "connection closed") ||
+		strings.Contains(message, "connection reset") ||
+		strings.Contains(message, "broken pipe") ||
+		strings.Contains(message, "exit status 255") {
+		return nil
+	}
+	return err
+}
+
+func waitForProcessExit(pid int, timeout time.Duration) bool {
+	if pid <= 0 {
+		return true
+	}
+	deadline := time.Now().Add(timeout)
+	for {
+		if !processAlive(pid) {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+}
+
+func terminateProcess(pid int, signal syscall.Signal) {
+	if pid <= 0 {
+		return
+	}
+	if pgid, err := syscall.Getpgid(pid); err == nil {
+		_ = syscall.Kill(-pgid, signal)
+		return
+	}
+	_ = syscall.Kill(pid, signal)
 }
 
 func (m *Manager) cleanupMachine(ctx context.Context, meta metadata) error {
-	m.stopMachineRuntime(ctx, meta)
+	if err := m.stopMachineRuntime(ctx, &meta); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
 	if err := os.RemoveAll(m.machineDir(meta.Name)); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}

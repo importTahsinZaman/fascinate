@@ -30,6 +30,8 @@ import {
   requestLoginCode,
   saveDefaultWorkspace,
   setEnvVar,
+  startMachine,
+  stopMachine,
   verifyLogin,
   type Machine,
   type Snapshot,
@@ -52,7 +54,8 @@ type ModalState =
   | null;
 
 const windowGitStatusPollIntervalMs = 4_000;
-type DeleteMachineMutationContext = {
+type MachineMutationContext = {
+  previousMachines?: Machine[];
   removedWindows: RemovedMachineWindowsSnapshot | null;
 };
 
@@ -69,6 +72,21 @@ function upsertMachineList(current: Machine[] | undefined, machine: Machine) {
   }
   next.push(machine);
   return next;
+}
+
+function updateMachineState(current: Machine[] | undefined, machineName: string, nextState: string) {
+  if (!current) {
+    return current;
+  }
+  return current.map((machine) =>
+    machine.name === machineName
+      ? {
+          ...machine,
+          state: nextState,
+          updated_at: new Date().toISOString(),
+        }
+      : machine,
+  );
 }
 
 export function App() {
@@ -162,7 +180,6 @@ function CommandCenter() {
   const [envForm, setEnvForm] = useState({ key: "", value: "" });
   const [shellCloseError, setShellCloseError] = useState<unknown>(null);
   const [closingShellIDs, setClosingShellIDs] = useState<string[]>([]);
-  const [deletingMachineNames, setDeletingMachineNames] = useState<string[]>([]);
 
   const hydrate = useWorkspaceStore((state) => state.hydrate);
   const openTerminal = useWorkspaceStore((state) => state.openTerminal);
@@ -242,24 +259,65 @@ function CommandCenter() {
       void queryClient.invalidateQueries({ queryKey: ["snapshots"] });
     },
   });
-  const deleteMachineMutation = useMutation<void, Error, string, DeleteMachineMutationContext>({
+  const startMachineMutation = useMutation<Machine, Error, string, MachineMutationContext>({
+    mutationFn: startMachine,
+    onMutate: async (machineName) => {
+      await queryClient.cancelQueries({ queryKey: ["machines"] });
+      const previousMachines = queryClient.getQueryData<Machine[]>(["machines"]);
+      queryClient.setQueryData<Machine[]>(["machines"], (current) => updateMachineState(current, machineName, "STARTING"));
+      return { previousMachines, removedWindows: null };
+    },
+    onError: (_error, _machineName, context) => {
+      if (context?.previousMachines) {
+        queryClient.setQueryData(["machines"], context.previousMachines);
+      }
+    },
+    onSuccess: (machine) => {
+      queryClient.setQueryData<Machine[]>(["machines"], (current) => upsertMachineList(current, machine));
+      void queryClient.invalidateQueries({ queryKey: ["machines"] });
+    },
+  });
+  const stopMachineMutation = useMutation<Machine, Error, string, MachineMutationContext>({
+    mutationFn: stopMachine,
+    onMutate: async (machineName) => {
+      await queryClient.cancelQueries({ queryKey: ["machines"] });
+      const previousMachines = queryClient.getQueryData<Machine[]>(["machines"]);
+      const removedWindows = removeWindowsForMachine(machineName);
+      queryClient.setQueryData<Machine[]>(["machines"], (current) => updateMachineState(current, machineName, "STOPPING"));
+      return { previousMachines, removedWindows };
+    },
+    onError: (_error, _machineName, context) => {
+      if (context?.previousMachines) {
+        queryClient.setQueryData(["machines"], context.previousMachines);
+      }
+      if (context?.removedWindows) {
+        restoreRemovedWindows(context.removedWindows);
+      }
+    },
+    onSuccess: (machine) => {
+      queryClient.setQueryData<Machine[]>(["machines"], (current) => upsertMachineList(current, machine));
+      void queryClient.invalidateQueries({ queryKey: ["machines"] });
+    },
+  });
+  const deleteMachineMutation = useMutation<void, Error, string, MachineMutationContext>({
     mutationFn: deleteMachine,
     onMutate: async (machineName) => {
       await queryClient.cancelQueries({ queryKey: ["machines"] });
+      const previousMachines = queryClient.getQueryData<Machine[]>(["machines"]);
       const removedWindows = removeWindowsForMachine(machineName);
-      setDeletingMachineNames((current) => (current.includes(machineName) ? current : [...current, machineName]));
-      return { removedWindows };
+      queryClient.setQueryData<Machine[]>(["machines"], (current) => updateMachineState(current, machineName, "DELETING"));
+      return { previousMachines, removedWindows };
     },
     onError: (_error, _machineName, context) => {
+      if (context?.previousMachines) {
+        queryClient.setQueryData(["machines"], context.previousMachines);
+      }
       if (context?.removedWindows) {
         restoreRemovedWindows(context.removedWindows);
       }
     },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["machines"] });
-    },
-    onSettled: (_data, _error, machineName) => {
-      setDeletingMachineNames((current) => current.filter((item) => item !== machineName));
     },
   });
   const forkMachineMutation = useMutation({
@@ -306,7 +364,6 @@ function CommandCenter() {
     () => getMachineColorStyles([...machineList.map((machine) => machine.name), ...windows.map((window) => window.machineName)]),
     [machineList, windows],
   );
-  const deletingMachineNameSet = useMemo(() => new Set(deletingMachineNames), [deletingMachineNames]);
   const frontmostWindowZ = useMemo(
     () => windows.reduce((max, window) => Math.max(max, window.z), 0),
     [windows],
@@ -821,12 +878,10 @@ function CommandCenter() {
           ) : (
             <div className="sidebar-machine-list sidebar-machine-list-compact">
               {machineList.map((machine) => {
-                const normalizedMachineState = machine.state.toLowerCase();
-                const isCreatingMachine = normalizedMachineState === "creating";
-                const isRunningMachine = normalizedMachineState === "running" || normalizedMachineState === "ready";
-                const isDeletingMachine = deletingMachineNameSet.has(machine.name);
-                const isPendingMachine = isCreatingMachine || isDeletingMachine;
-                const disableMachineShellActions = !isRunningMachine || isDeletingMachine;
+                const normalizedMachineState = machine.state.toUpperCase();
+                const isPendingMachine = ["CREATING", "STARTING", "STOPPING", "DELETING"].includes(normalizedMachineState);
+                const isRunningMachine = normalizedMachineState === "RUNNING" || normalizedMachineState === "READY";
+                const isStoppedMachine = normalizedMachineState === "STOPPED";
                 return (
                   <article
                     key={machine.id}
@@ -846,41 +901,51 @@ function CommandCenter() {
                           <span
                             className="machine-card-pending-indicator"
                             role="status"
-                            aria-label={isDeletingMachine ? `Deleting ${machine.name}` : `Creating ${machine.name}`}
+                            aria-label={`${normalizedMachineState.toLowerCase()} ${machine.name}`}
                           >
                             <span className="basic-spinner" aria-hidden="true" />
                           </span>
                         ) : (
                           <>
-                            <button type="button" onClick={() => openMachineShell(machine.name)} disabled={disableMachineShellActions}>
-                              New shell
-                            </button>
-                            <button
-                              className="icon-action-button"
-                              type="button"
-                              aria-label={`Fork ${machine.name}`}
-                              title={`Fork ${machine.name}`}
-                              disabled={disableMachineShellActions}
-                              onClick={() => {
-                                setForkTarget(`${machine.name}-copy`);
-                                setModal({ type: "fork-machine", machine });
-                              }}
-                            >
-                              <GitFork className="icon-svg" weight="regular" />
-                            </button>
-                            <button
-                              className="icon-action-button"
-                              type="button"
-                              aria-label={`Snapshot ${machine.name}`}
-                              title={`Snapshot ${machine.name}`}
-                              disabled={disableMachineShellActions}
-                              onClick={() => {
-                                setSnapshotName(`${machine.name}-snapshot`);
-                                setModal({ type: "snapshot-machine", machine });
-                              }}
-                            >
-                              <Camera className="icon-svg" weight="regular" />
-                            </button>
+                            {isRunningMachine ? (
+                              <>
+                                <button type="button" onClick={() => openMachineShell(machine.name)}>
+                                  New shell
+                                </button>
+                                <button type="button" onClick={() => stopMachineMutation.mutate(machine.name)}>
+                                  Stop
+                                </button>
+                                <button
+                                  className="icon-action-button"
+                                  type="button"
+                                  aria-label={`Fork ${machine.name}`}
+                                  title={`Fork ${machine.name}`}
+                                  onClick={() => {
+                                    setForkTarget(`${machine.name}-copy`);
+                                    setModal({ type: "fork-machine", machine });
+                                  }}
+                                >
+                                  <GitFork className="icon-svg" weight="regular" />
+                                </button>
+                                <button
+                                  className="icon-action-button"
+                                  type="button"
+                                  aria-label={`Snapshot ${machine.name}`}
+                                  title={`Snapshot ${machine.name}`}
+                                  onClick={() => {
+                                    setSnapshotName(`${machine.name}-snapshot`);
+                                    setModal({ type: "snapshot-machine", machine });
+                                  }}
+                                >
+                                  <Camera className="icon-svg" weight="regular" />
+                                </button>
+                              </>
+                            ) : null}
+                            {isStoppedMachine ? (
+                              <button type="button" onClick={() => startMachineMutation.mutate(machine.name)}>
+                                Start
+                              </button>
+                            ) : null}
                             <button
                               className="icon-action-button danger"
                               type="button"
@@ -899,7 +964,7 @@ function CommandCenter() {
               })}
             </div>
           )}
-          <StatusError mutationError={deleteMachineMutation.error} />
+          <StatusError mutationError={startMachineMutation.error ?? stopMachineMutation.error ?? deleteMachineMutation.error} />
         </section>
 
         <section className="control-sidebar-footer">

@@ -15,6 +15,7 @@ type Manager interface {
 	CreateMachine(context.Context, CreateMachineRequest) (Machine, error)
 	SyncManagedEnv(context.Context, string, ManagedEnvRequest) error
 	StartMachine(context.Context, string) (Machine, error)
+	StopMachine(context.Context, string) (Machine, error)
 	DeleteMachine(context.Context, string) error
 	ForkMachine(context.Context, ForkMachineRequest) (Machine, error)
 	ListSnapshots(context.Context) ([]Snapshot, error)

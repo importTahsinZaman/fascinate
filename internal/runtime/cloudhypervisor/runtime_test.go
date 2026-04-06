@@ -4,9 +4,12 @@ import (
 	"context"
 	"net/netip"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"fascinate/internal/config"
 )
@@ -351,6 +354,69 @@ func TestGuestReadinessCommandRequiresBundledToolVersions(t *testing.T) {
 			t.Fatalf("expected guest readiness command to contain %q, got %q", snippet, command)
 		}
 	}
+}
+
+func TestStopMachineRuntimeRequestsGuestShutdownBeforeForceKill(t *testing.T) {
+	t.Parallel()
+
+	stateDir := t.TempDir()
+	manager := &Manager{
+		stateDir:      stateDir,
+		shutdownGuest: nil,
+	}
+
+	cmd := exec.Command("sleep", "60")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = terminateAndWait(cmd.Process.Pid)
+	})
+
+	machineDir := filepath.Join(stateDir, "alpha")
+	if err := os.MkdirAll(machineDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	meta := metadata{
+		Name:      "alpha",
+		ProcessID: cmd.Process.Pid,
+	}
+	if err := manager.storeMetadata(meta); err != nil {
+		t.Fatal(err)
+	}
+
+	shutdownCalled := false
+	manager.shutdownGuest = func(_ context.Context, shutdownMeta metadata) error {
+		shutdownCalled = true
+		if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+			return err
+		}
+		_ = cmd.Wait()
+		return nil
+	}
+
+	if err := manager.stopMachineRuntime(context.Background(), &meta); err != nil {
+		t.Fatal(err)
+	}
+	if !shutdownCalled {
+		t.Fatalf("expected graceful guest shutdown to be requested")
+	}
+	if meta.ProcessID != 0 {
+		t.Fatalf("expected process id to be cleared, got %d", meta.ProcessID)
+	}
+	if processAlive(cmd.Process.Pid) {
+		t.Fatalf("expected guest process to exit")
+	}
+}
+
+func terminateAndWait(pid int) error {
+	if pid <= 0 {
+		return nil
+	}
+	terminateProcess(pid, syscall.SIGKILL)
+	waitForProcessExit(pid, 2*time.Second)
+	return nil
 }
 
 func TestNormalizeAPIPathAddsCloudHypervisorPrefix(t *testing.T) {

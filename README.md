@@ -60,6 +60,8 @@ Current browser HTTP API:
 - `POST /v1/machines`
 - `GET /v1/machines/{name}`
 - `GET /v1/machines/{name}/env`
+- `POST /v1/machines/{name}/start`
+- `POST /v1/machines/{name}/stop`
 - `DELETE /v1/machines/{name}`
 - `POST /v1/machines/{name}/fork`
 - `GET /v1/env-vars`
@@ -79,6 +81,8 @@ Current browser HTTP API:
 Deleted machine and snapshot names are released immediately, so the same name can be reused after `DELETE /v1/machines/{name}` or `DELETE /v1/snapshots/{name}` succeeds.
 Deleting a machine also closes any browser terminal sessions for that machine, removes their shell windows from the browser workspace immediately, and collapses the machine card to a right-edge spinner while the delete is in flight.
 Fresh machine creation now stays pending until guest bootstrap is actually ready, and the machine card shows only a right-edge spinner until the VM reaches a usable `running` state.
+Machines use hidden baseline sizing. CPU and RAM are charged against a user's shared budget only while a machine is active, while retained machine disk and retained snapshot artifacts continue to count against disk limits.
+Stopped machines cannot open browser shells or serve public routes until they are started again.
 
 ## Repo Layout
 
@@ -93,7 +97,7 @@ Fresh machine creation now stays pending until guest bootstrap is actually ready
 - [`ops/host/install-control-plane.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/install-control-plane.sh): packaged installer executed from an unpacked full artifact on the host
 - [`ops/host/reset-runtime-state.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/reset-runtime-state.sh): destructive clean-state helper for wiping persisted VM/snapshot runtime state before a rollout
 - [`ops/host/deploy-web.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/deploy-web.sh): packaged web-only installer executed from an unpacked artifact on the host
-- [`ops/host/smoke.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/smoke.sh): validates the basic create, route, restart, and delete lifecycle
+- [`ops/host/smoke.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/smoke.sh): validates the basic create, stop, start, route, restart, and delete lifecycle
 - [`ops/host/benchmark.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/benchmark.sh): prints structured timing metrics for create, snapshot, restore, and fork
 - [`ops/host/stress.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/stress.sh): validates realistic app, local DB, Docker, restart, snapshot, restore, fork, divergence, and cleanup behavior
 - [`ops/host/diagnostics.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/diagnostics.sh): queries host, budget, machine, snapshot, tool-auth, terminal-session, event, and installed-release diagnostics from a configured host
@@ -360,6 +364,18 @@ Current scope:
 - running VM sync happens on shell/tutorial exit and on a background interval
 - later VMs for the same user restore the stored tool auth before the machine becomes `RUNNING`
 
+## Hidden Sizing And Power States
+
+Fascinate now treats machine sizing as an internal baseline instead of a user-facing control.
+
+Current behavior:
+- new machines are created from one hidden baseline shape
+- active compute budgets are shared across a user's currently active machines
+- stopped machines free shared CPU and RAM budget
+- retained machine disk plus retained snapshot artifacts still count against disk limits
+- the separate product cap of `25` machines per user still applies
+- browser shells, fork, snapshot, and public routes are only available when a machine is fully `RUNNING`
+
 ## Fascinate Env Vars
 
 Fascinate now keeps plain user-defined env vars as a first-class per-user object and combines them with built-in machine identity vars inside every VM.
@@ -402,7 +418,7 @@ Instead of hardcoding `https://<machine>.<base-domain>`.
 - Snapshot diagnostics surface artifact locations, runtime metadata, and recent snapshot lifecycle events.
 - Owner event diagnostics surface machine, snapshot, and tool-auth lifecycle history without needing manual host log forensics.
 - Host diagnostics surface registered hosts, heartbeat freshness, placement eligibility, and advertised capacity.
-- Budget diagnostics surface each user's aggregate CPU, memory, disk, machine-count, and snapshot-count limits plus current usage and remaining headroom.
+- Budget diagnostics surface each user's aggregate CPU, memory, disk, machine-count, and snapshot-count limits plus active compute usage, retained storage usage, power-state counts, and remaining headroom.
 
 Host storage:
 - encrypted bundles live under `FASCINATE_TOOL_AUTH_DIR`

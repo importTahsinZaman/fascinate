@@ -9,6 +9,7 @@ This document defines the current Fascinate product expectations and maps each e
 | VM create | `POST /v1/machines` returns quickly and the VM reaches `RUNNING` only after guest access is actually ready | `internal/controlplane/service_test.go`, `ops/host/smoke.sh`, `ops/host/stress.sh` |
 | Concurrent multi-user create | Simultaneous creates across different users do not collide in runtime network allocation, and per-user machine limits are enforced independently | `internal/runtime/cloudhypervisor/runtime_test.go`, manual live concurrent-load validation |
 | Guest readiness | A `RUNNING` machine has usable guest access for browser terminals, expected guest tooling, and stable forwarders | `internal/browserterm/manager_test.go`, `ops/host/smoke.sh`, `ops/host/stress.sh` |
+| Stop and start | Stopping a machine releases active compute budget without deleting retained state, and starting it later restores route and shell availability only after guest readiness returns | `internal/controlplane/service_test.go`, `ops/host/smoke.sh` |
 | Shell entry | Opening a browser shell works without malformed handoff or early-boot guest race failures | `internal/browserterm/manager_test.go`, `ops/host/smoke.sh`, `ops/host/stress.sh` |
 | Public app routing | `https://<machine>.<base-domain>` reaches the current primary-port workload or the fallback "No services detected" page | `internal/httpapi/server_test.go`, `ops/host/smoke.sh`, `ops/host/smoke-snapshots.sh`, `ops/host/stress.sh` |
 | Local workloads | A VM can run a public app server, a local database process, and Docker containers at the same time | `ops/host/stress.sh` |
@@ -23,7 +24,7 @@ This document defines the current Fascinate product expectations and maps each e
 | Tool auth diagnostics | Capture/restore failures for Claude, Codex, or GitHub auth are visible to operators | `internal/httpapi/server_test.go`, `ops/host/diagnostics.sh` |
 | Lifecycle diagnostics | Operators can inspect machine/snapshot runtime handles, lifecycle failures, forwarder state, and recent events without manual host forensics | `internal/httpapi/server_test.go`, `ops/host/diagnostics.sh` |
 | Host diagnostics | Operators can inspect registered hosts, heartbeat freshness, and current default-machine placement eligibility | `internal/controlplane/hosts_test.go`, `internal/httpapi/server_test.go`, `ops/host/diagnostics.sh hosts` |
-| Budget diagnostics | Operators can inspect per-user aggregate resource budgets, retained snapshot count, and remaining headroom | `internal/controlplane/service_test.go`, `internal/httpapi/server_test.go`, `ops/host/diagnostics.sh budgets` |
+| Budget diagnostics | Operators can inspect per-user active compute usage, retained storage usage, power-state counts, retained snapshot count, and remaining headroom | `internal/controlplane/service_test.go`, `internal/httpapi/server_test.go`, `ops/host/diagnostics.sh budgets` |
 | Host reboot survival | After a full host reboot, the control plane restarts, stopped VMs are recovered, and guest workloads configured for guest boot come back without manual host repair | `internal/controlplane/service_test.go`, manual live reboot validation |
 
 ## Live Validation Entry Points

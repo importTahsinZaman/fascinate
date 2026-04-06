@@ -21,6 +21,7 @@ type fakeRuntime struct {
 	createErr     error
 	envSyncErr    error
 	startErr      error
+	stopErr       error
 	deleteErr     error
 	forkErr       error
 	getErr        error
@@ -32,6 +33,7 @@ type fakeRuntime struct {
 	createdReq    []machineruntime.CreateMachineRequest
 	envSyncReq    map[string]machineruntime.ManagedEnvRequest
 	started       []string
+	stopped       []string
 	forkedReq     []machineruntime.ForkMachineRequest
 }
 
@@ -144,6 +146,21 @@ func (f *fakeRuntime) StartMachine(_ context.Context, name string) (machinerunti
 	machine.State = machineStateRunning
 	f.machines[name] = machine
 	f.started = append(f.started, name)
+	return machine, nil
+}
+
+func (f *fakeRuntime) StopMachine(_ context.Context, name string) (machineruntime.Machine, error) {
+	if f.stopErr != nil {
+		return machineruntime.Machine{}, f.stopErr
+	}
+
+	machine, ok := f.machines[name]
+	if !ok {
+		return machineruntime.Machine{}, machineruntime.ErrMachineNotFound
+	}
+	machine.State = machineStateStopped
+	f.machines[name] = machine
+	f.stopped = append(f.stopped, name)
 	return machine, nil
 }
 
@@ -1107,7 +1124,7 @@ func TestServiceReconcileRuntimeStateDoesNotPromoteCreatingFromRuntimeLiveness(t
 	}
 }
 
-func TestServiceReconcileRuntimeStateRestartsStoppedMachines(t *testing.T) {
+func TestServiceReconcileRuntimeStateKeepsStoppedMachinesStopped(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -1142,16 +1159,16 @@ func TestServiceReconcileRuntimeStateRestartsStoppedMachines(t *testing.T) {
 	if err := service.ReconcileRuntimeState(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if len(runtime.started) != 1 || runtime.started[0] != "habits" {
-		t.Fatalf("expected stopped machine restart, got %+v", runtime.started)
+	if len(runtime.started) != 0 {
+		t.Fatalf("expected stopped machine to stay stopped, got %+v", runtime.started)
 	}
 
 	record, err := store.GetMachineByName(ctx, "habits")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if record.State != machineStateRunning {
-		t.Fatalf("expected machine state RUNNING after reconcile, got %q", record.State)
+	if record.State != machineStateStopped {
+		t.Fatalf("expected machine state STOPPED after reconcile, got %q", record.State)
 	}
 }
 
@@ -1444,7 +1461,7 @@ func TestServiceRejectsCreateWhenUserCPUBudgetIsExceeded(t *testing.T) {
 		Name:       "three",
 		OwnerEmail: "dev@example.com",
 	})
-	if err == nil || !strings.Contains(err.Error(), "user cpu budget exceeded") {
+	if err == nil || !strings.Contains(err.Error(), "shared cpu budget exceeded") {
 		t.Fatalf("expected cpu budget error, got %v", err)
 	}
 	if len(runtime.createdReq) != 0 {
@@ -1463,15 +1480,16 @@ func TestServiceRejectsCreateSnapshotWhenSnapshotBudgetIsExceeded(t *testing.T) 
 		t.Fatal(err)
 	}
 	if _, err := store.CreateMachine(ctx, database.CreateMachineParams{
-		ID:          "machine-1",
-		Name:        "habits",
-		OwnerUserID: user.ID,
-		RuntimeName: "habits",
-		State:       machineStateRunning,
-		CPU:         "1",
-		MemoryBytes: 2 << 30,
-		DiskBytes:   20 << 30,
-		PrimaryPort: 3000,
+		ID:             "machine-1",
+		Name:           "habits",
+		OwnerUserID:    user.ID,
+		RuntimeName:    "habits",
+		State:          machineStateRunning,
+		CPU:            "1",
+		MemoryBytes:    2 << 30,
+		DiskBytes:      20 << 30,
+		DiskUsageBytes: 3 << 30,
+		PrimaryPort:    3000,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -1581,15 +1599,16 @@ func TestServiceBudgetDiagnosticsReportsUsage(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := store.CreateMachine(ctx, database.CreateMachineParams{
-		ID:          "machine-1",
-		Name:        "habits",
-		OwnerUserID: user.ID,
-		RuntimeName: "habits",
-		State:       machineStateRunning,
-		CPU:         "1",
-		MemoryBytes: 2 << 30,
-		DiskBytes:   20 << 30,
-		PrimaryPort: 3000,
+		ID:             "machine-1",
+		Name:           "habits",
+		OwnerUserID:    user.ID,
+		RuntimeName:    "habits",
+		State:          machineStateRunning,
+		CPU:            "1",
+		MemoryBytes:    2 << 30,
+		DiskBytes:      20 << 30,
+		DiskUsageBytes: 3 << 30,
+		PrimaryPort:    3000,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -1619,8 +1638,233 @@ func TestServiceBudgetDiagnosticsReportsUsage(t *testing.T) {
 	if diag.Usage.CPU != "1" || diag.Usage.MemoryBytes != 2<<30 || diag.Usage.MachineCount != 1 || diag.Usage.SnapshotCount != 1 {
 		t.Fatalf("unexpected usage %+v", diag)
 	}
-	if diag.Usage.DiskBytes != (20<<30)+(20<<30)+(2<<30) {
+	if diag.Usage.DiskBytes != (3<<30)+(20<<30)+(2<<30) {
 		t.Fatalf("unexpected disk usage %+v", diag)
+	}
+}
+
+func TestServiceStopFreesComputeForLaterStarts(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, runtime := newTestServiceDeps(t, ctx)
+
+	user, err := store.UpsertUser(ctx, "dev@example.com", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateMachine(ctx, database.CreateMachineParams{
+		ID:             "machine-1",
+		Name:           "alpha",
+		OwnerUserID:    user.ID,
+		RuntimeName:    "alpha",
+		State:          machineStateRunning,
+		CPU:            "1",
+		MemoryBytes:    2 << 30,
+		DiskBytes:      20 << 30,
+		DiskUsageBytes: 2 << 30,
+		PrimaryPort:    3000,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateMachine(ctx, database.CreateMachineParams{
+		ID:             "machine-2",
+		Name:           "beta",
+		OwnerUserID:    user.ID,
+		RuntimeName:    "beta",
+		State:          machineStateStopped,
+		CPU:            "1",
+		MemoryBytes:    2 << 30,
+		DiskBytes:      20 << 30,
+		DiskUsageBytes: 2 << 30,
+		PrimaryPort:    3000,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	runtime.machines["alpha"] = machineruntime.Machine{Name: "alpha", Type: "vm", State: machineStateRunning, CPU: "1", Memory: "2GiB", Disk: "20GiB"}
+	runtime.machines["beta"] = machineruntime.Machine{Name: "beta", Type: "vm", State: machineStateStopped, CPU: "1", Memory: "2GiB", Disk: "20GiB"}
+
+	service := New(config.Config{
+		BaseDomain:              "fascinate.dev",
+		DefaultImage:            "/var/lib/fascinate/images/fascinate-base.raw",
+		DefaultMachineCPU:       "1",
+		DefaultMachineRAM:       "2GiB",
+		DefaultMachineDisk:      "20GiB",
+		DefaultUserMaxCPU:       "1",
+		DefaultUserMaxRAM:       "8GiB",
+		DefaultUserMaxDisk:      "50GiB",
+		DefaultUserMaxMachines:  25,
+		DefaultUserMaxSnapshots: 5,
+		MaxMachineCPU:           "2",
+		MaxMachineRAM:           "4GiB",
+		MaxMachineDisk:          "20GiB",
+		HostMinFreeDisk:         "0B",
+		DefaultPrimaryPort:      3000,
+	}, store, runtime)
+
+	if _, err := service.StartMachine(ctx, "beta", "dev@example.com"); err == nil || !strings.Contains(err.Error(), "shared cpu budget exceeded") {
+		t.Fatalf("expected active compute rejection, got %v", err)
+	}
+
+	stopped, err := service.StopMachine(ctx, "alpha", "dev@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stopped.State != machineStateStopped {
+		t.Fatalf("expected stopped state, got %+v", stopped)
+	}
+	if len(runtime.stopped) != 1 || runtime.stopped[0] != "alpha" {
+		t.Fatalf("expected alpha to stop, got %+v", runtime.stopped)
+	}
+
+	started, err := service.StartMachine(ctx, "beta", "dev@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if started.State != machineStateRunning {
+		t.Fatalf("expected running state, got %+v", started)
+	}
+	if len(runtime.started) != 1 || runtime.started[0] != "beta" {
+		t.Fatalf("expected beta to start, got %+v", runtime.started)
+	}
+}
+
+func TestServiceStartMachineRollsBackToStoppedOnFailure(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, runtime := newTestServiceDeps(t, ctx)
+	runtime.startErr = errors.New("boom")
+
+	user, err := store.UpsertUser(ctx, "dev@example.com", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateMachine(ctx, database.CreateMachineParams{
+		ID:             "machine-1",
+		Name:           "alpha",
+		OwnerUserID:    user.ID,
+		RuntimeName:    "alpha",
+		State:          machineStateStopped,
+		CPU:            "1",
+		MemoryBytes:    2 << 30,
+		DiskBytes:      20 << 30,
+		DiskUsageBytes: 1 << 30,
+		PrimaryPort:    3000,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	runtime.machines["alpha"] = machineruntime.Machine{Name: "alpha", Type: "vm", State: machineStateStopped, CPU: "1", Memory: "2GiB", Disk: "20GiB"}
+
+	service := newTestService(store, runtime)
+	if _, err := service.StartMachine(ctx, "alpha", "dev@example.com"); err == nil || !strings.Contains(err.Error(), "boom") {
+		t.Fatalf("expected start failure, got %v", err)
+	}
+
+	record, err := store.GetMachineByName(ctx, "alpha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.State != machineStateStopped {
+		t.Fatalf("expected stopped rollback, got %q", record.State)
+	}
+}
+
+func TestServiceStopMachineRollsBackToRunningOnFailure(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, runtime := newTestServiceDeps(t, ctx)
+	runtime.stopErr = errors.New("boom")
+
+	user, err := store.UpsertUser(ctx, "dev@example.com", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateMachine(ctx, database.CreateMachineParams{
+		ID:             "machine-1",
+		Name:           "alpha",
+		OwnerUserID:    user.ID,
+		RuntimeName:    "alpha",
+		State:          machineStateRunning,
+		CPU:            "1",
+		MemoryBytes:    2 << 30,
+		DiskBytes:      20 << 30,
+		DiskUsageBytes: 1 << 30,
+		PrimaryPort:    3000,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	runtime.machines["alpha"] = machineruntime.Machine{Name: "alpha", Type: "vm", State: machineStateRunning, CPU: "1", Memory: "2GiB", Disk: "20GiB"}
+
+	service := newTestService(store, runtime)
+	if _, err := service.StopMachine(ctx, "alpha", "dev@example.com"); err == nil || !strings.Contains(err.Error(), "boom") {
+		t.Fatalf("expected stop failure, got %v", err)
+	}
+
+	record, err := store.GetMachineByName(ctx, "alpha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.State != machineStateRunning {
+		t.Fatalf("expected running rollback, got %q", record.State)
+	}
+}
+
+func TestServiceCreateSnapshotUsesRetainedMachineDiskUsage(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, runtime := newTestServiceDeps(t, ctx)
+
+	user, err := store.UpsertUser(ctx, "dev@example.com", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateMachine(ctx, database.CreateMachineParams{
+		ID:             "machine-1",
+		Name:           "alpha",
+		OwnerUserID:    user.ID,
+		RuntimeName:    "alpha",
+		State:          machineStateRunning,
+		CPU:            "1",
+		MemoryBytes:    2 << 30,
+		DiskBytes:      20 << 30,
+		DiskUsageBytes: 1 << 30,
+		PrimaryPort:    3000,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	runtime.machines["alpha"] = machineruntime.Machine{Name: "alpha", Type: "vm", State: machineStateRunning, CPU: "1", Memory: "2GiB", Disk: "20GiB"}
+
+	service := New(config.Config{
+		BaseDomain:              "fascinate.dev",
+		DefaultImage:            "/var/lib/fascinate/images/fascinate-base.raw",
+		DefaultMachineCPU:       "1",
+		DefaultMachineRAM:       "2GiB",
+		DefaultMachineDisk:      "20GiB",
+		DefaultUserMaxCPU:       "2",
+		DefaultUserMaxRAM:       "8GiB",
+		DefaultUserMaxDisk:      "6GiB",
+		DefaultUserMaxMachines:  25,
+		DefaultUserMaxSnapshots: 5,
+		MaxMachineCPU:           "2",
+		MaxMachineRAM:           "4GiB",
+		MaxMachineDisk:          "20GiB",
+		HostMinFreeDisk:         "0B",
+		DefaultPrimaryPort:      3000,
+	}, store, runtime)
+
+	snapshot, err := service.CreateSnapshot(ctx, CreateSnapshotInput{
+		MachineName:  "alpha",
+		SnapshotName: "baseline",
+		OwnerEmail:   "dev@example.com",
+	})
+	if err != nil {
+		t.Fatalf("expected retained-disk snapshot estimate to fit, got %v", err)
+	}
+	if snapshot.Name != "baseline" {
+		t.Fatalf("unexpected snapshot %+v", snapshot)
 	}
 }
 

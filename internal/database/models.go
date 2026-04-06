@@ -25,6 +25,7 @@ type MachineRecord struct {
 	CPU              string  `json:"cpu"`
 	MemoryBytes      int64   `json:"memory_bytes"`
 	DiskBytes        int64   `json:"disk_bytes"`
+	DiskUsageBytes   int64   `json:"disk_usage_bytes"`
 	PrimaryPort      int     `json:"primary_port"`
 	CreatedAt        string  `json:"created_at"`
 	UpdatedAt        string  `json:"updated_at"`
@@ -42,6 +43,7 @@ type CreateMachineParams struct {
 	CPU              string
 	MemoryBytes      int64
 	DiskBytes        int64
+	DiskUsageBytes   int64
 	PrimaryPort      int
 }
 

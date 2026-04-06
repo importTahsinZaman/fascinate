@@ -24,11 +24,13 @@ var machineNamePattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9]
 var memoryLimitPattern = regexp.MustCompile(`(?i)^([0-9]+(?:\.[0-9]+)?)\s*([kmgt]i?b?|b)?$`)
 
 const (
-	machineStateCreating            = "CREATING"
-	machineStateRunning             = "RUNNING"
-	machineStateStopped             = "STOPPED"
-	machineStateFailed              = "FAILED"
-	reconcileMachineRecoveryTimeout = 90 * time.Second
+	machineStateCreating = "CREATING"
+	machineStateStarting = "STARTING"
+	machineStateRunning  = "RUNNING"
+	machineStateStopping = "STOPPING"
+	machineStateStopped  = "STOPPED"
+	machineStateDeleting = "DELETING"
+	machineStateFailed   = "FAILED"
 
 	snapshotStateCreating = "CREATING"
 	snapshotStateReady    = "READY"
@@ -54,17 +56,18 @@ type Service struct {
 }
 
 type Machine struct {
-	ID           string                  `json:"id"`
-	Name         string                  `json:"name"`
-	OwnerEmail   string                  `json:"owner_email"`
-	HostID       string                  `json:"host_id,omitempty"`
-	State        string                  `json:"state"`
-	PrimaryPort  int                     `json:"primary_port"`
-	URL          string                  `json:"url,omitempty"`
-	ShowTutorial bool                    `json:"show_tutorial,omitempty"`
-	CreatedAt    string                  `json:"created_at"`
-	UpdatedAt    string                  `json:"updated_at"`
-	Runtime      *machineruntime.Machine `json:"runtime,omitempty"`
+	ID             string                  `json:"id"`
+	Name           string                  `json:"name"`
+	OwnerEmail     string                  `json:"owner_email"`
+	HostID         string                  `json:"host_id,omitempty"`
+	State          string                  `json:"state"`
+	DiskUsageBytes int64                   `json:"disk_usage_bytes"`
+	PrimaryPort    int                     `json:"primary_port"`
+	URL            string                  `json:"url,omitempty"`
+	ShowTutorial   bool                    `json:"show_tutorial,omitempty"`
+	CreatedAt      string                  `json:"created_at"`
+	UpdatedAt      string                  `json:"updated_at"`
+	Runtime        *machineruntime.Machine `json:"runtime,omitempty"`
 }
 
 type CreateMachineInput struct {
@@ -291,6 +294,7 @@ func (s *Service) CreateMachine(ctx context.Context, input CreateMachineInput) (
 
 	var sourceSnapshotID *string
 	var hostID string
+	retainedDiskBytes := estimatedFreshMachineRetainedDiskBytes(spec)
 	if snapshotName := strings.TrimSpace(input.SnapshotName); snapshotName != "" {
 		snapshotRecord, err := s.store.GetSnapshotByName(ctx, user.ID, snapshotName)
 		if err != nil {
@@ -314,6 +318,7 @@ func (s *Service) CreateMachine(ctx context.Context, input CreateMachineInput) (
 			return Machine{}, fmt.Errorf("snapshot host unavailable: %w", err)
 		}
 		sourceSnapshotID = &snapshotRecord.ID
+		retainedDiskBytes = estimatedSnapshotRestoreDiskBytes(snapshotRecord, spec)
 	} else {
 		host, err := s.getPlacementHost(ctx, spec.CPU, formatByteSize(spec.MemoryBytes), formatByteSize(spec.DiskBytes))
 		if err != nil {
@@ -334,7 +339,7 @@ func (s *Service) CreateMachine(ctx context.Context, input CreateMachineInput) (
 		if err != nil {
 			return database.MachineRecord{}, err
 		}
-		if err := s.ensureUserCanCreateMachine(persistCtx, user, spec); err != nil {
+		if err := s.ensureUserCanCreateMachine(persistCtx, user, spec, retainedDiskBytes); err != nil {
 			s.recordEventBestEffort(&user.ID, nil, "machine.create.rejected", map[string]any{
 				"machine_name":    name,
 				"source_snapshot": strings.TrimSpace(input.SnapshotName),
@@ -345,7 +350,7 @@ func (s *Service) CreateMachine(ctx context.Context, input CreateMachineInput) (
 			})
 			return database.MachineRecord{}, err
 		}
-		if err := s.ensureHostCanFitMachine(persistCtx, hostRecord, spec); err != nil {
+		if err := s.ensureHostCanFitMachine(persistCtx, hostRecord, spec, retainedDiskBytes); err != nil {
 			s.recordEventBestEffort(&user.ID, nil, "machine.create.rejected", map[string]any{
 				"machine_name":    name,
 				"source_snapshot": strings.TrimSpace(input.SnapshotName),
@@ -369,6 +374,7 @@ func (s *Service) CreateMachine(ctx context.Context, input CreateMachineInput) (
 			CPU:              spec.CPU,
 			MemoryBytes:      spec.MemoryBytes,
 			DiskBytes:        spec.DiskBytes,
+			DiskUsageBytes:   retainedDiskBytes,
 			PrimaryPort:      s.cfg.DefaultPrimaryPort,
 		})
 	}()
@@ -404,8 +410,15 @@ func (s *Service) DeleteMachine(ctx context.Context, name, ownerEmail string) er
 	if err != nil {
 		return err
 	}
-	if strings.EqualFold(record.State, machineStateCreating) {
+	switch strings.ToUpper(strings.TrimSpace(record.State)) {
+	case machineStateCreating:
 		return fmt.Errorf("machine %q is still creating", record.Name)
+	case machineStateStarting:
+		return fmt.Errorf("machine %q is still starting", record.Name)
+	case machineStateStopping:
+		return fmt.Errorf("machine %q is still stopping", record.Name)
+	case machineStateDeleting:
+		return fmt.Errorf("machine %q is already deleting", record.Name)
 	}
 	s.recordEventBestEffort(&record.OwnerUserID, &record.ID, "machine.delete.started", map[string]any{
 		"machine_name": record.Name,
@@ -420,13 +433,27 @@ func (s *Service) DeleteMachine(ctx context.Context, name, ownerEmail string) er
 		cancelCreate()
 	}
 
-	s.captureToolAuthBestEffort(deleteCtx, record)
+	hostID := machineHostID(record, s.localHostID)
+	unlockHost := s.lockHostMutations(hostID)
+	defer unlockHost()
 
-	executor, err := s.executorForHostID(machineHostID(record, s.localHostID))
+	if err := s.store.UpdateMachineState(deleteCtx, record.ID, machineStateDeleting); err != nil && !errors.Is(err, database.ErrNotFound) {
+		return err
+	}
+	previousState := record.State
+	record.State = machineStateDeleting
+
+	if strings.EqualFold(previousState, machineStateRunning) {
+		s.captureToolAuthBestEffort(deleteCtx, record)
+	}
+
+	executor, err := s.executorForHostID(hostID)
 	if err != nil {
+		_ = s.store.UpdateMachineState(context.Background(), record.ID, previousState)
 		return err
 	}
 	if err := executor.DeleteMachine(deleteCtx, runtimeName); err != nil && !errors.Is(err, machineruntime.ErrMachineNotFound) {
+		_ = s.store.UpdateMachineState(context.Background(), record.ID, previousState)
 		s.recordEventBestEffort(&record.OwnerUserID, &record.ID, "machine.delete.failed", map[string]any{
 			"machine_name": record.Name,
 			"runtime_name": runtimeName,
@@ -485,6 +512,10 @@ func (s *Service) ForkMachine(ctx context.Context, input ForkMachineInput) (Mach
 	if err != nil {
 		return Machine{}, err
 	}
+	sourceRecord, err = s.refreshMachineDiskUsage(ctx, sourceRecord)
+	if err != nil && !errors.Is(err, machineruntime.ErrMachineNotFound) && !errors.Is(err, database.ErrNotFound) {
+		return Machine{}, err
+	}
 	spec, err := s.machineSpecFromRuntime(sourceRecord, liveSource)
 	if err != nil {
 		return Machine{}, err
@@ -501,6 +532,7 @@ func (s *Service) ForkMachine(ctx context.Context, input ForkMachineInput) (Mach
 	defer cancel()
 
 	targetID := uuid.NewString()
+	retainedDiskBytes := estimatedForkDiskBytes(sourceRecord, spec)
 	record, err := func() (database.MachineRecord, error) {
 		unlockHost := s.lockHostMutations(sourceHostID)
 		defer unlockHost()
@@ -509,7 +541,7 @@ func (s *Service) ForkMachine(ctx context.Context, input ForkMachineInput) (Mach
 		if err != nil {
 			return database.MachineRecord{}, err
 		}
-		if err := s.ensureUserCanCreateMachine(persistCtx, user, spec); err != nil {
+		if err := s.ensureUserCanCreateMachine(persistCtx, user, spec, retainedDiskBytes); err != nil {
 			s.recordEventBestEffort(&user.ID, &sourceRecord.ID, "machine.fork.rejected", map[string]any{
 				"source_name":  sourceName,
 				"target_name":  targetName,
@@ -521,7 +553,7 @@ func (s *Service) ForkMachine(ctx context.Context, input ForkMachineInput) (Mach
 			})
 			return database.MachineRecord{}, err
 		}
-		if err := s.ensureHostCanFitMachine(persistCtx, hostRecord, spec); err != nil {
+		if err := s.ensureHostCanFitMachine(persistCtx, hostRecord, spec, retainedDiskBytes); err != nil {
 			s.recordEventBestEffort(&user.ID, &sourceRecord.ID, "machine.fork.rejected", map[string]any{
 				"source_name":  sourceName,
 				"target_name":  targetName,
@@ -536,16 +568,17 @@ func (s *Service) ForkMachine(ctx context.Context, input ForkMachineInput) (Mach
 		}
 
 		return s.store.CreateMachine(persistCtx, database.CreateMachineParams{
-			ID:          targetID,
-			Name:        targetName,
-			OwnerUserID: user.ID,
-			HostID:      &sourceHostID,
-			RuntimeName: targetName,
-			State:       machineStateCreating,
-			CPU:         spec.CPU,
-			MemoryBytes: spec.MemoryBytes,
-			DiskBytes:   spec.DiskBytes,
-			PrimaryPort: sourceRecord.PrimaryPort,
+			ID:             targetID,
+			Name:           targetName,
+			OwnerUserID:    user.ID,
+			HostID:         &sourceHostID,
+			RuntimeName:    targetName,
+			State:          machineStateCreating,
+			CPU:            spec.CPU,
+			MemoryBytes:    spec.MemoryBytes,
+			DiskBytes:      spec.DiskBytes,
+			DiskUsageBytes: retainedDiskBytes,
+			PrimaryPort:    sourceRecord.PrimaryPort,
 		})
 	}()
 	if err != nil {
@@ -574,7 +607,12 @@ func (s *Service) ForkMachine(ctx context.Context, input ForkMachineInput) (Mach
 	record.State = liveMachine.State
 	finalizeCtx, finalizeCancel := s.newPersistContext()
 	defer finalizeCancel()
-	if err := s.store.UpdateMachineState(finalizeCtx, record.ID, liveMachine.State); err != nil {
+	record, refreshErr := s.refreshMachineDiskUsage(finalizeCtx, record)
+	if refreshErr != nil && !errors.Is(refreshErr, machineruntime.ErrMachineNotFound) && !errors.Is(refreshErr, database.ErrNotFound) {
+		s.finishForkFailure(record, sourceRecord, "disk_usage_refresh", refreshErr)
+		return Machine{}, refreshErr
+	}
+	if err := s.store.UpdateMachineStateAndDiskUsage(finalizeCtx, record.ID, liveMachine.State, retainedMachineDiskBytes(record)); err != nil {
 		s.finishForkFailure(record, sourceRecord, "state_persist", err)
 		return Machine{}, err
 	}
@@ -677,11 +715,15 @@ func (s *Service) CreateSnapshot(ctx context.Context, input CreateSnapshotInput)
 	if err := ensureMachineRunningForAction(machineRecord, "snapshotted"); err != nil {
 		return Snapshot{}, err
 	}
+	machineRecord, err = s.refreshMachineDiskUsage(ctx, machineRecord)
+	if err != nil && !errors.Is(err, machineruntime.ErrMachineNotFound) && !errors.Is(err, database.ErrNotFound) {
+		return Snapshot{}, err
+	}
 	sourceSpec, err := s.machineSpecForRecord(machineRecord)
 	if err != nil {
 		return Snapshot{}, err
 	}
-	reservedBytes := sourceSpec.DiskBytes + sourceSpec.MemoryBytes
+	reservedBytes := estimatedSnapshotArtifactBytes(machineRecord, sourceSpec)
 
 	persistCtx, cancel := s.newPersistContext()
 	defer cancel()
@@ -897,16 +939,17 @@ func (s *Service) machineFromRecord(ctx context.Context, record database.Machine
 	}
 
 	return Machine{
-		ID:          record.ID,
-		Name:        record.Name,
-		OwnerEmail:  record.OwnerEmail,
-		HostID:      machineHostID(record, s.localHostID),
-		State:       record.State,
-		PrimaryPort: record.PrimaryPort,
-		URL:         machineURL(record.Name, s.cfg.BaseDomain),
-		CreatedAt:   record.CreatedAt,
-		UpdatedAt:   record.UpdatedAt,
-		Runtime:     runtimeMachine,
+		ID:             record.ID,
+		Name:           record.Name,
+		OwnerEmail:     record.OwnerEmail,
+		HostID:         machineHostID(record, s.localHostID),
+		State:          record.State,
+		DiskUsageBytes: retainedMachineDiskBytes(record),
+		PrimaryPort:    record.PrimaryPort,
+		URL:            machineURL(record.Name, s.cfg.BaseDomain),
+		CreatedAt:      record.CreatedAt,
+		UpdatedAt:      record.UpdatedAt,
+		Runtime:        runtimeMachine,
 	}
 }
 
@@ -955,7 +998,7 @@ func shouldAdoptRuntimeState(recordState, runtimeState string) bool {
 	if recordState == runtimeState {
 		return false
 	}
-	if recordState == machineStateCreating {
+	if machineStateIsTransitional(recordState) || recordState == machineStateFailed {
 		return false
 	}
 
@@ -969,6 +1012,18 @@ func ensureMachineRunningForAction(record database.MachineRecord, action string)
 
 	if strings.EqualFold(record.State, machineStateCreating) {
 		return fmt.Errorf("machine %q is still creating", record.Name)
+	}
+	if strings.EqualFold(record.State, machineStateStarting) {
+		return fmt.Errorf("machine %q is still starting", record.Name)
+	}
+	if strings.EqualFold(record.State, machineStateStopping) {
+		return fmt.Errorf("machine %q is still stopping", record.Name)
+	}
+	if strings.EqualFold(record.State, machineStateDeleting) {
+		return fmt.Errorf("machine %q is still deleting", record.Name)
+	}
+	if strings.EqualFold(record.State, machineStateStopped) {
+		return fmt.Errorf("machine %q is stopped and must be started before it can be %s", record.Name, action)
 	}
 
 	state := strings.ToLower(strings.TrimSpace(record.State))
@@ -1059,38 +1114,15 @@ func (s *Service) ReconcileRuntimeState(ctx context.Context) error {
 			continue
 		}
 
-		if strings.EqualFold(liveMachine.State, machineStateStopped) && !strings.EqualFold(record.State, machineStateCreating) {
-			log.Printf("fascinate: recovering machine %s", runtimeName)
-			s.recordEventBestEffort(&record.OwnerUserID, &record.ID, "machine.recover.started", map[string]any{
-				"machine_name": record.Name,
-				"runtime_name": runtimeName,
-			})
-			recoverCtx, cancel := context.WithTimeout(ctx, reconcileMachineRecoveryTimeout)
-			recovered, err := executor.StartMachine(recoverCtx, runtimeName)
-			cancel()
-			if err != nil {
-				log.Printf("fascinate: recover machine %s failed: %v", runtimeName, err)
-				s.recordEventBestEffort(&record.OwnerUserID, &record.ID, "machine.recover.failed", map[string]any{
-					"machine_name": record.Name,
-					"runtime_name": runtimeName,
-					"error":        err.Error(),
-				})
-				reconcileErrs = append(reconcileErrs, fmt.Errorf("%s: %w", runtimeName, err))
-			} else {
-				log.Printf("fascinate: recovered machine %s", runtimeName)
-				liveMachine = recovered
-				s.recordEventBestEffort(&record.OwnerUserID, &record.ID, "machine.recover.succeeded", map[string]any{
-					"machine_name": record.Name,
-					"runtime_name": runtimeName,
-					"state":        recovered.State,
-				})
-			}
-		}
-
 		if shouldAdoptRuntimeState(record.State, liveMachine.State) {
 			if err := s.store.UpdateMachineState(ctx, record.ID, liveMachine.State); err != nil && !errors.Is(err, database.ErrNotFound) {
 				return err
 			}
+		}
+		if refreshed, err := s.refreshMachineDiskUsage(ctx, record); err == nil {
+			record = refreshed
+		} else if !errors.Is(err, machineruntime.ErrMachineNotFound) && !errors.Is(err, database.ErrNotFound) {
+			reconcileErrs = append(reconcileErrs, fmt.Errorf("%s disk usage: %w", runtimeName, err))
 		}
 	}
 
@@ -1332,7 +1364,11 @@ func (s *Service) finishCreateSuccess(record database.MachineRecord, liveMachine
 		return
 	}
 
-	if err := s.store.UpdateMachineState(persistCtx, currentRecord.ID, liveMachine.State); err != nil {
+	currentRecord, refreshErr := s.refreshMachineDiskUsage(persistCtx, currentRecord)
+	if refreshErr != nil && !errors.Is(refreshErr, machineruntime.ErrMachineNotFound) && !errors.Is(refreshErr, database.ErrNotFound) {
+		log.Printf("fascinate: refresh machine %s disk usage: %v", record.Name, refreshErr)
+	}
+	if err := s.store.UpdateMachineStateAndDiskUsage(persistCtx, currentRecord.ID, liveMachine.State, retainedMachineDiskBytes(currentRecord)); err != nil {
 		if errors.Is(err, database.ErrNotFound) {
 			s.cleanupRuntimeMachine(runtimeNameForRecord(record), machineHostID(record, s.localHostID))
 			return
@@ -1588,7 +1624,16 @@ func sourceSnapshotIDValue(value *string) string {
 
 func machineStateAllowsMissingRuntime(state string) bool {
 	switch strings.ToUpper(strings.TrimSpace(state)) {
-	case machineStateCreating, machineStateFailed:
+	case machineStateCreating, machineStateDeleting, machineStateFailed:
+		return true
+	default:
+		return false
+	}
+}
+
+func machineStateIsTransitional(state string) bool {
+	switch strings.ToUpper(strings.TrimSpace(state)) {
+	case machineStateCreating, machineStateStarting, machineStateStopping, machineStateDeleting:
 		return true
 	default:
 		return false

@@ -11,11 +11,11 @@ func (s *Store) CreateMachine(ctx context.Context, params CreateMachineParams) (
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO machines (
 			id, name, owner_user_id, host_id, runtime_name, source_snapshot_id, state,
-			cpu, memory_bytes, disk_bytes, primary_port
+			cpu, memory_bytes, disk_bytes, disk_usage_bytes, primary_port
 		)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, params.ID, params.Name, params.OwnerUserID, params.HostID, params.RuntimeName, params.SourceSnapshotID, params.State,
-		params.CPU, params.MemoryBytes, params.DiskBytes, params.PrimaryPort)
+		params.CPU, params.MemoryBytes, params.DiskBytes, params.DiskUsageBytes, params.PrimaryPort)
 	if err != nil {
 		if isUniqueConstraint(err) {
 			return MachineRecord{}, ErrConflict
@@ -41,6 +41,7 @@ func (s *Store) GetMachineByName(ctx context.Context, name string) (MachineRecor
 			m.cpu,
 			m.memory_bytes,
 			m.disk_bytes,
+			m.disk_usage_bytes,
 			m.primary_port,
 			m.created_at,
 			m.updated_at,
@@ -60,6 +61,7 @@ func (s *Store) GetMachineByName(ctx context.Context, name string) (MachineRecor
 		&record.CPU,
 		&record.MemoryBytes,
 		&record.DiskBytes,
+		&record.DiskUsageBytes,
 		&record.PrimaryPort,
 		&record.CreatedAt,
 		&record.UpdatedAt,
@@ -89,6 +91,7 @@ func (s *Store) ListMachines(ctx context.Context, ownerEmail string) ([]MachineR
 			m.cpu,
 			m.memory_bytes,
 			m.disk_bytes,
+			m.disk_usage_bytes,
 			m.primary_port,
 			m.created_at,
 			m.updated_at,
@@ -125,6 +128,7 @@ func (s *Store) ListMachines(ctx context.Context, ownerEmail string) ([]MachineR
 			&record.CPU,
 			&record.MemoryBytes,
 			&record.DiskBytes,
+			&record.DiskUsageBytes,
 			&record.PrimaryPort,
 			&record.CreatedAt,
 			&record.UpdatedAt,
@@ -144,6 +148,48 @@ func (s *Store) UpdateMachineState(ctx context.Context, id, state string) error 
 		SET state = ?, updated_at = CURRENT_TIMESTAMP
 		WHERE id = ? AND deleted_at IS NULL
 	`, state, id)
+	if err != nil {
+		return err
+	}
+
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return ErrNotFound
+	}
+
+	return nil
+}
+
+func (s *Store) UpdateMachineStateAndDiskUsage(ctx context.Context, id, state string, diskUsageBytes int64) error {
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE machines
+		SET state = ?, disk_usage_bytes = ?, updated_at = CURRENT_TIMESTAMP
+		WHERE id = ? AND deleted_at IS NULL
+	`, state, diskUsageBytes, id)
+	if err != nil {
+		return err
+	}
+
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return ErrNotFound
+	}
+
+	return nil
+}
+
+func (s *Store) UpdateMachineDiskUsage(ctx context.Context, id string, diskUsageBytes int64) error {
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE machines
+		SET disk_usage_bytes = ?, updated_at = CURRENT_TIMESTAMP
+		WHERE id = ? AND deleted_at IS NULL
+	`, diskUsageBytes, id)
 	if err != nil {
 		return err
 	}

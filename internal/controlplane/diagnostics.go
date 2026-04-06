@@ -56,12 +56,36 @@ type BudgetSummary struct {
 	SnapshotCount int    `json:"snapshot_count"`
 }
 
+type BudgetComputeSummary struct {
+	CPU         string `json:"cpu"`
+	MemoryBytes int64  `json:"memory_bytes"`
+}
+
+type BudgetStorageSummary struct {
+	MachineDiskBytes  int64 `json:"machine_disk_bytes"`
+	SnapshotDiskBytes int64 `json:"snapshot_disk_bytes"`
+	TotalDiskBytes    int64 `json:"total_disk_bytes"`
+}
+
+type MachinePowerStateSummary struct {
+	Creating int `json:"creating"`
+	Starting int `json:"starting"`
+	Running  int `json:"running"`
+	Stopping int `json:"stopping"`
+	Stopped  int `json:"stopped"`
+	Deleting int `json:"deleting"`
+}
+
 type BudgetDiagnostics struct {
-	OwnerEmail           string        `json:"owner_email"`
-	Limits               BudgetSummary `json:"limits"`
-	Usage                BudgetSummary `json:"usage"`
-	Remaining            BudgetSummary `json:"remaining"`
-	HostMinFreeDiskBytes int64         `json:"host_min_free_disk_bytes"`
+	OwnerEmail           string                   `json:"owner_email"`
+	Limits               BudgetSummary            `json:"limits"`
+	Usage                BudgetSummary            `json:"usage"`
+	Remaining            BudgetSummary            `json:"remaining"`
+	ActiveUsage          BudgetComputeSummary     `json:"active_usage"`
+	RemainingActive      BudgetComputeSummary     `json:"remaining_active"`
+	RetainedStorage      BudgetStorageSummary     `json:"retained_storage"`
+	PowerStates          MachinePowerStateSummary `json:"power_states"`
+	HostMinFreeDiskBytes int64                    `json:"host_min_free_disk_bytes"`
 }
 
 func (s *Service) GetHostDiagnostics(ctx context.Context) ([]Host, error) {
@@ -72,6 +96,9 @@ func (s *Service) GetMachineDiagnostics(ctx context.Context, name, ownerEmail st
 	record, err := s.ownedMachineRecord(ctx, name, ownerEmail)
 	if err != nil {
 		return MachineDiagnostics{}, err
+	}
+	if refreshed, refreshErr := s.refreshMachineDiskUsage(ctx, record); refreshErr == nil {
+		record = refreshed
 	}
 
 	machine, err := s.machineFromRecordWithRuntime(ctx, record)
@@ -214,6 +241,7 @@ func (s *Service) GetBudgetDiagnostics(ctx context.Context, ownerEmail string) (
 
 	var usage userUsage
 	if !errors.Is(userErr, database.ErrNotFound) {
+		_ = s.refreshLocalMachineDiskUsage(ctx)
 		usage, err = s.calculateUserUsage(ctx, user.ID)
 		if err != nil {
 			return BudgetDiagnostics{}, err
@@ -247,6 +275,27 @@ func (s *Service) GetBudgetDiagnostics(ctx context.Context, ownerEmail string) (
 			DiskBytes:     maxInt64(budget.MaxDiskBytes - usage.DiskBytes),
 			MachineCount:  maxInt(budget.MaxMachineCount - usage.MachineCount),
 			SnapshotCount: maxInt(budget.MaxSnapshotCount - usage.SnapshotCount),
+		},
+		ActiveUsage: BudgetComputeSummary{
+			CPU:         formatCPUCount(usage.CPU),
+			MemoryBytes: usage.MemoryBytes,
+		},
+		RemainingActive: BudgetComputeSummary{
+			CPU:         formatCPUCount(maxFloat64(budget.MaxCPU - usage.CPU)),
+			MemoryBytes: maxInt64(budget.MaxMemoryBytes - usage.MemoryBytes),
+		},
+		RetainedStorage: BudgetStorageSummary{
+			MachineDiskBytes:  usage.RetainedMachineDiskBytes,
+			SnapshotDiskBytes: usage.RetainedSnapshotDiskBytes,
+			TotalDiskBytes:    usage.DiskBytes,
+		},
+		PowerStates: MachinePowerStateSummary{
+			Creating: usage.CreatingMachineCount,
+			Starting: usage.StartingMachineCount,
+			Running:  usage.RunningMachineCount,
+			Stopping: usage.StoppingMachineCount,
+			Stopped:  usage.StoppedMachineCount,
+			Deleting: usage.DeletingMachineCount,
 		},
 		HostMinFreeDiskBytes: minFreeDiskBytes,
 	}, nil

@@ -26,20 +26,45 @@ type userBudget struct {
 }
 
 type userUsage struct {
+	CPU                       float64
+	MemoryBytes               int64
+	DiskBytes                 int64
+	RetainedMachineDiskBytes  int64
+	RetainedSnapshotDiskBytes int64
+	MachineCount              int
+	SnapshotCount             int
+	CreatingMachineCount      int
+	StartingMachineCount      int
+	RunningMachineCount       int
+	StoppingMachineCount      int
+	StoppedMachineCount       int
+	DeletingMachineCount      int
+}
+
+type hostUsage struct {
+	CPU                       float64
+	MemoryBytes               int64
+	DiskBytes                 int64
+	RetainedMachineDiskBytes  int64
+	RetainedSnapshotDiskBytes int64
+	MachineCount              int
+	SnapshotCount             int
+	CreatingMachineCount      int
+	StartingMachineCount      int
+	RunningMachineCount       int
+	StoppingMachineCount      int
+	StoppedMachineCount       int
+	DeletingMachineCount      int
+	AvailableDiskBytes        int64
+}
+
+type budgetDelta struct {
 	CPU           float64
+	CPUText       string
 	MemoryBytes   int64
 	DiskBytes     int64
 	MachineCount  int
 	SnapshotCount int
-}
-
-type hostUsage struct {
-	CPU                float64
-	MemoryBytes        int64
-	DiskBytes          int64
-	MachineCount       int
-	SnapshotCount      int
-	AvailableDiskBytes int64
 }
 
 func (s *Service) lockHostMutations(hostID string) func() {
@@ -216,6 +241,7 @@ func (s *Service) calculateUserUsage(ctx context.Context, userID string) (userUs
 		}
 		if machineCountsTowardQuota(record.State) {
 			usage.MachineCount++
+			accumulateMachinePowerState(&usage.CreatingMachineCount, &usage.StartingMachineCount, &usage.RunningMachineCount, &usage.StoppingMachineCount, &usage.StoppedMachineCount, &usage.DeletingMachineCount, record.State)
 		}
 		if machineConsumesCompute(record.State) {
 			cpu, err := parseCPUCount(spec.CPU)
@@ -226,7 +252,9 @@ func (s *Service) calculateUserUsage(ctx context.Context, userID string) (userUs
 			usage.MemoryBytes += spec.MemoryBytes
 		}
 		if machineConsumesDisk(record.State) {
-			usage.DiskBytes += spec.DiskBytes
+			retainedBytes := retainedMachineDiskBytes(record)
+			usage.RetainedMachineDiskBytes += retainedBytes
+			usage.DiskBytes += retainedBytes
 		}
 	}
 
@@ -242,7 +270,9 @@ func (s *Service) calculateUserUsage(ctx context.Context, userID string) (userUs
 			usage.SnapshotCount++
 		}
 		if snapshotConsumesDisk(record.State) {
-			usage.DiskBytes += snapshotReservedDiskBytes(record)
+			retainedBytes := snapshotReservedDiskBytes(record)
+			usage.RetainedSnapshotDiskBytes += retainedBytes
+			usage.DiskBytes += retainedBytes
 		}
 	}
 
@@ -271,6 +301,7 @@ func (s *Service) calculateHostUsage(ctx context.Context, hostID string) (hostUs
 		}
 		if machineCountsTowardQuota(record.State) {
 			usage.MachineCount++
+			accumulateMachinePowerState(&usage.CreatingMachineCount, &usage.StartingMachineCount, &usage.RunningMachineCount, &usage.StoppingMachineCount, &usage.StoppedMachineCount, &usage.DeletingMachineCount, record.State)
 		}
 		if machineConsumesCompute(record.State) {
 			cpu, err := parseCPUCount(spec.CPU)
@@ -281,7 +312,9 @@ func (s *Service) calculateHostUsage(ctx context.Context, hostID string) (hostUs
 			usage.MemoryBytes += spec.MemoryBytes
 		}
 		if machineConsumesDisk(record.State) {
-			usage.DiskBytes += spec.DiskBytes
+			retainedBytes := retainedMachineDiskBytes(record)
+			usage.RetainedMachineDiskBytes += retainedBytes
+			usage.DiskBytes += retainedBytes
 		}
 	}
 
@@ -297,7 +330,9 @@ func (s *Service) calculateHostUsage(ctx context.Context, hostID string) (hostUs
 			usage.SnapshotCount++
 		}
 		if snapshotConsumesDisk(record.State) {
-			usage.DiskBytes += snapshotReservedDiskBytes(record)
+			retainedBytes := snapshotReservedDiskBytes(record)
+			usage.RetainedSnapshotDiskBytes += retainedBytes
+			usage.DiskBytes += retainedBytes
 		}
 	}
 
@@ -336,7 +371,24 @@ func (s *Service) hostMinFreeDiskBytes() (int64, error) {
 	return parseByteSize(value)
 }
 
-func (s *Service) ensureUserCanCreateMachine(ctx context.Context, user database.User, spec resourceSpec) error {
+func (s *Service) ensureUserCanCreateMachine(ctx context.Context, user database.User, spec resourceSpec, retainedDiskBytes int64) error {
+	delta, err := computeBudgetDelta(spec, retainedDiskBytes)
+	if err != nil {
+		return err
+	}
+	delta.MachineCount = 1
+	return s.ensureUserCanFitDelta(ctx, user, delta)
+}
+
+func (s *Service) ensureUserCanStartMachine(ctx context.Context, user database.User, spec resourceSpec) error {
+	delta, err := computeBudgetDelta(spec, 0)
+	if err != nil {
+		return err
+	}
+	return s.ensureUserCanFitDelta(ctx, user, delta)
+}
+
+func (s *Service) ensureUserCanFitDelta(ctx context.Context, user database.User, delta budgetDelta) error {
 	budget, err := s.userBudgetForUser(user)
 	if err != nil {
 		return err
@@ -345,27 +397,29 @@ func (s *Service) ensureUserCanCreateMachine(ctx context.Context, user database.
 	if err != nil {
 		return err
 	}
-
-	requestedCPU, err := parseCPUCount(spec.CPU)
-	if err != nil {
-		return err
-	}
-	if budget.MaxMachineCount > 0 && usage.MachineCount+1 > budget.MaxMachineCount {
+	if budget.MaxMachineCount > 0 && usage.MachineCount+delta.MachineCount > budget.MaxMachineCount {
 		return fmt.Errorf("machine quota exceeded: maximum %d machines per user", budget.MaxMachineCount)
 	}
-	if budget.MaxCPU > 0 && usage.CPU+requestedCPU > budget.MaxCPU {
-		return fmt.Errorf("user cpu budget exceeded: %s + %s > %s", formatCPUCount(usage.CPU), strings.TrimSpace(spec.CPU), budget.MaxCPUText)
+	if budget.MaxCPU > 0 && usage.CPU+delta.CPU > budget.MaxCPU {
+		return fmt.Errorf("shared cpu budget exceeded: active %s + requested %s > limit %s", formatCPUCount(usage.CPU), delta.CPUText, budget.MaxCPUText)
 	}
-	if budget.MaxMemoryBytes > 0 && usage.MemoryBytes+spec.MemoryBytes > budget.MaxMemoryBytes {
-		return fmt.Errorf("user memory budget exceeded: %s + %s > %s", formatByteSize(usage.MemoryBytes), formatByteSize(spec.MemoryBytes), formatByteSize(budget.MaxMemoryBytes))
+	if budget.MaxMemoryBytes > 0 && usage.MemoryBytes+delta.MemoryBytes > budget.MaxMemoryBytes {
+		return fmt.Errorf("shared memory budget exceeded: active %s + requested %s > limit %s", formatByteSize(usage.MemoryBytes), formatByteSize(delta.MemoryBytes), formatByteSize(budget.MaxMemoryBytes))
 	}
-	if budget.MaxDiskBytes > 0 && usage.DiskBytes+spec.DiskBytes > budget.MaxDiskBytes {
-		return fmt.Errorf("user disk budget exceeded: %s + %s > %s", formatByteSize(usage.DiskBytes), formatByteSize(spec.DiskBytes), formatByteSize(budget.MaxDiskBytes))
+	if budget.MaxDiskBytes > 0 && usage.DiskBytes+delta.DiskBytes > budget.MaxDiskBytes {
+		return fmt.Errorf("retained storage budget exceeded: retained %s + requested %s > limit %s", formatByteSize(usage.DiskBytes), formatByteSize(delta.DiskBytes), formatByteSize(budget.MaxDiskBytes))
 	}
 	return nil
 }
 
 func (s *Service) ensureUserCanCreateSnapshot(ctx context.Context, user database.User, reservedBytes int64) error {
+	return s.ensureUserCanFitSnapshotDelta(ctx, user, budgetDelta{
+		DiskBytes:     reservedBytes,
+		SnapshotCount: 1,
+	})
+}
+
+func (s *Service) ensureUserCanFitSnapshotDelta(ctx context.Context, user database.User, delta budgetDelta) error {
 	budget, err := s.userBudgetForUser(user)
 	if err != nil {
 		return err
@@ -374,16 +428,32 @@ func (s *Service) ensureUserCanCreateSnapshot(ctx context.Context, user database
 	if err != nil {
 		return err
 	}
-	if budget.MaxSnapshotCount > 0 && usage.SnapshotCount+1 > budget.MaxSnapshotCount {
+	if budget.MaxSnapshotCount > 0 && usage.SnapshotCount+delta.SnapshotCount > budget.MaxSnapshotCount {
 		return fmt.Errorf("snapshot quota exceeded: maximum %d retained snapshots per user", budget.MaxSnapshotCount)
 	}
-	if budget.MaxDiskBytes > 0 && usage.DiskBytes+reservedBytes > budget.MaxDiskBytes {
-		return fmt.Errorf("user disk budget exceeded: %s + %s > %s", formatByteSize(usage.DiskBytes), formatByteSize(reservedBytes), formatByteSize(budget.MaxDiskBytes))
+	if budget.MaxDiskBytes > 0 && usage.DiskBytes+delta.DiskBytes > budget.MaxDiskBytes {
+		return fmt.Errorf("retained storage budget exceeded: retained %s + requested %s > limit %s", formatByteSize(usage.DiskBytes), formatByteSize(delta.DiskBytes), formatByteSize(budget.MaxDiskBytes))
 	}
 	return nil
 }
 
-func (s *Service) ensureHostCanFitMachine(ctx context.Context, host database.HostRecord, spec resourceSpec) error {
+func (s *Service) ensureHostCanFitMachine(ctx context.Context, host database.HostRecord, spec resourceSpec, retainedDiskBytes int64) error {
+	delta, err := computeBudgetDelta(spec, retainedDiskBytes)
+	if err != nil {
+		return err
+	}
+	return s.ensureHostCanFitDelta(ctx, host, delta)
+}
+
+func (s *Service) ensureHostCanStartMachine(ctx context.Context, host database.HostRecord, spec resourceSpec) error {
+	delta, err := computeBudgetDelta(spec, 0)
+	if err != nil {
+		return err
+	}
+	return s.ensureHostCanFitDelta(ctx, host, delta)
+}
+
+func (s *Service) ensureHostCanFitDelta(ctx context.Context, host database.HostRecord, delta budgetDelta) error {
 	if !strings.EqualFold(strings.TrimSpace(host.Status), hostStatusActive) {
 		return fmt.Errorf("host %s is not active", host.ID)
 	}
@@ -395,17 +465,13 @@ func (s *Service) ensureHostCanFitMachine(ctx context.Context, host database.Hos
 	if err != nil {
 		return err
 	}
-	requestedCPU, err := parseCPUCount(spec.CPU)
-	if err != nil {
-		return err
-	}
-	if host.TotalCPU > 0 && usage.CPU+requestedCPU > float64(host.TotalCPU) {
+	if host.TotalCPU > 0 && usage.CPU+delta.CPU > float64(host.TotalCPU) {
 		return fmt.Errorf("host %s lacks cpu capacity", host.ID)
 	}
-	if host.TotalMemoryBytes > 0 && usage.MemoryBytes+spec.MemoryBytes > host.TotalMemoryBytes {
+	if host.TotalMemoryBytes > 0 && usage.MemoryBytes+delta.MemoryBytes > host.TotalMemoryBytes {
 		return fmt.Errorf("host %s lacks memory capacity", host.ID)
 	}
-	if host.TotalDiskBytes > 0 && usage.DiskBytes+spec.DiskBytes > host.TotalDiskBytes {
+	if host.TotalDiskBytes > 0 && usage.DiskBytes+delta.DiskBytes > host.TotalDiskBytes {
 		return fmt.Errorf("host %s lacks disk capacity", host.ID)
 	}
 
@@ -413,35 +479,14 @@ func (s *Service) ensureHostCanFitMachine(ctx context.Context, host database.Hos
 	if err != nil {
 		return fmt.Errorf("invalid host minimum free disk %q: %w", s.cfg.HostMinFreeDisk, err)
 	}
-	if usage.AvailableDiskBytes > 0 && usage.AvailableDiskBytes-spec.DiskBytes < minFreeDiskBytes {
+	if usage.AvailableDiskBytes > 0 && usage.AvailableDiskBytes-delta.DiskBytes < minFreeDiskBytes {
 		return fmt.Errorf("host %s lacks free disk headroom", host.ID)
 	}
 	return nil
 }
 
 func (s *Service) ensureHostCanFitSnapshot(ctx context.Context, host database.HostRecord, reservedBytes int64) error {
-	if !strings.EqualFold(strings.TrimSpace(host.Status), hostStatusActive) {
-		return fmt.Errorf("host %s is not active", host.ID)
-	}
-	if !s.hostHeartbeatFresh(host) {
-		return fmt.Errorf("host %s heartbeat is stale", host.ID)
-	}
-
-	usage, err := s.calculateHostUsage(ctx, host.ID)
-	if err != nil {
-		return err
-	}
-	if host.TotalDiskBytes > 0 && usage.DiskBytes+reservedBytes > host.TotalDiskBytes {
-		return fmt.Errorf("host %s lacks disk capacity", host.ID)
-	}
-	minFreeDiskBytes, err := s.hostMinFreeDiskBytes()
-	if err != nil {
-		return fmt.Errorf("invalid host minimum free disk %q: %w", s.cfg.HostMinFreeDisk, err)
-	}
-	if usage.AvailableDiskBytes > 0 && usage.AvailableDiskBytes-reservedBytes < minFreeDiskBytes {
-		return fmt.Errorf("host %s lacks free disk headroom", host.ID)
-	}
-	return nil
+	return s.ensureHostCanFitDelta(ctx, host, budgetDelta{DiskBytes: reservedBytes})
 }
 
 func machineCountsTowardQuota(state string) bool {
@@ -450,7 +495,7 @@ func machineCountsTowardQuota(state string) bool {
 
 func machineConsumesCompute(state string) bool {
 	switch strings.ToUpper(strings.TrimSpace(state)) {
-	case machineStateCreating, machineStateRunning:
+	case machineStateCreating, machineStateStarting, machineStateRunning, machineStateStopping:
 		return true
 	default:
 		return false
@@ -474,6 +519,39 @@ func snapshotReservedDiskBytes(record database.SnapshotRecord) int64 {
 		return record.DiskSizeBytes + record.MemorySizeBytes
 	}
 	return record.DiskBytes + record.MemoryBytes
+}
+
+func computeBudgetDelta(spec resourceSpec, retainedDiskBytes int64) (budgetDelta, error) {
+	requestedCPU, err := parseCPUCount(spec.CPU)
+	if err != nil {
+		return budgetDelta{}, err
+	}
+	if retainedDiskBytes < 0 {
+		retainedDiskBytes = 0
+	}
+	return budgetDelta{
+		CPU:         requestedCPU,
+		CPUText:     strings.TrimSpace(spec.CPU),
+		MemoryBytes: spec.MemoryBytes,
+		DiskBytes:   retainedDiskBytes,
+	}, nil
+}
+
+func accumulateMachinePowerState(creating, starting, running, stopping, stopped, deleting *int, state string) {
+	switch strings.ToUpper(strings.TrimSpace(state)) {
+	case machineStateCreating:
+		*creating = *creating + 1
+	case machineStateStarting:
+		*starting = *starting + 1
+	case machineStateRunning:
+		*running = *running + 1
+	case machineStateStopping:
+		*stopping = *stopping + 1
+	case machineStateStopped:
+		*stopped = *stopped + 1
+	case machineStateDeleting:
+		*deleting = *deleting + 1
+	}
 }
 
 func formatByteSize(value int64) string {

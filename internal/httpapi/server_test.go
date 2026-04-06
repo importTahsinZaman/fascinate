@@ -63,6 +63,14 @@ type fakeMachineManager struct {
 	createInput         controlplane.CreateMachineInput
 	createResult        controlplane.Machine
 	createErr           error
+	startName           string
+	startOwner          string
+	startResult         controlplane.Machine
+	startErr            error
+	stopName            string
+	stopOwner           string
+	stopResult          controlplane.Machine
+	stopErr             error
 	deleteName          string
 	deleteOwner         string
 	deleteErr           error
@@ -264,6 +272,24 @@ func (f *fakeMachineManager) CreateMachine(_ context.Context, input controlplane
 		return controlplane.Machine{}, f.createErr
 	}
 	return f.createResult, nil
+}
+
+func (f *fakeMachineManager) StartMachine(_ context.Context, name, ownerEmail string) (controlplane.Machine, error) {
+	f.startName = name
+	f.startOwner = ownerEmail
+	if f.startErr != nil {
+		return controlplane.Machine{}, f.startErr
+	}
+	return f.startResult, nil
+}
+
+func (f *fakeMachineManager) StopMachine(_ context.Context, name, ownerEmail string) (controlplane.Machine, error) {
+	f.stopName = name
+	f.stopOwner = ownerEmail
+	if f.stopErr != nil {
+		return controlplane.Machine{}, f.stopErr
+	}
+	return f.stopResult, nil
 }
 
 func (f *fakeMachineManager) DeleteMachine(_ context.Context, name, ownerEmail string) error {
@@ -594,6 +620,60 @@ func TestDeleteMachineEndpointCallsManager(t *testing.T) {
 	}
 	if manager.deleteOwner != "dev@example.com" {
 		t.Fatalf("expected delete owner dev@example.com, got %q", manager.deleteOwner)
+	}
+	if terminals.userEmail != "dev@example.com" || terminals.closedMachine != "habits" {
+		t.Fatalf("expected matching machine sessions to be closed, got %+v", terminals)
+	}
+}
+
+func TestStartMachineEndpointCallsManager(t *testing.T) {
+	t.Parallel()
+
+	manager := &fakeMachineManager{
+		startResult: controlplane.Machine{
+			ID:          "machine-1",
+			Name:        "habits",
+			State:       "RUNNING",
+			PrimaryPort: 3000,
+		},
+	}
+	handler := newTestHandler(t, &fakeRuntime{}, manager)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/machines/habits/start?owner_email=dev@example.com", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if manager.startName != "habits" || manager.startOwner != "dev@example.com" {
+		t.Fatalf("unexpected start args name=%q owner=%q", manager.startName, manager.startOwner)
+	}
+}
+
+func TestStopMachineEndpointCallsManagerAndClosesShells(t *testing.T) {
+	t.Parallel()
+
+	manager := &fakeMachineManager{
+		stopResult: controlplane.Machine{
+			ID:          "machine-1",
+			Name:        "habits",
+			State:       "STOPPED",
+			PrimaryPort: 3000,
+		},
+	}
+	terminals := &fakeTerminalManager{}
+	handler := newTestHandlerWithExtras(t, config.Config{BaseDomain: "fascinate.dev"}, &fakeRuntime{}, manager, nil, terminals, nil, nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/machines/habits/stop?owner_email=dev@example.com", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if manager.stopName != "habits" || manager.stopOwner != "dev@example.com" {
+		t.Fatalf("unexpected stop args name=%q owner=%q", manager.stopName, manager.stopOwner)
 	}
 	if terminals.userEmail != "dev@example.com" || terminals.closedMachine != "habits" {
 		t.Fatalf("expected matching machine sessions to be closed, got %+v", terminals)

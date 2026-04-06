@@ -29,6 +29,7 @@ type hostExecutor interface {
 	CreateMachine(context.Context, machineruntime.CreateMachineRequest) (machineruntime.Machine, error)
 	SyncManagedEnv(context.Context, string, machineruntime.ManagedEnvRequest) error
 	StartMachine(context.Context, string) (machineruntime.Machine, error)
+	StopMachine(context.Context, string) (machineruntime.Machine, error)
 	DeleteMachine(context.Context, string) error
 	ForkMachine(context.Context, machineruntime.ForkMachineRequest) (machineruntime.Machine, error)
 	ListSnapshots(context.Context) ([]machineruntime.Snapshot, error)
@@ -74,6 +75,10 @@ func (l *localHostExecutor) SyncManagedEnv(ctx context.Context, name string, req
 
 func (l *localHostExecutor) StartMachine(ctx context.Context, name string) (machineruntime.Machine, error) {
 	return l.runtime.StartMachine(ctx, name)
+}
+
+func (l *localHostExecutor) StopMachine(ctx context.Context, name string) (machineruntime.Machine, error) {
+	return l.runtime.StopMachine(ctx, name)
 }
 
 func (l *localHostExecutor) DeleteMachine(ctx context.Context, name string) error {
@@ -241,6 +246,10 @@ func (s *Service) collectLocalHostMetrics(ctx context.Context) (hostMetrics, boo
 		return metrics, false, &message
 	}
 	if err := executor.HealthCheck(ctx); err != nil {
+		message := err.Error()
+		return metrics, false, &message
+	}
+	if err := s.refreshLocalMachineDiskUsage(ctx); err != nil {
 		message := err.Error()
 		return metrics, false, &message
 	}

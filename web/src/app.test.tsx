@@ -333,7 +333,7 @@ describe("App", () => {
     fireEvent.click(screen.getByRole("button", { name: "Create machine" }));
 
     expect(await screen.findByText("fresh-box")).toBeTruthy();
-    expect(await screen.findByLabelText("Creating fresh-box")).toBeTruthy();
+    expect(await screen.findByLabelText("creating fresh-box")).toBeTruthy();
 
     const machineCard = screen.getByText("fresh-box").closest(".machine-card");
     expect(machineCard?.getAttribute("aria-busy")).toBe("true");
@@ -341,6 +341,36 @@ describe("App", () => {
     expect(screen.queryByRole("button", { name: "Fork fresh-box" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Snapshot fresh-box" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Delete fresh-box" })).toBeNull();
+  });
+
+  it("shows only start and delete actions for stopped machines", async () => {
+    const fetchMock = createAuthenticatedFetchMock((path, init) => {
+      if (path === "/v1/machines" && !init?.method) {
+        return jsonResponse({
+          machines: [
+            {
+              id: "machine-1",
+              name: "m-1",
+              state: "STOPPED",
+              primary_port: 3000,
+              created_at: "2026-03-22T00:00:00Z",
+              updated_at: "2026-03-22T00:00:00Z",
+            },
+          ],
+        });
+      }
+      return undefined;
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderApp();
+
+    expect(await screen.findByRole("button", { name: "Start" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Delete m-1" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "New shell" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Stop" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Fork m-1" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Snapshot m-1" })).toBeNull();
   });
 
   it("reveals a shell from the sidebar within the horizontal strip", async () => {
@@ -550,7 +580,7 @@ describe("App", () => {
     expect(screen.queryByRole("button", { name: "Fork m-1" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Snapshot m-1" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Delete m-1" })).toBeNull();
-    expect(screen.getByLabelText("Deleting m-1")).toBeTruthy();
+    expect(screen.getByLabelText("deleting m-1")).toBeTruthy();
     expect(
       fetchMock.mock.calls.filter(([path]) => String(path).startsWith("/v1/terminal/sessions/")),
     ).toHaveLength(0);
@@ -593,6 +623,128 @@ describe("App", () => {
     expect((screen.getByRole("button", { name: "Fork m-1" }) as HTMLButtonElement).disabled).toBe(false);
     expect((screen.getByRole("button", { name: "Snapshot m-1" }) as HTMLButtonElement).disabled).toBe(false);
     expect((screen.getByRole("button", { name: "Delete m-1" }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("optimistically removes machine shells and shows a stopping spinner while stop is in flight", async () => {
+    let machines = [
+      {
+        id: "machine-1",
+        name: "m-1",
+        state: "RUNNING",
+        primary_port: 3000,
+        created_at: "2026-03-22T00:00:00Z",
+        updated_at: "2026-03-22T00:00:00Z",
+      },
+    ];
+    const stopRequest = deferred<Response>();
+    const fetchMock = createAuthenticatedFetchMock((path, init) => {
+      if (path === "/v1/machines" && !init?.method) {
+        return jsonResponse({ machines });
+      }
+      if (path === "/v1/machines/m-1/stop" && init?.method === "POST") {
+        return stopRequest.promise;
+      }
+      return undefined;
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderApp();
+
+    fireEvent.click(await screen.findByRole("button", { name: "New shell" }));
+    fireEvent.click(await screen.findByRole("button", { name: "New shell" }));
+
+    expect(await screen.findAllByTestId("terminal-m-1")).toHaveLength(2);
+
+    fireEvent.click(screen.getByRole("button", { name: "Stop" }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/v1/machines/m-1/stop",
+        expect.objectContaining({ method: "POST" }),
+      );
+    });
+    await waitFor(() => expect(useWorkspaceStore.getState().windows).toHaveLength(0));
+
+    expect(screen.queryByTestId("terminal-m-1")).toBeNull();
+    expect(screen.queryByRole("button", { name: "New shell" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Stop" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Fork m-1" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Snapshot m-1" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Delete m-1" })).toBeNull();
+    expect(screen.getByLabelText("stopping m-1")).toBeTruthy();
+
+    stopRequest.resolve(
+      (() => {
+        machines = [
+          {
+            id: "machine-1",
+            name: "m-1",
+            state: "STOPPED",
+            primary_port: 3000,
+            created_at: "2026-03-22T00:00:00Z",
+            updated_at: "2026-04-06T00:00:00Z",
+          },
+        ];
+        return jsonResponse(machines[0]);
+      })(),
+    );
+
+    expect(await screen.findByRole("button", { name: "Start" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Delete m-1" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "New shell" })).toBeNull();
+  });
+
+  it("shows a starting spinner until a stopped machine start completes", async () => {
+    let machines = [
+      {
+        id: "machine-1",
+        name: "m-1",
+        state: "STOPPED",
+        primary_port: 3000,
+        created_at: "2026-03-22T00:00:00Z",
+        updated_at: "2026-03-22T00:00:00Z",
+      },
+    ];
+    const startRequest = deferred<Response>();
+    const fetchMock = createAuthenticatedFetchMock((path, init) => {
+      if (path === "/v1/machines" && !init?.method) {
+        return jsonResponse({ machines });
+      }
+      if (path === "/v1/machines/m-1/start" && init?.method === "POST") {
+        return startRequest.promise;
+      }
+      return undefined;
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderApp();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Start" }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/v1/machines/m-1/start",
+        expect.objectContaining({ method: "POST" }),
+      );
+    });
+    expect(screen.queryByRole("button", { name: "Start" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Delete m-1" })).toBeNull();
+    expect(screen.getByLabelText("starting m-1")).toBeTruthy();
+
+    machines = [
+      {
+        id: "machine-1",
+        name: "m-1",
+        state: "RUNNING",
+        primary_port: 3000,
+        created_at: "2026-03-22T00:00:00Z",
+        updated_at: "2026-04-06T00:00:00Z",
+      },
+    ];
+    startRequest.resolve(jsonResponse(machines[0]));
+
+    expect(await screen.findByRole("button", { name: "New shell" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Stop" })).toBeTruthy();
   });
 
   it("keeps sidebar shell order stable when focusing a sibling shell", async () => {
