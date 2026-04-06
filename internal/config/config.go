@@ -40,6 +40,7 @@ type Config struct {
 	DefaultUserMaxCPU       string
 	DefaultUserMaxRAM       string
 	DefaultUserMaxDisk      string
+	HostSharedCPURatio      string
 	DefaultUserMaxMachines  int
 	DefaultUserMaxSnapshots int
 	MaxMachinesPerUser      int
@@ -136,9 +137,10 @@ func Load() Config {
 		DefaultMachineCPU:       getenv("FASCINATE_DEFAULT_MACHINE_CPU", "1"),
 		DefaultMachineRAM:       getenv("FASCINATE_DEFAULT_MACHINE_RAM", "2GiB"),
 		DefaultMachineDisk:      getenv("FASCINATE_DEFAULT_MACHINE_DISK", "20GiB"),
-		DefaultUserMaxCPU:       getenv("FASCINATE_DEFAULT_USER_MAX_CPU", "2"),
-		DefaultUserMaxRAM:       getenv("FASCINATE_DEFAULT_USER_MAX_RAM", "8GiB"),
-		DefaultUserMaxDisk:      getenv("FASCINATE_DEFAULT_USER_MAX_DISK", "50GiB"),
+		DefaultUserMaxCPU:       getenv("FASCINATE_DEFAULT_USER_MAX_CPU", "5"),
+		DefaultUserMaxRAM:       getenv("FASCINATE_DEFAULT_USER_MAX_RAM", "10GiB"),
+		DefaultUserMaxDisk:      getenv("FASCINATE_DEFAULT_USER_MAX_DISK", "80GiB"),
+		HostSharedCPURatio:      getenv("FASCINATE_HOST_SHARED_CPU_RATIO", "1.67"),
 		DefaultUserMaxMachines:  getenvInt("FASCINATE_DEFAULT_USER_MAX_MACHINES", getenvInt("FASCINATE_MAX_MACHINES_PER_USER", 25)),
 		DefaultUserMaxSnapshots: getenvInt("FASCINATE_DEFAULT_USER_MAX_SNAPSHOTS", 5),
 		MaxMachinesPerUser:      getenvInt("FASCINATE_MAX_MACHINES_PER_USER", 25),

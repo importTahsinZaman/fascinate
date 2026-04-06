@@ -37,6 +37,9 @@ func TestServiceRegistersAndHeartbeatsLocalHost(t *testing.T) {
 	if !host.PlacementEligible {
 		t.Fatalf("expected placement-eligible host")
 	}
+	if host.SharedCPUCeiling == "" || host.SharedCPUOvercommit != "1.67" {
+		t.Fatalf("expected shared cpu diagnostics on host, got %+v", host)
+	}
 	if host.Role != "combined" {
 		t.Fatalf("unexpected host role: %q", host.Role)
 	}
@@ -110,7 +113,7 @@ func TestServiceCreateMachineFailsWhenNoHostHasDefaultCapacity(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected create to fail when no host can fit the default machine")
 	}
-	if got := err.Error(); got != "no eligible hosts available for placement" {
+	if got := err.Error(); got != "host local-host lacks memory capacity" {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -139,6 +142,34 @@ func TestHostPlacementEligibleUsesRequestedCapacity(t *testing.T) {
 	}
 	if !service.hostPlacementEligible(record, "1", "1GiB", "10GiB") {
 		t.Fatalf("expected smaller requested machine to fit")
+	}
+}
+
+func TestHostPlacementEligibleUsesSharedCPUCeiling(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, runtime := newTestServiceDeps(t, ctx)
+	service := newTestService(store, runtime)
+
+	record := database.HostRecord{
+		ID:                   "local-host",
+		Status:               hostStatusActive,
+		HeartbeatAt:          ptrString(time.Now().UTC().Format(time.RFC3339)),
+		TotalCPU:             2,
+		AllocatedCPU:         2,
+		TotalMemoryBytes:     16 << 30,
+		AllocatedMemoryBytes: 4 << 30,
+		TotalDiskBytes:       200 << 30,
+		AllocatedDiskBytes:   40 << 30,
+		AvailableDiskBytes:   150 << 30,
+	}
+
+	if !service.hostPlacementEligible(record, "1", "2GiB", "20GiB") {
+		t.Fatalf("expected one more default machine to fit under shared cpu headroom")
+	}
+	if service.hostPlacementEligible(record, "2", "2GiB", "20GiB") {
+		t.Fatalf("expected larger cpu request to exceed the shared cpu ceiling")
 	}
 }
 

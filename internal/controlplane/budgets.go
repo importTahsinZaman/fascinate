@@ -3,6 +3,8 @@ package controlplane
 import (
 	"context"
 	"fmt"
+	"math"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -17,8 +19,8 @@ type resourceSpec struct {
 }
 
 type userBudget struct {
-	MaxCPU           float64
-	MaxCPUText       string
+	SoftMaxCPU       float64
+	SoftMaxCPUText   string
 	MaxMemoryBytes   int64
 	MaxDiskBytes     int64
 	MaxMachineCount  int
@@ -215,8 +217,8 @@ func (s *Service) userBudgetForUser(user database.User) (userBudget, error) {
 	}
 
 	return userBudget{
-		MaxCPU:           maxCPU,
-		MaxCPUText:       maxCPUText,
+		SoftMaxCPU:       maxCPU,
+		SoftMaxCPUText:   maxCPUText,
 		MaxMemoryBytes:   maxMemoryBytes,
 		MaxDiskBytes:     maxDiskBytes,
 		MaxMachineCount:  maxMachineCount,
@@ -400,9 +402,6 @@ func (s *Service) ensureUserCanFitDelta(ctx context.Context, user database.User,
 	if budget.MaxMachineCount > 0 && usage.MachineCount+delta.MachineCount > budget.MaxMachineCount {
 		return fmt.Errorf("machine quota exceeded: maximum %d machines per user", budget.MaxMachineCount)
 	}
-	if budget.MaxCPU > 0 && usage.CPU+delta.CPU > budget.MaxCPU {
-		return fmt.Errorf("shared cpu budget exceeded: active %s + requested %s > limit %s", formatCPUCount(usage.CPU), delta.CPUText, budget.MaxCPUText)
-	}
 	if budget.MaxMemoryBytes > 0 && usage.MemoryBytes+delta.MemoryBytes > budget.MaxMemoryBytes {
 		return fmt.Errorf("shared memory budget exceeded: active %s + requested %s > limit %s", formatByteSize(usage.MemoryBytes), formatByteSize(delta.MemoryBytes), formatByteSize(budget.MaxMemoryBytes))
 	}
@@ -465,8 +464,12 @@ func (s *Service) ensureHostCanFitDelta(ctx context.Context, host database.HostR
 	if err != nil {
 		return err
 	}
-	if host.TotalCPU > 0 && usage.CPU+delta.CPU > float64(host.TotalCPU) {
-		return fmt.Errorf("host %s lacks cpu capacity", host.ID)
+	sharedCPUCeiling, err := s.hostSharedCPUCeiling(host.TotalCPU)
+	if err != nil {
+		return err
+	}
+	if sharedCPUCeiling > 0 && usage.CPU+delta.CPU > sharedCPUCeiling {
+		return fmt.Errorf("shared host cpu capacity exhausted on %s: active %s + requested %s > ceiling %s", host.ID, formatCPUCount(usage.CPU), delta.CPUText, formatCPUCount(sharedCPUCeiling))
 	}
 	if host.TotalMemoryBytes > 0 && usage.MemoryBytes+delta.MemoryBytes > host.TotalMemoryBytes {
 		return fmt.Errorf("host %s lacks memory capacity", host.ID)
@@ -535,6 +538,51 @@ func computeBudgetDelta(spec resourceSpec, retainedDiskBytes int64) (budgetDelta
 		MemoryBytes: spec.MemoryBytes,
 		DiskBytes:   retainedDiskBytes,
 	}, nil
+}
+
+func (s *Service) hostSharedCPURatio() (float64, error) {
+	value := strings.TrimSpace(s.cfg.HostSharedCPURatio)
+	if value == "" {
+		value = "1.67"
+	}
+	ratio, err := strconv.ParseFloat(value, 64)
+	if err != nil {
+		return 0, fmt.Errorf("invalid host shared cpu ratio %q: %w", value, err)
+	}
+	if ratio <= 0 {
+		return 0, fmt.Errorf("host shared cpu ratio %q must be positive", value)
+	}
+	return ratio, nil
+}
+
+func (s *Service) hostSharedCPUCeiling(totalCPU int) (float64, error) {
+	if totalCPU <= 0 {
+		return 0, nil
+	}
+	ratio, err := s.hostSharedCPURatio()
+	if err != nil {
+		return 0, err
+	}
+	ceiling := math.Round(float64(totalCPU) * ratio)
+	if ceiling < 1 {
+		ceiling = 1
+	}
+	return ceiling, nil
+}
+
+func (s *Service) hostSharedCPURemaining(totalCPU int, activeCPU float64) (float64, error) {
+	ceiling, err := s.hostSharedCPUCeiling(totalCPU)
+	if err != nil {
+		return 0, err
+	}
+	return maxFloat64(ceiling - activeCPU), nil
+}
+
+func roundActiveCPU(value float64) int {
+	if value <= 0 {
+		return 0
+	}
+	return int(math.Ceil(value))
 }
 
 func accumulateMachinePowerState(creating, starting, running, stopping, stopped, deleting *int, state string) {

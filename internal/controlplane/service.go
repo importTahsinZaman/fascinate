@@ -134,13 +134,16 @@ func New(cfg config.Config, store *database.Store, runtime machineruntime.Manage
 		cfg.HostHeartbeatInterval = 30 * time.Second
 	}
 	if strings.TrimSpace(cfg.DefaultUserMaxCPU) == "" {
-		cfg.DefaultUserMaxCPU = "2"
+		cfg.DefaultUserMaxCPU = "5"
 	}
 	if strings.TrimSpace(cfg.DefaultUserMaxRAM) == "" {
-		cfg.DefaultUserMaxRAM = "8GiB"
+		cfg.DefaultUserMaxRAM = "10GiB"
 	}
 	if strings.TrimSpace(cfg.DefaultUserMaxDisk) == "" {
-		cfg.DefaultUserMaxDisk = "50GiB"
+		cfg.DefaultUserMaxDisk = "80GiB"
+	}
+	if strings.TrimSpace(cfg.HostSharedCPURatio) == "" {
+		cfg.HostSharedCPURatio = "1.67"
 	}
 	if cfg.DefaultUserMaxMachines <= 0 {
 		cfg.DefaultUserMaxMachines = cfg.EffectiveDefaultUserMaxMachines()

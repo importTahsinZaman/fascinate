@@ -133,6 +133,10 @@ type Host struct {
 	PlacementEligible    bool              `json:"placement_eligible"`
 	TotalCPU             int               `json:"total_cpu"`
 	AllocatedCPU         int               `json:"allocated_cpu"`
+	SharedCPUCeiling     string            `json:"shared_cpu_ceiling"`
+	NominalActiveCPU     string            `json:"nominal_active_cpu"`
+	SharedCPURemaining   string            `json:"shared_cpu_remaining"`
+	SharedCPUOvercommit  string            `json:"shared_cpu_overcommit_ratio"`
 	TotalMemoryBytes     int64             `json:"total_memory_bytes"`
 	AllocatedMemoryBytes int64             `json:"allocated_memory_bytes"`
 	TotalDiskBytes       int64             `json:"total_disk_bytes"`
@@ -259,7 +263,7 @@ func (s *Service) collectLocalHostMetrics(ctx context.Context) (hostMetrics, boo
 		message := err.Error()
 		return metrics, false, &message
 	}
-	metrics.allocatedCPU = int(usage.CPU)
+	metrics.allocatedCPU = roundActiveCPU(usage.CPU)
 	metrics.allocatedMemoryBytes = usage.MemoryBytes
 	metrics.allocatedDiskBytes = usage.DiskBytes
 	metrics.machineCount = usage.MachineCount
@@ -281,6 +285,11 @@ func (s *Service) detectLocalRuntimeVersion(ctx context.Context) string {
 }
 
 func (s *Service) hostFromRecord(record database.HostRecord) Host {
+	sharedCPUCeiling, err := s.hostSharedCPUCeiling(record.TotalCPU)
+	if err != nil {
+		sharedCPUCeiling = 0
+	}
+	sharedCPURemaining := maxFloat64(sharedCPUCeiling - float64(record.AllocatedCPU))
 	return Host{
 		ID:                   record.ID,
 		Name:                 record.Name,
@@ -295,6 +304,10 @@ func (s *Service) hostFromRecord(record database.HostRecord) Host {
 		PlacementEligible:    s.hostPlacementEligible(record, s.cfg.DefaultMachineCPU, s.cfg.DefaultMachineRAM, s.cfg.DefaultMachineDisk),
 		TotalCPU:             record.TotalCPU,
 		AllocatedCPU:         record.AllocatedCPU,
+		SharedCPUCeiling:     formatCPUCount(sharedCPUCeiling),
+		NominalActiveCPU:     formatCPUCount(float64(record.AllocatedCPU)),
+		SharedCPURemaining:   formatCPUCount(sharedCPURemaining),
+		SharedCPUOvercommit:  strings.TrimSpace(s.cfg.HostSharedCPURatio),
 		TotalMemoryBytes:     record.TotalMemoryBytes,
 		AllocatedMemoryBytes: record.AllocatedMemoryBytes,
 		TotalDiskBytes:       record.TotalDiskBytes,
@@ -327,45 +340,60 @@ func (s *Service) hostHeartbeatFresh(record database.HostRecord) bool {
 }
 
 func (s *Service) hostPlacementEligible(record database.HostRecord, cpu, memory, disk string) bool {
-	if !strings.EqualFold(strings.TrimSpace(record.Status), hostStatusActive) || !s.hostHeartbeatFresh(record) {
-		return false
-	}
-	return s.hostHasCapacity(record, cpu, memory, disk)
+	return s.hostPlacementErr(record, cpu, memory, disk) == nil
 }
 
 func (s *Service) hostHasCapacity(record database.HostRecord, cpu, memory, disk string) bool {
+	return s.hostCapacityErr(record, cpu, memory, disk) == nil
+}
+
+func (s *Service) hostPlacementErr(record database.HostRecord, cpu, memory, disk string) error {
+	if !strings.EqualFold(strings.TrimSpace(record.Status), hostStatusActive) {
+		return fmt.Errorf("host %s is not active", record.ID)
+	}
+	if !s.hostHeartbeatFresh(record) {
+		return fmt.Errorf("host %s heartbeat is stale", record.ID)
+	}
+	return s.hostCapacityErr(record, cpu, memory, disk)
+}
+
+func (s *Service) hostCapacityErr(record database.HostRecord, cpu, memory, disk string) error {
 	requestedCPU, err := parseCPUCount(cpu)
 	if err != nil || requestedCPU <= 0 {
-		return false
+		return fmt.Errorf("invalid requested cpu %q", cpu)
 	}
-	if record.TotalCPU > 0 && record.AllocatedCPU+int(requestedCPU) > record.TotalCPU {
-		return false
+	sharedCPUCeiling, err := s.hostSharedCPUCeiling(record.TotalCPU)
+	if err != nil {
+		return err
+	}
+	if sharedCPUCeiling > 0 && float64(record.AllocatedCPU)+requestedCPU > sharedCPUCeiling {
+		return fmt.Errorf("shared host cpu capacity exhausted on %s: active %s + requested %s > ceiling %s", record.ID, formatCPUCount(float64(record.AllocatedCPU)), formatCPUCount(requestedCPU), formatCPUCount(sharedCPUCeiling))
 	}
 
 	requestedMemoryBytes, err := parseByteSize(memory)
 	if err != nil || requestedMemoryBytes <= 0 {
-		return false
+		return fmt.Errorf("invalid requested memory %q", memory)
 	}
 	if record.TotalMemoryBytes > 0 && record.AllocatedMemoryBytes+requestedMemoryBytes > record.TotalMemoryBytes {
-		return false
+		return fmt.Errorf("host %s lacks memory capacity", record.ID)
 	}
 
 	requestedDiskBytes, err := parseByteSize(disk)
 	if err != nil || requestedDiskBytes <= 0 {
-		return false
+		return fmt.Errorf("invalid requested disk %q", disk)
 	}
 	if record.TotalDiskBytes > 0 && record.AllocatedDiskBytes+requestedDiskBytes > record.TotalDiskBytes {
-		return false
+		return fmt.Errorf("host %s lacks disk capacity", record.ID)
 	}
 	minFreeDiskBytes, err := s.hostMinFreeDiskBytes()
 	if err != nil {
-		return false
+		return err
 	}
 	if record.AvailableDiskBytes > 0 && record.AvailableDiskBytes-requestedDiskBytes < minFreeDiskBytes {
-		return false
+		return fmt.Errorf("host %s lacks free disk headroom", record.ID)
 	}
 
-	return true
+	return nil
 }
 
 func parseLabels(value string) map[string]string {
@@ -462,10 +490,16 @@ func (s *Service) getPlacementHost(ctx context.Context, cpu, memory, disk string
 	if err != nil {
 		return database.HostRecord{}, err
 	}
+	var placementErr error
 	for _, host := range hosts {
-		if s.hostPlacementEligible(host, cpu, memory, disk) {
+		if err := s.hostPlacementErr(host, cpu, memory, disk); err == nil {
 			return host, nil
+		} else if placementErr == nil {
+			placementErr = err
 		}
+	}
+	if placementErr != nil {
+		return database.HostRecord{}, placementErr
 	}
 	return database.HostRecord{}, fmt.Errorf("no eligible hosts available for placement")
 }

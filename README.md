@@ -81,7 +81,7 @@ Current browser HTTP API:
 Deleted machine and snapshot names are released immediately, so the same name can be reused after `DELETE /v1/machines/{name}` or `DELETE /v1/snapshots/{name}` succeeds.
 Deleting a machine also closes any browser terminal sessions for that machine, removes their shell windows from the browser workspace immediately, and collapses the machine card to a right-edge spinner while the delete is in flight.
 Fresh machine creation now stays pending until guest bootstrap is actually ready, and the machine card shows only a right-edge spinner until the VM reaches a usable `running` state.
-Machines use hidden baseline sizing. CPU and RAM are charged against a user's shared budget only while a machine is active, while retained machine disk and retained snapshot artifacts continue to count against disk limits.
+Machines use hidden baseline sizing. CPU is now a soft per-user entitlement against a host-shared CPU ceiling, RAM remains a hard active-machine budget, and retained machine disk plus retained snapshot artifacts continue to count against disk limits.
 Stopped machines cannot open browser shells or serve public routes until they are started again.
 
 ## Repo Layout
@@ -370,11 +370,19 @@ Fascinate now treats machine sizing as an internal baseline instead of a user-fa
 
 Current behavior:
 - new machines are created from one hidden baseline shape
-- active compute budgets are shared across a user's currently active machines
-- stopped machines free shared CPU and RAM budget
+- CPU is a soft user entitlement and a host-shared pool, not a strict reserved-per-user quota
+- RAM is a hard per-user active-machine limit
+- stopped machines free active CPU and RAM budget
 - retained machine disk plus retained snapshot artifacts still count against disk limits
-- the separate product cap of `25` machines per user still applies
+- the separate product cap of `25` machines and `5` retained snapshots per user still applies
 - browser shells, fork, snapshot, and public routes are only available when a machine is fully `RUNNING`
+
+Current single-box defaults are tuned for the live OVH host target of about `8` users with about `5` active default VMs each:
+- hidden default machine size: `1 vCPU / 2 GiB RAM / 20 GiB root disk`
+- soft per-user CPU entitlement: `5`
+- hard per-user RAM budget: `10 GiB`
+- hard per-user retained-storage budget: `80 GiB`
+- host shared CPU overcommit ratio: `1.67` (about `40` nominal active vCPU on a `24` thread host)
 
 ## Fascinate Env Vars
 

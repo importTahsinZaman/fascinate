@@ -67,6 +67,21 @@ type BudgetStorageSummary struct {
 	TotalDiskBytes    int64 `json:"total_disk_bytes"`
 }
 
+type SoftCPUDiagnostics struct {
+	Entitlement      string `json:"entitlement"`
+	NominalActive    string `json:"nominal_active"`
+	RemainingToGoal  string `json:"remaining_to_entitlement"`
+	AboveEntitlement bool   `json:"above_entitlement"`
+}
+
+type HostSharedCPUDiagnostics struct {
+	PhysicalThreads int    `json:"physical_threads"`
+	OvercommitRatio string `json:"overcommit_ratio"`
+	Ceiling         string `json:"ceiling"`
+	NominalActive   string `json:"nominal_active"`
+	Remaining       string `json:"remaining"`
+}
+
 type MachinePowerStateSummary struct {
 	Creating int `json:"creating"`
 	Starting int `json:"starting"`
@@ -85,6 +100,8 @@ type BudgetDiagnostics struct {
 	RemainingActive      BudgetComputeSummary     `json:"remaining_active"`
 	RetainedStorage      BudgetStorageSummary     `json:"retained_storage"`
 	PowerStates          MachinePowerStateSummary `json:"power_states"`
+	SoftCPU              SoftCPUDiagnostics       `json:"soft_cpu"`
+	HostSharedCPU        HostSharedCPUDiagnostics `json:"host_shared_cpu"`
 	HostMinFreeDiskBytes int64                    `json:"host_min_free_disk_bytes"`
 }
 
@@ -252,11 +269,16 @@ func (s *Service) GetBudgetDiagnostics(ctx context.Context, ownerEmail string) (
 	if err != nil {
 		return BudgetDiagnostics{}, err
 	}
+	hostSharedCPU, err := s.clusterSharedCPUDiagnostics(ctx)
+	if err != nil {
+		return BudgetDiagnostics{}, err
+	}
+	remainingSoftCPU := maxFloat64(budget.SoftMaxCPU - usage.CPU)
 
 	return BudgetDiagnostics{
 		OwnerEmail: ownerEmail,
 		Limits: BudgetSummary{
-			CPU:           budget.MaxCPUText,
+			CPU:           budget.SoftMaxCPUText,
 			MemoryBytes:   budget.MaxMemoryBytes,
 			DiskBytes:     budget.MaxDiskBytes,
 			MachineCount:  budget.MaxMachineCount,
@@ -270,7 +292,7 @@ func (s *Service) GetBudgetDiagnostics(ctx context.Context, ownerEmail string) (
 			SnapshotCount: usage.SnapshotCount,
 		},
 		Remaining: BudgetSummary{
-			CPU:           formatCPUCount(maxFloat64(budget.MaxCPU - usage.CPU)),
+			CPU:           formatCPUCount(remainingSoftCPU),
 			MemoryBytes:   maxInt64(budget.MaxMemoryBytes - usage.MemoryBytes),
 			DiskBytes:     maxInt64(budget.MaxDiskBytes - usage.DiskBytes),
 			MachineCount:  maxInt(budget.MaxMachineCount - usage.MachineCount),
@@ -281,7 +303,7 @@ func (s *Service) GetBudgetDiagnostics(ctx context.Context, ownerEmail string) (
 			MemoryBytes: usage.MemoryBytes,
 		},
 		RemainingActive: BudgetComputeSummary{
-			CPU:         formatCPUCount(maxFloat64(budget.MaxCPU - usage.CPU)),
+			CPU:         formatCPUCount(remainingSoftCPU),
 			MemoryBytes: maxInt64(budget.MaxMemoryBytes - usage.MemoryBytes),
 		},
 		RetainedStorage: BudgetStorageSummary{
@@ -297,7 +319,42 @@ func (s *Service) GetBudgetDiagnostics(ctx context.Context, ownerEmail string) (
 			Stopped:  usage.StoppedMachineCount,
 			Deleting: usage.DeletingMachineCount,
 		},
+		SoftCPU: SoftCPUDiagnostics{
+			Entitlement:      budget.SoftMaxCPUText,
+			NominalActive:    formatCPUCount(usage.CPU),
+			RemainingToGoal:  formatCPUCount(remainingSoftCPU),
+			AboveEntitlement: usage.CPU > budget.SoftMaxCPU,
+		},
+		HostSharedCPU:        hostSharedCPU,
 		HostMinFreeDiskBytes: minFreeDiskBytes,
+	}, nil
+}
+
+func (s *Service) clusterSharedCPUDiagnostics(ctx context.Context) (HostSharedCPUDiagnostics, error) {
+	records, err := s.store.ListHosts(ctx)
+	if err != nil {
+		return HostSharedCPUDiagnostics{}, err
+	}
+
+	var physicalCPU int
+	var sharedCPUCeiling float64
+	var nominalActiveCPU float64
+	for _, record := range records {
+		physicalCPU += record.TotalCPU
+		ceiling, err := s.hostSharedCPUCeiling(record.TotalCPU)
+		if err != nil {
+			return HostSharedCPUDiagnostics{}, err
+		}
+		sharedCPUCeiling += ceiling
+		nominalActiveCPU += float64(record.AllocatedCPU)
+	}
+
+	return HostSharedCPUDiagnostics{
+		PhysicalThreads: physicalCPU,
+		OvercommitRatio: strings.TrimSpace(s.cfg.HostSharedCPURatio),
+		Ceiling:         formatCPUCount(sharedCPUCeiling),
+		NominalActive:   formatCPUCount(nominalActiveCPU),
+		Remaining:       formatCPUCount(maxFloat64(sharedCPUCeiling - nominalActiveCPU)),
 	}, nil
 }
 

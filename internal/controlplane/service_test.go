@@ -1412,7 +1412,7 @@ func TestServiceEnforcesMaxMachinesPerUser(t *testing.T) {
 	}
 }
 
-func TestServiceRejectsCreateWhenUserCPUBudgetIsExceeded(t *testing.T) {
+func TestServiceAllowsCreateWhenUserSoftCPUEntitlementIsExceeded(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -1448,6 +1448,7 @@ func TestServiceRejectsCreateWhenUserCPUBudgetIsExceeded(t *testing.T) {
 		DefaultUserMaxCPU:       "2",
 		DefaultUserMaxRAM:       "8GiB",
 		DefaultUserMaxDisk:      "100GiB",
+		HostSharedCPURatio:      "2.0",
 		DefaultUserMaxMachines:  25,
 		DefaultUserMaxSnapshots: 5,
 		MaxMachineCPU:           "2",
@@ -1456,13 +1457,110 @@ func TestServiceRejectsCreateWhenUserCPUBudgetIsExceeded(t *testing.T) {
 		HostMinFreeDisk:         "0B",
 		DefaultPrimaryPort:      3000,
 	}, store, runtime)
+	if err := store.UpdateHostHeartbeat(ctx, database.UpdateHostHeartbeatParams{
+		ID:                   "local-host",
+		RuntimeVersion:       "cloud-hypervisor",
+		Healthy:              true,
+		TotalCPU:             2,
+		AllocatedCPU:         2,
+		TotalMemoryBytes:     16 << 30,
+		AllocatedMemoryBytes: 4 << 30,
+		TotalDiskBytes:       200 << 30,
+		AllocatedDiskBytes:   40 << 30,
+		AvailableDiskBytes:   160 << 30,
+		MachineCount:         2,
+		SnapshotCount:        0,
+	}); err != nil {
+		t.Fatal(err)
+	}
 
-	_, err = service.CreateMachine(ctx, CreateMachineInput{
+	created, err := service.CreateMachine(ctx, CreateMachineInput{
 		Name:       "three",
 		OwnerEmail: "dev@example.com",
 	})
-	if err == nil || !strings.Contains(err.Error(), "shared cpu budget exceeded") {
-		t.Fatalf("expected cpu budget error, got %v", err)
+	if err != nil {
+		t.Fatalf("expected create to fit under shared host cpu headroom, got %v", err)
+	}
+	if created.Name != "three" {
+		t.Fatalf("unexpected machine response %+v", created)
+	}
+	waitForTestCondition(t, func() bool {
+		return len(runtime.createdReq) == 1
+	})
+	if runtime.createdReq[0].Name != "three" {
+		t.Fatalf("unexpected runtime create %+v", runtime.createdReq)
+	}
+}
+
+func TestServiceRejectsCreateWhenHostSharedCPUCeilingIsExceeded(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, runtime := newTestServiceDeps(t, ctx)
+
+	user, err := store.UpsertUser(ctx, "dev@example.com", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"one", "two", "three"} {
+		if _, err := store.CreateMachine(ctx, database.CreateMachineParams{
+			ID:             "machine-" + name,
+			Name:           name,
+			OwnerUserID:    user.ID,
+			RuntimeName:    name,
+			State:          machineStateRunning,
+			CPU:            "1",
+			MemoryBytes:    2 << 30,
+			DiskBytes:      20 << 30,
+			DiskUsageBytes: 2 << 30,
+			PrimaryPort:    3000,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		runtime.machines[name] = machineruntime.Machine{Name: name, Type: "vm", State: "RUNNING", CPU: "1", Memory: "2GiB", Disk: "20GiB"}
+	}
+
+	service := New(config.Config{
+		BaseDomain:              "fascinate.dev",
+		DefaultImage:            "/var/lib/fascinate/images/fascinate-base.raw",
+		DefaultMachineCPU:       "1",
+		DefaultMachineRAM:       "2GiB",
+		DefaultMachineDisk:      "20GiB",
+		DefaultUserMaxCPU:       "5",
+		DefaultUserMaxRAM:       "12GiB",
+		DefaultUserMaxDisk:      "100GiB",
+		HostSharedCPURatio:      "1.5",
+		DefaultUserMaxMachines:  25,
+		DefaultUserMaxSnapshots: 5,
+		MaxMachineCPU:           "2",
+		MaxMachineRAM:           "4GiB",
+		MaxMachineDisk:          "20GiB",
+		HostMinFreeDisk:         "0B",
+		DefaultPrimaryPort:      3000,
+	}, store, runtime)
+	if err := store.UpdateHostHeartbeat(ctx, database.UpdateHostHeartbeatParams{
+		ID:                   "local-host",
+		RuntimeVersion:       "cloud-hypervisor",
+		Healthy:              true,
+		TotalCPU:             2,
+		AllocatedCPU:         3,
+		TotalMemoryBytes:     16 << 30,
+		AllocatedMemoryBytes: 6 << 30,
+		TotalDiskBytes:       200 << 30,
+		AllocatedDiskBytes:   60 << 30,
+		AvailableDiskBytes:   140 << 30,
+		MachineCount:         3,
+		SnapshotCount:        0,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = service.CreateMachine(ctx, CreateMachineInput{
+		Name:       "four",
+		OwnerEmail: "dev@example.com",
+	})
+	if err == nil || !strings.Contains(err.Error(), "shared host cpu capacity exhausted") {
+		t.Fatalf("expected shared host cpu rejection, got %v", err)
 	}
 	if len(runtime.createdReq) != 0 {
 		t.Fatalf("expected no runtime create, got %+v", runtime.createdReq)
@@ -1520,6 +1618,7 @@ func TestServiceRejectsCreateSnapshotWhenSnapshotBudgetIsExceeded(t *testing.T) 
 		DefaultUserMaxCPU:       "2",
 		DefaultUserMaxRAM:       "8GiB",
 		DefaultUserMaxDisk:      "100GiB",
+		HostSharedCPURatio:      "1.67",
 		DefaultUserMaxMachines:  25,
 		DefaultUserMaxSnapshots: 1,
 		MaxMachineCPU:           "2",
@@ -1582,7 +1681,7 @@ func TestServiceRejectsCreateWhenHostFreeDiskHeadroomWouldBeViolated(t *testing.
 		Name:       "blocked",
 		OwnerEmail: "dev@example.com",
 	})
-	if err == nil || !strings.Contains(err.Error(), "no eligible hosts available for placement") {
+	if err == nil || !strings.Contains(err.Error(), "lacks free disk headroom") {
 		t.Fatalf("expected placement rejection, got %v", err)
 	}
 }
@@ -1592,7 +1691,26 @@ func TestServiceBudgetDiagnosticsReportsUsage(t *testing.T) {
 
 	ctx := context.Background()
 	store, runtime := newTestServiceDeps(t, ctx)
-	service := newTestService(store, runtime)
+	service := New(config.Config{
+		BaseDomain:              "fascinate.dev",
+		AdminEmails:             []string{"admin@example.com"},
+		DefaultImage:            "/var/lib/fascinate/images/fascinate-base.raw",
+		DefaultMachineCPU:       "1",
+		DefaultMachineRAM:       "2GiB",
+		DefaultMachineDisk:      "20GiB",
+		DefaultUserMaxCPU:       "6",
+		DefaultUserMaxRAM:       "16GiB",
+		DefaultUserMaxDisk:      "200GiB",
+		HostSharedCPURatio:      "1.67",
+		DefaultUserMaxMachines:  6,
+		DefaultUserMaxSnapshots: 5,
+		MaxMachinesPerUser:      6,
+		MaxMachineCPU:           "2",
+		MaxMachineRAM:           "4GiB",
+		MaxMachineDisk:          "20GiB",
+		HostMinFreeDisk:         "0B",
+		DefaultPrimaryPort:      3000,
+	}, store, runtime)
 
 	user, err := service.ensureUser(ctx, "dev@example.com")
 	if err != nil {
@@ -1632,6 +1750,26 @@ func TestServiceBudgetDiagnosticsReportsUsage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := store.UpdateHostHeartbeat(ctx, database.UpdateHostHeartbeatParams{
+		ID:                   "local-host",
+		RuntimeVersion:       "cloud-hypervisor",
+		Healthy:              true,
+		TotalCPU:             24,
+		AllocatedCPU:         1,
+		TotalMemoryBytes:     125 << 30,
+		AllocatedMemoryBytes: 2 << 30,
+		TotalDiskBytes:       900 << 30,
+		AllocatedDiskBytes:   25 << 30,
+		AvailableDiskBytes:   800 << 30,
+		MachineCount:         1,
+		SnapshotCount:        1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	diag, err = service.GetBudgetDiagnostics(ctx, "dev@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if diag.Limits.CPU != "6" {
 		t.Fatalf("unexpected cpu limit %+v", diag)
 	}
@@ -1640,6 +1778,12 @@ func TestServiceBudgetDiagnosticsReportsUsage(t *testing.T) {
 	}
 	if diag.Usage.DiskBytes != (3<<30)+(20<<30)+(2<<30) {
 		t.Fatalf("unexpected disk usage %+v", diag)
+	}
+	if diag.SoftCPU.Entitlement != "6" || diag.SoftCPU.NominalActive != "1" || diag.SoftCPU.AboveEntitlement {
+		t.Fatalf("unexpected soft cpu diagnostics %+v", diag.SoftCPU)
+	}
+	if diag.HostSharedCPU.Ceiling != "40" || diag.HostSharedCPU.NominalActive != "1" || diag.HostSharedCPU.Remaining != "39" {
+		t.Fatalf("unexpected host shared cpu diagnostics %+v", diag.HostSharedCPU)
 	}
 }
 
@@ -1693,6 +1837,7 @@ func TestServiceStopFreesComputeForLaterStarts(t *testing.T) {
 		DefaultUserMaxCPU:       "1",
 		DefaultUserMaxRAM:       "8GiB",
 		DefaultUserMaxDisk:      "50GiB",
+		HostSharedCPURatio:      "1",
 		DefaultUserMaxMachines:  25,
 		DefaultUserMaxSnapshots: 5,
 		MaxMachineCPU:           "2",
@@ -1701,8 +1846,24 @@ func TestServiceStopFreesComputeForLaterStarts(t *testing.T) {
 		HostMinFreeDisk:         "0B",
 		DefaultPrimaryPort:      3000,
 	}, store, runtime)
+	if err := store.UpdateHostHeartbeat(ctx, database.UpdateHostHeartbeatParams{
+		ID:                   "local-host",
+		RuntimeVersion:       "cloud-hypervisor",
+		Healthy:              true,
+		TotalCPU:             1,
+		AllocatedCPU:         1,
+		TotalMemoryBytes:     8 << 30,
+		AllocatedMemoryBytes: 2 << 30,
+		TotalDiskBytes:       100 << 30,
+		AllocatedDiskBytes:   4 << 30,
+		AvailableDiskBytes:   90 << 30,
+		MachineCount:         2,
+		SnapshotCount:        0,
+	}); err != nil {
+		t.Fatal(err)
+	}
 
-	if _, err := service.StartMachine(ctx, "beta", "dev@example.com"); err == nil || !strings.Contains(err.Error(), "shared cpu budget exceeded") {
+	if _, err := service.StartMachine(ctx, "beta", "dev@example.com"); err == nil || !strings.Contains(err.Error(), "shared host cpu capacity exhausted") {
 		t.Fatalf("expected active compute rejection, got %v", err)
 	}
 
@@ -2079,13 +2240,32 @@ func TestServiceConcurrentCreatesAcrossUsersRespectHostCapacity(t *testing.T) {
 
 	ctx := context.Background()
 	store, runtime := newTestServiceDeps(t, ctx)
-	service := newTestService(store, runtime)
+	service := New(config.Config{
+		BaseDomain:              "fascinate.dev",
+		AdminEmails:             []string{"admin@example.com"},
+		DefaultImage:            "/var/lib/fascinate/images/fascinate-base.raw",
+		DefaultMachineCPU:       "2",
+		DefaultMachineRAM:       "2GiB",
+		DefaultMachineDisk:      "20GiB",
+		DefaultUserMaxCPU:       "6",
+		DefaultUserMaxRAM:       "16GiB",
+		DefaultUserMaxDisk:      "200GiB",
+		HostSharedCPURatio:      "1",
+		DefaultUserMaxMachines:  6,
+		DefaultUserMaxSnapshots: 5,
+		MaxMachinesPerUser:      6,
+		MaxMachineCPU:           "2",
+		MaxMachineRAM:           "4GiB",
+		MaxMachineDisk:          "20GiB",
+		HostMinFreeDisk:         "0B",
+		DefaultPrimaryPort:      3000,
+	}, store, runtime)
 
 	if err := store.UpdateHostHeartbeat(ctx, database.UpdateHostHeartbeatParams{
 		ID:                   "local-host",
 		RuntimeVersion:       "cloud-hypervisor",
 		Healthy:              true,
-		TotalCPU:             1,
+		TotalCPU:             2,
 		AllocatedCPU:         0,
 		TotalMemoryBytes:     8 << 30,
 		AllocatedMemoryBytes: 0,
@@ -2123,7 +2303,7 @@ func TestServiceConcurrentCreatesAcrossUsersRespectHostCapacity(t *testing.T) {
 			successCount++
 			continue
 		}
-		if strings.Contains(err.Error(), "host local-host lacks cpu capacity") {
+		if strings.Contains(err.Error(), "shared host cpu capacity exhausted") {
 			hostCapacityErrors++
 			continue
 		}
@@ -2310,6 +2490,7 @@ func newTestService(store *database.Store, runtime *fakeRuntime) *Service {
 		DefaultUserMaxCPU:       "6",
 		DefaultUserMaxRAM:       "16GiB",
 		DefaultUserMaxDisk:      "200GiB",
+		HostSharedCPURatio:      "1.67",
 		DefaultUserMaxMachines:  6,
 		DefaultUserMaxSnapshots: 5,
 		MaxMachinesPerUser:      6,
