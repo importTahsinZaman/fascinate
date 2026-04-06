@@ -728,7 +728,7 @@ func (m *Manager) cleanupMachine(ctx context.Context, meta metadata) error {
 func (m *Manager) waitForGuestSSH(ctx context.Context, meta metadata) error {
 	deadline := time.Now().Add(15 * time.Minute)
 	for {
-		err := m.runGuestCommand(ctx, meta, "test -f /var/lib/cloud/instance/boot-finished && command -v claude >/dev/null 2>&1 && command -v codex >/dev/null 2>&1 && command -v gh >/dev/null 2>&1 && command -v node >/dev/null 2>&1 && command -v go >/dev/null 2>&1 && command -v docker >/dev/null 2>&1 && systemctl is-active --quiet docker")
+		err := m.runGuestCommand(ctx, meta, guestReadinessCommand())
 		if err == nil {
 			return nil
 		}
@@ -741,6 +741,19 @@ func (m *Manager) waitForGuestSSH(ctx context.Context, meta metadata) error {
 		}
 		time.Sleep(2 * time.Second)
 	}
+}
+
+func guestReadinessCommand() string {
+	return strings.Join([]string{
+		"test -f /var/lib/cloud/instance/boot-finished",
+		"claude --version >/dev/null 2>&1",
+		"codex --version >/dev/null 2>&1",
+		"gh --version >/dev/null 2>&1",
+		"node --version >/dev/null 2>&1",
+		"go version >/dev/null 2>&1",
+		"docker --version >/dev/null 2>&1",
+		"systemctl is-active --quiet docker",
+	}, " && ")
 }
 
 func (m *Manager) runGuestCommand(ctx context.Context, meta metadata, command string) error {

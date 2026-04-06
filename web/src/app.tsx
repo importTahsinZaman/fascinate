@@ -56,6 +56,21 @@ type DeleteMachineMutationContext = {
   removedWindows: RemovedMachineWindowsSnapshot | null;
 };
 
+function upsertMachineList(current: Machine[] | undefined, machine: Machine) {
+  if (!current) {
+    return [machine];
+  }
+
+  const next = [...current];
+  const existingIndex = next.findIndex((item) => item.id === machine.id || item.name === machine.name);
+  if (existingIndex >= 0) {
+    next[existingIndex] = machine;
+    return next;
+  }
+  next.push(machine);
+  return next;
+}
+
 export function App() {
   const queryClient = useQueryClient();
   const sessionQuery = useQuery({
@@ -218,7 +233,8 @@ function CommandCenter() {
   const createMachineMutation = useMutation({
     mutationFn: ({ name, snapshotName }: { name: string; snapshotName?: string }) =>
       createMachine(name, snapshotName),
-    onSuccess: () => {
+    onSuccess: (machine) => {
+      queryClient.setQueryData<Machine[]>(["machines"], (current) => upsertMachineList(current, machine));
       setMachineName("");
       setRestoreTarget("");
       setModal(null);
@@ -805,21 +821,32 @@ function CommandCenter() {
           ) : (
             <div className="sidebar-machine-list sidebar-machine-list-compact">
               {machineList.map((machine) => {
+                const normalizedMachineState = machine.state.toLowerCase();
+                const isCreatingMachine = normalizedMachineState === "creating";
+                const isRunningMachine = normalizedMachineState === "running" || normalizedMachineState === "ready";
                 const isDeletingMachine = deletingMachineNameSet.has(machine.name);
+                const disableMachineShellActions = !isRunningMachine || isDeletingMachine;
+                const disableMachineDelete = isCreatingMachine || isDeletingMachine;
                 return (
                   <article
                     key={machine.id}
                     className="machine-card"
-                    aria-busy={isDeletingMachine}
+                    aria-busy={isCreatingMachine || isDeletingMachine}
                     style={machineColorStyles[machine.name] ?? getMachineColorStyle(machine.name)}
                   >
                     <div className="machine-card-header">
                       <div className="machine-card-title">
                         <span className="machine-color-dot" aria-hidden="true" />
-                        <strong>{machine.name}</strong>
+                        <div className="machine-card-title-meta">
+                          <strong>{machine.name}</strong>
+                          <div className="machine-card-title-status">
+                            <StateBadge state={machine.state} />
+                            {isCreatingMachine ? <span className="basic-spinner machine-card-state-spinner" aria-hidden="true" /> : null}
+                          </div>
+                        </div>
                       </div>
                       <div className="actions machine-card-actions">
-                        <button type="button" onClick={() => openMachineShell(machine.name)} disabled={isDeletingMachine}>
+                        <button type="button" onClick={() => openMachineShell(machine.name)} disabled={disableMachineShellActions}>
                           New shell
                         </button>
                         <button
@@ -827,7 +854,7 @@ function CommandCenter() {
                           type="button"
                           aria-label={`Fork ${machine.name}`}
                           title={`Fork ${machine.name}`}
-                          disabled={isDeletingMachine}
+                          disabled={disableMachineShellActions}
                           onClick={() => {
                             setForkTarget(`${machine.name}-copy`);
                             setModal({ type: "fork-machine", machine });
@@ -840,7 +867,7 @@ function CommandCenter() {
                           type="button"
                           aria-label={`Snapshot ${machine.name}`}
                           title={`Snapshot ${machine.name}`}
-                          disabled={isDeletingMachine}
+                          disabled={disableMachineShellActions}
                           onClick={() => {
                             setSnapshotName(`${machine.name}-snapshot`);
                             setModal({ type: "snapshot-machine", machine });
@@ -853,11 +880,11 @@ function CommandCenter() {
                           type="button"
                           aria-label={isDeletingMachine ? `Deleting ${machine.name}` : `Delete ${machine.name}`}
                           title={isDeletingMachine ? `Deleting ${machine.name}` : `Delete ${machine.name}`}
-                          disabled={isDeletingMachine}
+                          disabled={disableMachineDelete}
                           onClick={() => deleteMachineMutation.mutate(machine.name)}
                         >
                           {isDeletingMachine ? (
-                            <span className="machine-delete-spinner" aria-hidden="true" />
+                            <span className="basic-spinner" aria-hidden="true" />
                           ) : (
                             <Trash className="icon-svg" weight="regular" />
                           )}

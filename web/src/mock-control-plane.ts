@@ -270,12 +270,37 @@ function createInitialMockState(): MockState {
 }
 
 let state = createInitialMockState();
+let pendingMachineReadyTimeouts: Array<ReturnType<typeof setTimeout>> = [];
+
+function clearPendingMachineReadyTimeouts() {
+  for (const timeout of pendingMachineReadyTimeouts) {
+    clearTimeout(timeout);
+  }
+  pendingMachineReadyTimeouts = [];
+}
+
+function scheduleMockMachineReady(name: string, delayMs: number) {
+  const timeout = setTimeout(() => {
+    state.machines = state.machines.map((machine) =>
+      machine.name === name
+        ? {
+            ...machine,
+            state: "RUNNING",
+            updated_at: new Date().toISOString(),
+          }
+        : machine,
+    );
+    pendingMachineReadyTimeouts = pendingMachineReadyTimeouts.filter((item) => item !== timeout);
+  }, delayMs);
+  pendingMachineReadyTimeouts = [...pendingMachineReadyTimeouts, timeout];
+}
 
 export function isMockUIEnabled() {
   return import.meta.env.VITE_FASCINATE_UI_MOCK === "1";
 }
 
 export function resetMockControlPlaneState() {
+  clearPendingMachineReadyTimeouts();
   state = createInitialMockState();
 }
 
@@ -311,13 +336,14 @@ export async function createMockMachine(name: string, snapshotName?: string) {
   const machine: Machine = {
     id: `machine-${slug(name)}`,
     name,
-    state: "RUNNING",
+    state: "CREATING",
     primary_port: 3000,
     host_id: "fascinate-local",
     created_at: "2026-04-01T00:00:00Z",
     updated_at: "2026-04-01T00:00:00Z",
   };
   state.machines = [...state.machines, machine];
+  scheduleMockMachineReady(name, snapshotName ? 700 : 1_500);
   if (snapshotName) {
     state.snapshots = [
       ...state.snapshots,

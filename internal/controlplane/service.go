@@ -404,6 +404,9 @@ func (s *Service) DeleteMachine(ctx context.Context, name, ownerEmail string) er
 	if err != nil {
 		return err
 	}
+	if strings.EqualFold(record.State, machineStateCreating) {
+		return fmt.Errorf("machine %q is still creating", record.Name)
+	}
 	s.recordEventBestEffort(&record.OwnerUserID, &record.ID, "machine.delete.started", map[string]any{
 		"machine_name": record.Name,
 		"runtime_name": runtimeNameForRecord(record),
@@ -469,6 +472,9 @@ func (s *Service) ForkMachine(ctx context.Context, input ForkMachineInput) (Mach
 	}
 	if normalizeEmail(sourceRecord.OwnerEmail) != ownerEmail {
 		return Machine{}, database.ErrNotFound
+	}
+	if err := ensureMachineRunningForAction(sourceRecord, "forked"); err != nil {
+		return Machine{}, err
 	}
 	sourceHostID := machineHostID(sourceRecord, s.localHostID)
 	executor, err := s.executorForHostID(sourceHostID)
@@ -666,6 +672,9 @@ func (s *Service) CreateSnapshot(ctx context.Context, input CreateSnapshotInput)
 	}
 	machineRecord, err := s.ownedMachineRecord(ctx, input.MachineName, ownerEmail)
 	if err != nil {
+		return Snapshot{}, err
+	}
+	if err := ensureMachineRunningForAction(machineRecord, "snapshotted"); err != nil {
 		return Snapshot{}, err
 	}
 	sourceSpec, err := s.machineSpecForRecord(machineRecord)
@@ -951,6 +960,22 @@ func shouldAdoptRuntimeState(recordState, runtimeState string) bool {
 	}
 
 	return true
+}
+
+func ensureMachineRunningForAction(record database.MachineRecord, action string) error {
+	if strings.EqualFold(record.State, machineStateRunning) {
+		return nil
+	}
+
+	if strings.EqualFold(record.State, machineStateCreating) {
+		return fmt.Errorf("machine %q is still creating", record.Name)
+	}
+
+	state := strings.ToLower(strings.TrimSpace(record.State))
+	if state == "" {
+		state = "unavailable"
+	}
+	return fmt.Errorf("machine %q is %s and cannot be %s", record.Name, state, action)
 }
 
 func (s *Service) ensureUser(ctx context.Context, email string) (database.User, error) {

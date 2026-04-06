@@ -566,6 +566,19 @@ a {
   min-width: 0;
 }
 
+.machine-card-title-meta {
+  min-width: 0;
+  display: grid;
+  gap: var(--space-1);
+}
+
+.machine-card-title-status {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
 .machine-card strong,
 .sidebar-record strong {
   display: block;
@@ -773,13 +786,17 @@ a {
   color: var(--text-danger);
 }
 
-.machine-delete-spinner {
+.basic-spinner {
   width: 14px;
   height: 14px;
   border: 2px solid currentColor;
   border-right-color: transparent;
   border-radius: 999px;
   animation: git-diff-sidebar-action-spin 0.72s linear infinite;
+}
+
+.machine-card-state-spinner {
+  color: var(--text-secondary);
 }
 
 .control-sidebar-footer {

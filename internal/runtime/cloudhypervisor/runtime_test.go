@@ -333,6 +333,26 @@ func TestCloudInitUserDataInstallsCanonicalAgentDocs(t *testing.T) {
 	}
 }
 
+func TestGuestReadinessCommandRequiresBundledToolVersions(t *testing.T) {
+	t.Parallel()
+
+	command := guestReadinessCommand()
+	for _, snippet := range []string{
+		"test -f /var/lib/cloud/instance/boot-finished",
+		"claude --version >/dev/null 2>&1",
+		"codex --version >/dev/null 2>&1",
+		"gh --version >/dev/null 2>&1",
+		"node --version >/dev/null 2>&1",
+		"go version >/dev/null 2>&1",
+		"docker --version >/dev/null 2>&1",
+		"systemctl is-active --quiet docker",
+	} {
+		if !strings.Contains(command, snippet) {
+			t.Fatalf("expected guest readiness command to contain %q, got %q", snippet, command)
+		}
+	}
+}
+
 func TestNormalizeAPIPathAddsCloudHypervisorPrefix(t *testing.T) {
 	t.Parallel()
 

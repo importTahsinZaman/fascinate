@@ -621,6 +621,55 @@ func TestServiceDeleteMachineCapturesToolAuthBestEffort(t *testing.T) {
 	}
 }
 
+func TestServiceRejectsLoadingMachineActions(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, runtime := newTestServiceDeps(t, ctx)
+
+	user, err := store.UpsertUser(ctx, "dev@example.com", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateMachine(ctx, database.CreateMachineParams{
+		ID:          "machine-1",
+		Name:        "habits",
+		OwnerUserID: user.ID,
+		RuntimeName: "habits",
+		State:       machineStateCreating,
+		PrimaryPort: 3000,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	service := newTestService(store, runtime)
+
+	if err := service.DeleteMachine(ctx, "habits", "dev@example.com"); err == nil || !strings.Contains(err.Error(), "still creating") {
+		t.Fatalf("expected delete to reject creating machine, got %v", err)
+	}
+	if _, err := service.ForkMachine(ctx, ForkMachineInput{
+		SourceName: "habits",
+		TargetName: "habits-copy",
+		OwnerEmail: "dev@example.com",
+	}); err == nil || !strings.Contains(err.Error(), "still creating") {
+		t.Fatalf("expected fork to reject creating machine, got %v", err)
+	}
+	if _, err := service.CreateSnapshot(ctx, CreateSnapshotInput{
+		MachineName:  "habits",
+		SnapshotName: "habits-snapshot",
+		OwnerEmail:   "dev@example.com",
+	}); err == nil || !strings.Contains(err.Error(), "still creating") {
+		t.Fatalf("expected snapshot to reject creating machine, got %v", err)
+	}
+
+	if len(runtime.deleted) != 0 {
+		t.Fatalf("expected no runtime deletes, got %+v", runtime.deleted)
+	}
+	if len(runtime.forkedReq) != 0 {
+		t.Fatalf("expected no runtime forks, got %+v", runtime.forkedReq)
+	}
+}
+
 func TestServiceForkMachineDoesNotRestoreToolAuth(t *testing.T) {
 	t.Parallel()
 

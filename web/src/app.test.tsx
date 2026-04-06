@@ -294,6 +294,55 @@ describe("App", () => {
     expect(useWorkspaceStore.getState().viewportFocusRequest).toBeNull();
   });
 
+  it("shows newly created machines as creating until the backend reports them running", async () => {
+    let machines = [] as Array<{
+      id: string;
+      name: string;
+      state: string;
+      primary_port: number;
+      created_at: string;
+      updated_at: string;
+    }>;
+
+    const fetchMock = createAuthenticatedFetchMock((path, init) => {
+      if (path === "/v1/machines" && !init?.method) {
+        return jsonResponse({ machines });
+      }
+      if (path === "/v1/machines" && init?.method === "POST") {
+        const machine = {
+          id: "machine-fresh-box",
+          name: "fresh-box",
+          state: "CREATING",
+          primary_port: 3000,
+          created_at: "2026-04-06T00:00:00Z",
+          updated_at: "2026-04-06T00:00:00Z",
+        };
+        machines = [machine];
+        return jsonResponse(machine, 202);
+      }
+      return undefined;
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderApp();
+
+    fireEvent.click(await screen.findByRole("button", { name: "New machine" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Name" }), {
+      target: { value: "fresh-box" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Create machine" }));
+
+    expect(await screen.findByText("fresh-box")).toBeTruthy();
+    expect(await screen.findByText("creating")).toBeTruthy();
+
+    const machineCard = screen.getByText("fresh-box").closest(".machine-card");
+    expect(machineCard?.getAttribute("aria-busy")).toBe("true");
+    expect((screen.getByRole("button", { name: "New shell" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Fork fresh-box" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Snapshot fresh-box" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Delete fresh-box" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
   it("reveals a shell from the sidebar within the horizontal strip", async () => {
     const fetchMock = createAuthenticatedFetchMock();
     vi.stubGlobal("fetch", fetchMock);
