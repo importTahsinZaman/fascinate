@@ -32,7 +32,9 @@ const pageDownSequence = "\u001b[6~";
 const ansiSequencePattern = /\u001b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|[ -/]*[@-~])/g;
 const promptPathPattern = /^[^\s@]+@[^:\s]+:(.+?)[#$]\s?$/;
 const clipboardNoticeDurationMs = 2_400;
-const wheelHistoryThreshold = 96;
+const wheelHistoryPixelThreshold = 96;
+const wheelHistoryLineThreshold = 3;
+const wheelHistoryPageThreshold = 1;
 const maxWheelHistoryStepsPerEvent = 3;
 const automaticReconnectDelaysMs = [0, 900];
 
@@ -750,22 +752,34 @@ export function consumeWheelHistorySequence(terminal: Terminal, event: WheelEven
     return { sequence: "", remainder: 0, consume: false };
   }
 
+  const threshold = wheelHistoryDeltaThreshold(event);
   const nextRemainder = remainder + event.deltaY;
   const steps = Math.min(
     maxWheelHistoryStepsPerEvent,
-    Math.trunc(Math.abs(nextRemainder) / wheelHistoryThreshold),
+    Math.trunc(Math.abs(nextRemainder) / threshold),
   );
   if (steps === 0) {
     return { sequence: "", remainder: nextRemainder, consume: true };
   }
 
   const sequence = nextRemainder < 0 ? pageUpSequence : pageDownSequence;
-  const remainingMagnitude = Math.abs(nextRemainder) - steps * wheelHistoryThreshold;
+  const remainingMagnitude = Math.abs(nextRemainder) - steps * threshold;
   return {
     sequence: sequence.repeat(steps),
     remainder: Math.sign(nextRemainder) * remainingMagnitude,
     consume: true,
   };
+}
+
+function wheelHistoryDeltaThreshold(event: WheelEvent) {
+  switch (event.deltaMode) {
+    case WheelEvent.DOM_DELTA_LINE:
+      return wheelHistoryLineThreshold;
+    case WheelEvent.DOM_DELTA_PAGE:
+      return wheelHistoryPageThreshold;
+    default:
+      return wheelHistoryPixelThreshold;
+  }
 }
 
 function parseTerminalMetadata(chunk: string) {

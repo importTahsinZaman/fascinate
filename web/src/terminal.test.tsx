@@ -390,6 +390,28 @@ describe("TerminalView", () => {
     });
   });
 
+  it("normalizes line-mode wheel deltas before scrolling tmux history", async () => {
+    render(<TerminalView machineName="m-1" title="m-1 shell" onSessionId={vi.fn()} />);
+
+    await waitFor(() => {
+      expect(createTerminalSession).toHaveBeenCalledWith("m-1", 120, 40);
+    });
+
+    const terminal = terminalInstances[0];
+    const lineWheelEvent = new WheelEvent("wheel", {
+      deltaY: 3,
+      deltaMode: WheelEvent.DOM_DELTA_LINE,
+      bubbles: true,
+      cancelable: true,
+    });
+
+    expect(consumeWheelHistorySequence(terminal as unknown as any, lineWheelEvent, 0)).toEqual({
+      consume: true,
+      sequence: "\u001b[6~",
+      remainder: 0,
+    });
+  });
+
   it("consumes subtle wheel events before xterm can turn them into prompt history", async () => {
     render(<TerminalView machineName="m-1" title="m-1 shell" onSessionId={vi.fn()} />);
 
