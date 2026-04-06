@@ -699,7 +699,7 @@ function CommandCenter() {
               <input
                 value={envForm.key}
                 onChange={(event) => setEnvForm((current) => ({ ...current, key: event.target.value }))}
-                placeholder="FRONTEND_URL"
+                placeholder="OPENAI_API_KEY"
               />
             </label>
             <label className="field">
@@ -707,7 +707,7 @@ function CommandCenter() {
               <input
                 value={envForm.value}
                 onChange={(event) => setEnvForm((current) => ({ ...current, value: event.target.value }))}
-                placeholder="${FASCINATE_PUBLIC_URL}"
+                placeholder="sk-..."
               />
             </label>
             <div className="app-modal-actions">
