@@ -53,6 +53,16 @@ function rect(width: number, height: number): DOMRect {
   } as DOMRect;
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
 type AppFetchOverride = (path: string, init?: RequestInit) => Response | Promise<Response> | undefined;
 
 function createAuthenticatedFetchMock(override?: AppFetchOverride) {
@@ -439,8 +449,9 @@ describe("App", () => {
     expect(useWorkspaceStore.getState().windows).toHaveLength(1);
   });
 
-  it("closes all shell windows for a machine after deleting it", async () => {
+  it("optimistically closes machine shell windows and disables machine actions while delete is pending", async () => {
     let machineDeleted = false;
+    const deleteRequest = deferred<Response>();
     const fetchMock = createAuthenticatedFetchMock((path, init) => {
       if (path === "/v1/machines") {
         return jsonResponse({
@@ -459,8 +470,7 @@ describe("App", () => {
         });
       }
       if (path === "/v1/machines/m-1" && init?.method === "DELETE") {
-        machineDeleted = true;
-        return new Response(null, { status: 204 });
+        return deleteRequest.promise;
       }
       if (path.startsWith("/v1/terminal/sessions/")) {
         return jsonResponse({ error: "terminal sessions should be cleaned up by machine delete" }, 500);
@@ -484,14 +494,55 @@ describe("App", () => {
         expect.objectContaining({ method: "DELETE" }),
       );
     });
-    await waitFor(() => {
-      expect(useWorkspaceStore.getState().windows).toHaveLength(0);
-    });
+    await waitFor(() => expect(useWorkspaceStore.getState().windows).toHaveLength(0));
 
     expect(screen.queryByTestId("terminal-m-1")).toBeNull();
+    expect((screen.getByRole("button", { name: "New shell" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Fork m-1" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Snapshot m-1" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Deleting m-1" }) as HTMLButtonElement).disabled).toBe(true);
     expect(
       fetchMock.mock.calls.filter(([path]) => String(path).startsWith("/v1/terminal/sessions/")),
     ).toHaveLength(0);
+
+    machineDeleted = true;
+    deleteRequest.resolve(new Response(null, { status: 204 }));
+
+    await waitFor(() => {
+      expect(screen.queryByRole("button", { name: "Fork m-1" })).toBeNull();
+    });
+  });
+
+  it("restores machine shell windows if delete fails after optimistic removal", async () => {
+    const deleteRequest = deferred<Response>();
+    const fetchMock = createAuthenticatedFetchMock((path, init) => {
+      if (path === "/v1/machines/m-1" && init?.method === "DELETE") {
+        return deleteRequest.promise;
+      }
+      return undefined;
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderApp();
+
+    fireEvent.click(await screen.findByRole("button", { name: "New shell" }));
+    fireEvent.click(await screen.findByRole("button", { name: "New shell" }));
+
+    expect(await screen.findAllByTestId("terminal-m-1")).toHaveLength(2);
+
+    fireEvent.click(screen.getByRole("button", { name: "Delete m-1" }));
+
+    await waitFor(() => expect(useWorkspaceStore.getState().windows).toHaveLength(0));
+    expect(screen.queryByTestId("terminal-m-1")).toBeNull();
+
+    deleteRequest.resolve(jsonResponse({ error: "delete failed" }, 500));
+
+    expect(await screen.findByText("delete failed")).toBeTruthy();
+    expect(await screen.findAllByTestId("terminal-m-1")).toHaveLength(2);
+    expect((screen.getByRole("button", { name: "New shell" }) as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByRole("button", { name: "Fork m-1" }) as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByRole("button", { name: "Snapshot m-1" }) as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByRole("button", { name: "Delete m-1" }) as HTMLButtonElement).disabled).toBe(false);
   });
 
   it("keeps sidebar shell order stable when focusing a sibling shell", async () => {

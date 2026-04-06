@@ -773,6 +773,10 @@ a {
   color: var(--text-danger);
 }
 
+.machine-delete-spinner {
+  animation: git-diff-sidebar-action-spin 0.9s linear infinite;
+}
+
 .control-sidebar-footer {
   display: grid;
   gap: var(--space-4);

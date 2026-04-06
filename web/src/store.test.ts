@@ -187,4 +187,44 @@ describe("workspace store", () => {
     expect(overlaps(reordered[0], reordered[1])).toBe(false);
     expect(reordered[0].x).toBeLessThan(reordered[1].x);
   });
+
+  it("removes and restores all windows for a machine without disturbing sibling shell order", () => {
+    const store = useWorkspaceStore.getState();
+    store.openTerminal("m-1", "m-1 shell A");
+    store.openTerminal("m-2", "m-2 shell");
+    store.openTerminal("m-1", "m-1 shell B");
+
+    const [firstMachineWindow, siblingWindow, secondMachineWindow] = useWorkspaceStore.getState().windows;
+
+    useWorkspaceStore.getState().setWindowCwd(firstMachineWindow.id, "/repo/a");
+    useWorkspaceStore.getState().setWindowCwd(secondMachineWindow.id, "/repo/b");
+    useWorkspaceStore.getState().openGitDiffSidebar(secondMachineWindow.id);
+    useWorkspaceStore.getState().selectGitDiffSidebarFile("web/src/app.tsx");
+    useWorkspaceStore.getState().requestViewportFocus(firstMachineWindow.id);
+
+    const snapshot = useWorkspaceStore.getState().removeWindowsForMachine("m-1");
+
+    expect(snapshot).not.toBeNull();
+    expect(useWorkspaceStore.getState().windows.map((window) => window.id)).toEqual([siblingWindow.id]);
+    expect(useWorkspaceStore.getState().windowCwds[firstMachineWindow.id]).toBeUndefined();
+    expect(useWorkspaceStore.getState().windowCwds[secondMachineWindow.id]).toBeUndefined();
+    expect(useWorkspaceStore.getState().viewportFocusRequest).toBeNull();
+    expect(useWorkspaceStore.getState().gitDiffSidebar).toEqual({ windowID: null, selectedPath: null });
+
+    useWorkspaceStore.getState().restoreRemovedWindows(snapshot!);
+
+    expect(useWorkspaceStore.getState().windows.map((window) => window.id)).toEqual([
+      firstMachineWindow.id,
+      siblingWindow.id,
+      secondMachineWindow.id,
+    ]);
+    expect(useWorkspaceStore.getState().windowCwds[firstMachineWindow.id]).toBe("/repo/a");
+    expect(useWorkspaceStore.getState().windowCwds[secondMachineWindow.id]).toBe("/repo/b");
+    expect(useWorkspaceStore.getState().viewportFocusRequest).toMatchObject({ windowID: firstMachineWindow.id });
+    expect(useWorkspaceStore.getState().gitDiffSidebar).toEqual({
+      windowID: secondMachineWindow.id,
+      selectedPath: "web/src/app.tsx",
+      selectedPreviousPath: undefined,
+    });
+  });
 });

@@ -37,7 +37,7 @@ import {
 } from "./api";
 import { GitDiffSidebar } from "./git-diff-sidebar";
 import { getMachineColorStyle, getMachineColorStyles } from "./machine-colors";
-import { useWorkspaceStore } from "./store";
+import { useWorkspaceStore, type RemovedMachineWindowsSnapshot } from "./store";
 import type { TerminalConnectionState } from "./terminal";
 
 const TerminalView = lazy(async () => import("./terminal").then((module) => ({ default: module.TerminalView })));
@@ -52,6 +52,9 @@ type ModalState =
   | null;
 
 const windowGitStatusPollIntervalMs = 4_000;
+type DeleteMachineMutationContext = {
+  removedWindows: RemovedMachineWindowsSnapshot | null;
+};
 
 export function App() {
   const queryClient = useQueryClient();
@@ -144,12 +147,15 @@ function CommandCenter() {
   const [envForm, setEnvForm] = useState({ key: "", value: "" });
   const [shellCloseError, setShellCloseError] = useState<unknown>(null);
   const [closingShellIDs, setClosingShellIDs] = useState<string[]>([]);
+  const [deletingMachineNames, setDeletingMachineNames] = useState<string[]>([]);
 
   const hydrate = useWorkspaceStore((state) => state.hydrate);
   const openTerminal = useWorkspaceStore((state) => state.openTerminal);
   const windows = useWorkspaceStore((state) => state.windows);
   const windowCwds = useWorkspaceStore((state) => state.windowCwds);
   const closeWindow = useWorkspaceStore((state) => state.closeWindow);
+  const removeWindowsForMachine = useWorkspaceStore((state) => state.removeWindowsForMachine);
+  const restoreRemovedWindows = useWorkspaceStore((state) => state.restoreRemovedWindows);
   const focusWindow = useWorkspaceStore((state) => state.focusWindow);
   const requestViewportFocus = useWorkspaceStore((state) => state.requestViewportFocus);
   const moveWindowToIndex = useWorkspaceStore((state) => state.moveWindowToIndex);
@@ -220,15 +226,24 @@ function CommandCenter() {
       void queryClient.invalidateQueries({ queryKey: ["snapshots"] });
     },
   });
-  const deleteMachineMutation = useMutation({
+  const deleteMachineMutation = useMutation<void, Error, string, DeleteMachineMutationContext>({
     mutationFn: deleteMachine,
-    onSuccess: (_data, deletedMachineName) => {
-      for (const window of windows) {
-        if (window.machineName === deletedMachineName) {
-          closeWindow(window.id);
-        }
+    onMutate: async (machineName) => {
+      await queryClient.cancelQueries({ queryKey: ["machines"] });
+      const removedWindows = removeWindowsForMachine(machineName);
+      setDeletingMachineNames((current) => (current.includes(machineName) ? current : [...current, machineName]));
+      return { removedWindows };
+    },
+    onError: (_error, _machineName, context) => {
+      if (context?.removedWindows) {
+        restoreRemovedWindows(context.removedWindows);
       }
+    },
+    onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["machines"] });
+    },
+    onSettled: (_data, _error, machineName) => {
+      setDeletingMachineNames((current) => current.filter((item) => item !== machineName));
     },
   });
   const forkMachineMutation = useMutation({
@@ -275,6 +290,7 @@ function CommandCenter() {
     () => getMachineColorStyles([...machineList.map((machine) => machine.name), ...windows.map((window) => window.machineName)]),
     [machineList, windows],
   );
+  const deletingMachineNameSet = useMemo(() => new Set(deletingMachineNames), [deletingMachineNames]);
   const frontmostWindowZ = useMemo(
     () => windows.reduce((max, window) => Math.max(max, window.z), 0),
     [windows],
@@ -789,10 +805,12 @@ function CommandCenter() {
           ) : (
             <div className="sidebar-machine-list sidebar-machine-list-compact">
               {machineList.map((machine) => {
+                const isDeletingMachine = deletingMachineNameSet.has(machine.name);
                 return (
                   <article
                     key={machine.id}
                     className="machine-card"
+                    aria-busy={isDeletingMachine}
                     style={machineColorStyles[machine.name] ?? getMachineColorStyle(machine.name)}
                   >
                     <div className="machine-card-header">
@@ -801,7 +819,7 @@ function CommandCenter() {
                         <strong>{machine.name}</strong>
                       </div>
                       <div className="actions machine-card-actions">
-                        <button type="button" onClick={() => openMachineShell(machine.name)}>
+                        <button type="button" onClick={() => openMachineShell(machine.name)} disabled={isDeletingMachine}>
                           New shell
                         </button>
                         <button
@@ -809,6 +827,7 @@ function CommandCenter() {
                           type="button"
                           aria-label={`Fork ${machine.name}`}
                           title={`Fork ${machine.name}`}
+                          disabled={isDeletingMachine}
                           onClick={() => {
                             setForkTarget(`${machine.name}-copy`);
                             setModal({ type: "fork-machine", machine });
@@ -821,6 +840,7 @@ function CommandCenter() {
                           type="button"
                           aria-label={`Snapshot ${machine.name}`}
                           title={`Snapshot ${machine.name}`}
+                          disabled={isDeletingMachine}
                           onClick={() => {
                             setSnapshotName(`${machine.name}-snapshot`);
                             setModal({ type: "snapshot-machine", machine });
@@ -831,11 +851,16 @@ function CommandCenter() {
                         <button
                           className="icon-action-button danger"
                           type="button"
-                          aria-label={`Delete ${machine.name}`}
-                          title={`Delete ${machine.name}`}
+                          aria-label={isDeletingMachine ? `Deleting ${machine.name}` : `Delete ${machine.name}`}
+                          title={isDeletingMachine ? `Deleting ${machine.name}` : `Delete ${machine.name}`}
+                          disabled={isDeletingMachine}
                           onClick={() => deleteMachineMutation.mutate(machine.name)}
                         >
-                          <Trash className="icon-svg" weight="regular" />
+                          {isDeletingMachine ? (
+                            <ArrowClockwise className="icon-svg machine-delete-spinner" weight="regular" />
+                          ) : (
+                            <Trash className="icon-svg" weight="regular" />
+                          )}
                         </button>
                       </div>
                     </div>

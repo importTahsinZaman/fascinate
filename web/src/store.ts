@@ -7,6 +7,15 @@ type GitDiffSidebarState = {
   selectedPreviousPath?: string;
 };
 
+export type RemovedMachineWindowsSnapshot = {
+  machineName: string;
+  orderedWindowIDs: string[];
+  windows: WorkspaceWindow[];
+  windowCwds: Record<string, string>;
+  viewportFocusRequest: { windowID: string; requestID: string } | null;
+  gitDiffSidebar: GitDiffSidebarState;
+};
+
 type WorkspaceState = {
   windows: WorkspaceWindow[];
   windowCwds: Record<string, string>;
@@ -22,6 +31,8 @@ type WorkspaceState = {
   closeGitDiffSidebar: () => void;
   selectGitDiffSidebarFile: (path: string, previousPath?: string) => void;
   clearGitDiffSidebarFile: () => void;
+  removeWindowsForMachine: (machineName: string) => RemovedMachineWindowsSnapshot | null;
+  restoreRemovedWindows: (snapshot: RemovedMachineWindowsSnapshot) => void;
   closeWindow: (id: string) => void;
   focusWindow: (id: string) => void;
   requestViewportFocus: (id: string) => void;
@@ -182,6 +193,76 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         },
       };
     }),
+  removeWindowsForMachine: (machineName) => {
+    let snapshot: RemovedMachineWindowsSnapshot | null = null;
+    set((state) => {
+      const removedWindows = state.windows.filter((window) => window.machineName === machineName);
+      if (removedWindows.length === 0) {
+        return state;
+      }
+
+      const removedWindowIDs = new Set(removedWindows.map((window) => window.id));
+      const windowCwds = { ...state.windowCwds };
+      const removedWindowCwds: Record<string, string> = {};
+      for (const [windowID, cwd] of Object.entries(windowCwds)) {
+        if (!removedWindowIDs.has(windowID)) {
+          continue;
+        }
+        removedWindowCwds[windowID] = cwd;
+        delete windowCwds[windowID];
+      }
+
+      const removedViewportFocusRequest =
+        state.viewportFocusRequest && removedWindowIDs.has(state.viewportFocusRequest.windowID)
+          ? state.viewportFocusRequest
+          : null;
+      const removedGitDiffSidebar =
+        state.gitDiffSidebar.windowID && removedWindowIDs.has(state.gitDiffSidebar.windowID)
+          ? { ...state.gitDiffSidebar }
+          : defaultGitDiffSidebarState;
+
+      snapshot = {
+        machineName,
+        orderedWindowIDs: state.windows.map((window) => window.id),
+        windows: removedWindows,
+        windowCwds: removedWindowCwds,
+        viewportFocusRequest: removedViewportFocusRequest,
+        gitDiffSidebar: removedGitDiffSidebar,
+      };
+
+      return {
+        windows: normalizeOrderedWindows(state.windows.filter((window) => !removedWindowIDs.has(window.id))),
+        windowCwds,
+        viewportFocusRequest: removedViewportFocusRequest ? null : state.viewportFocusRequest,
+        gitDiffSidebar:
+          removedGitDiffSidebar.windowID !== null ? defaultGitDiffSidebarState : state.gitDiffSidebar,
+      };
+    });
+    return snapshot;
+  },
+  restoreRemovedWindows: (snapshot) =>
+    set((state) => {
+      const restoredWindows = snapshot.windows.filter(
+        (removedWindow) => !state.windows.some((currentWindow) => currentWindow.id === removedWindow.id),
+      );
+      const restoredWindowIDs = new Set(restoredWindows.map((window) => window.id));
+
+      const orderedWindows = restoreOrderedWindows(state.windows, restoredWindows, snapshot.orderedWindowIDs);
+      const windowCwds = { ...state.windowCwds };
+      for (const [windowID, cwd] of Object.entries(snapshot.windowCwds)) {
+        if (!restoredWindowIDs.has(windowID) || windowID in windowCwds) {
+          continue;
+        }
+        windowCwds[windowID] = cwd;
+      }
+
+      return {
+        windows: normalizeOrderedWindows(orderedWindows),
+        windowCwds,
+        viewportFocusRequest: state.viewportFocusRequest ?? snapshot.viewportFocusRequest,
+        gitDiffSidebar: state.gitDiffSidebar.windowID ? state.gitDiffSidebar : snapshot.gitDiffSidebar,
+      };
+    }),
   closeWindow: (id) =>
     set((state) => {
       const windowCwds = { ...state.windowCwds };
@@ -288,4 +369,48 @@ function reorderWindowToIndex(windows: WorkspaceWindow[], id: string, targetInde
   const [window] = items.splice(currentIndex, 1);
   items.splice(nextIndex, 0, window);
   return items;
+}
+
+function restoreOrderedWindows(
+  currentWindows: WorkspaceWindow[],
+  restoredWindows: WorkspaceWindow[],
+  orderedWindowIDs: string[],
+) {
+  if (restoredWindows.length === 0) {
+    return currentWindows;
+  }
+
+  const windowsByID = new Map<string, WorkspaceWindow>();
+  for (const window of currentWindows) {
+    windowsByID.set(window.id, window);
+  }
+  for (const window of restoredWindows) {
+    windowsByID.set(window.id, window);
+  }
+
+  const orderedWindows: WorkspaceWindow[] = [];
+  const seenWindowIDs = new Set<string>();
+  for (const windowID of orderedWindowIDs) {
+    const window = windowsByID.get(windowID);
+    if (!window || seenWindowIDs.has(windowID)) {
+      continue;
+    }
+    orderedWindows.push(window);
+    seenWindowIDs.add(windowID);
+  }
+  for (const window of currentWindows) {
+    if (seenWindowIDs.has(window.id)) {
+      continue;
+    }
+    orderedWindows.push(window);
+    seenWindowIDs.add(window.id);
+  }
+  for (const window of restoredWindows) {
+    if (seenWindowIDs.has(window.id)) {
+      continue;
+    }
+    orderedWindows.push(window);
+  }
+
+  return orderedWindows;
 }
