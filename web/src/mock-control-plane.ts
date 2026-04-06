@@ -1,5 +1,7 @@
 import type {
+  BuiltinEnvVar,
   EnvVar,
+  EnvVarCatalog,
   GitDiffBatchRequest,
   GitFileDiff,
   GitRepoStatus,
@@ -33,6 +35,7 @@ type MockState = {
   user: User;
   machines: Machine[];
   snapshots: Snapshot[];
+  builtinEnvVars: BuiltinEnvVar[];
   envVars: EnvVar[];
   workspace: WorkspaceLayout;
   terminalCounter: number;
@@ -99,6 +102,16 @@ const mockWorkspaceWindows: WorkspaceWindow[] = [
     height: 900,
     z: 3,
   },
+];
+
+const mockBuiltinEnvVars: BuiltinEnvVar[] = [
+  { key: "FASCINATE_MACHINE_NAME", description: "Name of the current VM." },
+  { key: "FASCINATE_MACHINE_ID", description: "Stable Fascinate ID for the current VM." },
+  { key: "FASCINATE_PUBLIC_URL", description: "Public HTTPS URL for the current VM, routed to its primary port." },
+  { key: "FASCINATE_PRIMARY_PORT", description: "Primary port Fascinate exposes for the current VM." },
+  { key: "FASCINATE_BASE_DOMAIN", description: "Base domain Fascinate uses to generate machine URLs." },
+  { key: "FASCINATE_HOST_ID", description: "ID of the host currently running the VM." },
+  { key: "FASCINATE_HOST_REGION", description: "Region advertised by the host currently running the VM." },
 ];
 
 const metadataIndexPatch = [
@@ -211,8 +224,8 @@ function createInitialMockState(): MockState {
         updated_at: "2026-04-01T00:00:00Z",
       },
     ],
+    builtinEnvVars: clone(mockBuiltinEnvVars),
     envVars: [
-      { key: "FASCINATE_PUBLIC_URL", value: "https://fascinate.dev" },
       { key: "APP_THEME", value: "dark" },
     ],
     workspace: {
@@ -418,8 +431,11 @@ export async function deleteMockSnapshot(name: string) {
   state.snapshots = state.snapshots.filter((snapshot) => snapshot.name !== name);
 }
 
-export async function listMockEnvVars() {
-  return clone(state.envVars);
+export async function listMockEnvVars(): Promise<EnvVarCatalog> {
+  return {
+    envVars: clone(state.envVars),
+    builtinEnvVars: clone(state.builtinEnvVars),
+  };
 }
 
 export async function setMockEnvVar(key: string, value: string) {

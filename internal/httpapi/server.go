@@ -65,6 +65,26 @@ type readinessChecker interface {
 	ReadinessStatus() (ready bool, status string)
 }
 
+type envVarResponse struct {
+	Key       string `json:"key"`
+	Value     string `json:"value"`
+	CreatedAt string `json:"created_at,omitempty"`
+	UpdatedAt string `json:"updated_at,omitempty"`
+}
+
+func envVarResponses(values []controlplane.EnvVar) []envVarResponse {
+	out := make([]envVarResponse, 0, len(values))
+	for _, value := range values {
+		out = append(out, envVarResponse{
+			Key:       value.Key,
+			Value:     value.RawValue,
+			CreatedAt: value.CreatedAt,
+			UpdatedAt: value.UpdatedAt,
+		})
+	}
+	return out
+}
+
 func New(cfg config.Config, store *database.Store, runtime runtimeChecker, machines machineManager, auth browserAuthService, terminals terminalManager, readiness readinessChecker) http.Handler {
 	mux := http.NewServeMux()
 	diagnostics, _ := machines.(diagnosticsManager)
@@ -489,7 +509,10 @@ func New(cfg config.Config, store *database.Store, runtime runtimeChecker, machi
 				writeServiceError(w, err)
 				return
 			}
-			writeJSON(w, http.StatusOK, map[string]any{"env_vars": envVars})
+			writeJSON(w, http.StatusOK, map[string]any{
+				"env_vars":         envVarResponses(envVars),
+				"builtin_env_vars": controlplane.BuiltinEnvVars(),
+			})
 		case http.MethodPut:
 			var body struct {
 				OwnerEmail string `json:"owner_email"`
@@ -517,7 +540,12 @@ func New(cfg config.Config, store *database.Store, runtime runtimeChecker, machi
 				writeServiceError(w, err)
 				return
 			}
-			writeJSON(w, http.StatusOK, envVar)
+			writeJSON(w, http.StatusOK, envVarResponse{
+				Key:       envVar.Key,
+				Value:     envVar.RawValue,
+				CreatedAt: envVar.CreatedAt,
+				UpdatedAt: envVar.UpdatedAt,
+			})
 		default:
 			writeMethodNotAllowed(w, http.MethodGet, http.MethodPut)
 		}

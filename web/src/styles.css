@@ -550,6 +550,10 @@ a {
   padding: var(--space-4);
 }
 
+.sidebar-record-static {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .machine-card-header {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -916,6 +920,26 @@ a {
 .app-modal-section {
   display: grid;
   gap: var(--space-4);
+}
+
+.app-modal-section-heading {
+  display: grid;
+  gap: var(--space-1);
+}
+
+.app-modal-section-heading h3 {
+  margin: 0;
+  font-size: 13px;
+  line-height: 18px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.app-modal-section-heading p {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 18px;
 }
 
 .app-modal-actions {

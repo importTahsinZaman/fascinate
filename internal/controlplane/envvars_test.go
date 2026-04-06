@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	"fascinate/internal/config"
 	"fascinate/internal/database"
 	machineruntime "fascinate/internal/runtime"
 )
@@ -14,6 +15,25 @@ func TestValidateEnvVarKeyRejectsReservedPrefix(t *testing.T) {
 
 	if _, err := validateEnvVarKey("FASCINATE_PUBLIC_URL"); err == nil {
 		t.Fatalf("expected reserved key rejection")
+	}
+}
+
+func TestBuiltinEnvVarsMatchValidationBuiltins(t *testing.T) {
+	t.Parallel()
+
+	builtins := validationBuiltins(config.Config{})
+	catalog := BuiltinEnvVars()
+	if len(catalog) != len(builtins) {
+		t.Fatalf("expected %d builtins in catalog, got %d", len(builtins), len(catalog))
+	}
+
+	for _, entry := range catalog {
+		if entry.Description == "" {
+			t.Fatalf("expected description for %q", entry.Key)
+		}
+		if _, ok := builtins[entry.Key]; !ok {
+			t.Fatalf("catalog key %q missing from validation builtins", entry.Key)
+		}
 	}
 }
 

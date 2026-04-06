@@ -65,6 +65,11 @@ function deferred<T>() {
 
 type AppFetchOverride = (path: string, init?: RequestInit) => Response | Promise<Response> | undefined;
 
+const builtinEnvVarsResponse = [
+  { key: "FASCINATE_MACHINE_NAME", description: "Name of the current VM." },
+  { key: "FASCINATE_PUBLIC_URL", description: "Public HTTPS URL for the current VM, routed to its primary port." },
+];
+
 function createAuthenticatedFetchMock(override?: AppFetchOverride) {
   return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const path = String(input);
@@ -93,7 +98,7 @@ function createAuthenticatedFetchMock(override?: AppFetchOverride) {
       return jsonResponse({ snapshots: [] });
     }
     if (path === "/v1/env-vars") {
-      return jsonResponse({ env_vars: [] });
+      return jsonResponse({ env_vars: [], builtin_env_vars: builtinEnvVarsResponse });
     }
     if (path === "/v1/workspaces/default") {
       if (init?.method === "PUT") {
@@ -222,7 +227,10 @@ describe("App", () => {
         });
       }
       if (path === "/v1/env-vars") {
-        return jsonResponse({ env_vars: [{ key: "FRONTEND_URL", value: "${FASCINATE_PUBLIC_URL}" }] });
+        return jsonResponse({
+          env_vars: [{ key: "FRONTEND_URL", value: "${FASCINATE_PUBLIC_URL}" }],
+          builtin_env_vars: builtinEnvVarsResponse,
+        });
       }
       if (path === "/v1/workspaces/default") {
         if (init?.method === "PUT") {
@@ -258,6 +266,8 @@ describe("App", () => {
     fireEvent.click(screen.getByRole("button", { name: "Env vars" }));
     expect(await screen.findByRole("dialog", { name: "Environment variables" })).toBeTruthy();
     expect(screen.getByText("FRONTEND_URL")).toBeTruthy();
+    expect(screen.getByText("FASCINATE_PUBLIC_URL")).toBeTruthy();
+    expect(screen.getByText("Public HTTPS URL for the current VM, routed to its primary port.")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Close modal" }));
 
     fireEvent.click(screen.getByRole("button", { name: "Snapshots" }));
@@ -490,7 +500,7 @@ describe("App", () => {
         return jsonResponse({ snapshots: [] });
       }
       if (path === "/v1/env-vars") {
-        return jsonResponse({ env_vars: [] });
+        return jsonResponse({ env_vars: [], builtin_env_vars: builtinEnvVarsResponse });
       }
       if (path === "/v1/workspaces/default") {
         if (init?.method === "PUT") {
@@ -650,7 +660,7 @@ describe("App", () => {
         return jsonResponse({ snapshots: [] });
       }
       if (path === "/v1/env-vars") {
-        return jsonResponse({ env_vars: [] });
+        return jsonResponse({ env_vars: [], builtin_env_vars: builtinEnvVarsResponse });
       }
       if (path === "/v1/workspaces/default") {
         if (init?.method === "PUT") {

@@ -952,8 +952,22 @@ func TestListEnvVarsEndpoint(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rec.Code)
 	}
-	if !strings.Contains(rec.Body.String(), "FRONTEND_URL") {
-		t.Fatalf("unexpected response body %q", rec.Body.String())
+
+	var body struct {
+		EnvVars []struct {
+			Key   string `json:"key"`
+			Value string `json:"value"`
+		} `json:"env_vars"`
+		BuiltinEnvVars []controlplane.BuiltinEnvVar `json:"builtin_env_vars"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(body.EnvVars) != 1 || body.EnvVars[0].Key != "FRONTEND_URL" || body.EnvVars[0].Value != "${FASCINATE_PUBLIC_URL}" {
+		t.Fatalf("unexpected env vars %+v", body.EnvVars)
+	}
+	if len(body.BuiltinEnvVars) == 0 {
+		t.Fatalf("expected built-in env vars in response")
 	}
 }
 
@@ -976,6 +990,16 @@ func TestSetEnvVarEndpoint(t *testing.T) {
 	}
 	if manager.setEnvInput.Key != "FRONTEND_URL" || manager.setEnvInput.OwnerEmail != "dev@example.com" {
 		t.Fatalf("unexpected env input %+v", manager.setEnvInput)
+	}
+	var bodyResp struct {
+		Key   string `json:"key"`
+		Value string `json:"value"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &bodyResp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if bodyResp.Key != "FRONTEND_URL" || bodyResp.Value != "${FASCINATE_PUBLIC_URL}" {
+		t.Fatalf("unexpected response %+v", bodyResp)
 	}
 }
 

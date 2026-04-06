@@ -61,6 +61,11 @@ Fascinate SHALL let a user list, create, update, delete, and inspect their Fasci
 - **THEN** Fascinate stores the env-var change for that user
 - **AND** the browser shows the saved key and effective raw value
 
+#### Scenario: User reviews built-in Fascinate env vars in the browser
+- **WHEN** a user opens the env-vars workflow in the web app
+- **THEN** the browser lists the built-in `FASCINATE_*` machine vars that Fascinate injects automatically
+- **AND** each built-in is shown with a description so the user can choose the right interpolation target
+
 #### Scenario: User inspects effective machine env from the browser
 - **WHEN** a user requests env details for one of their machines in the web app
 - **THEN** Fascinate returns the rendered machine-specific env set including built-in `FASCINATE_*` vars

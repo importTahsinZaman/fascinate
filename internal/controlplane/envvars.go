@@ -19,6 +19,32 @@ const envVarBuiltinPrefix = "FASCINATE_"
 var envVarKeyPattern = regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`)
 var envVarReferencePattern = regexp.MustCompile(`\$\{([A-Z][A-Z0-9_]*)\}`)
 
+const (
+	envVarMachineName = "FASCINATE_MACHINE_NAME"
+	envVarMachineID   = "FASCINATE_MACHINE_ID"
+	envVarPublicURL   = "FASCINATE_PUBLIC_URL"
+	envVarPrimaryPort = "FASCINATE_PRIMARY_PORT"
+	envVarBaseDomain  = "FASCINATE_BASE_DOMAIN"
+	envVarHostID      = "FASCINATE_HOST_ID"
+	envVarHostRegion  = "FASCINATE_HOST_REGION"
+)
+
+// BuiltinEnvVar describes an automatically injected Fascinate VM environment variable.
+type BuiltinEnvVar struct {
+	Key         string `json:"key"`
+	Description string `json:"description"`
+}
+
+var builtinEnvVarCatalog = []BuiltinEnvVar{
+	{Key: envVarMachineName, Description: "Name of the current VM."},
+	{Key: envVarMachineID, Description: "Stable Fascinate ID for the current VM."},
+	{Key: envVarPublicURL, Description: "Public HTTPS URL for the current VM, routed to its primary port."},
+	{Key: envVarPrimaryPort, Description: "Primary port Fascinate exposes for the current VM."},
+	{Key: envVarBaseDomain, Description: "Base domain Fascinate uses to generate machine URLs."},
+	{Key: envVarHostID, Description: "ID of the host currently running the VM."},
+	{Key: envVarHostRegion, Description: "Region advertised by the host currently running the VM."},
+}
+
 type EnvVar struct {
 	Key       string `json:"key"`
 	RawValue  string `json:"raw_value"`
@@ -40,6 +66,13 @@ type EffectiveEnvVar struct {
 type MachineEnv struct {
 	MachineName string            `json:"machine_name"`
 	Entries     []EffectiveEnvVar `json:"entries"`
+}
+
+// BuiltinEnvVars returns the built-in Fascinate VM environment variables in UI display order.
+func BuiltinEnvVars() []BuiltinEnvVar {
+	out := make([]BuiltinEnvVar, len(builtinEnvVarCatalog))
+	copy(out, builtinEnvVarCatalog)
+	return out
 }
 
 func (s *Service) ListEnvVars(ctx context.Context, ownerEmail string) ([]EnvVar, error) {
@@ -245,25 +278,25 @@ func (s *Service) machineBuiltins(ctx context.Context, record database.MachineRe
 
 func validationBuiltins(cfg config.Config) map[string]string {
 	return map[string]string{
-		"FASCINATE_MACHINE_NAME": "",
-		"FASCINATE_MACHINE_ID":   "",
-		"FASCINATE_PUBLIC_URL":   "",
-		"FASCINATE_PRIMARY_PORT": "",
-		"FASCINATE_BASE_DOMAIN":  strings.TrimSpace(cfg.BaseDomain),
-		"FASCINATE_HOST_ID":      strings.TrimSpace(cfg.HostID),
-		"FASCINATE_HOST_REGION":  strings.TrimSpace(cfg.HostRegion),
+		envVarMachineName: "",
+		envVarMachineID:   "",
+		envVarPublicURL:   "",
+		envVarPrimaryPort: "",
+		envVarBaseDomain:  strings.TrimSpace(cfg.BaseDomain),
+		envVarHostID:      strings.TrimSpace(cfg.HostID),
+		envVarHostRegion:  strings.TrimSpace(cfg.HostRegion),
 	}
 }
 
 func machineBuiltins(machineID, machineName, baseDomain string, primaryPort int, hostID, hostRegion string) map[string]string {
 	return map[string]string{
-		"FASCINATE_MACHINE_NAME": strings.TrimSpace(machineName),
-		"FASCINATE_MACHINE_ID":   strings.TrimSpace(machineID),
-		"FASCINATE_PUBLIC_URL":   machineURL(machineName, baseDomain),
-		"FASCINATE_PRIMARY_PORT": strconv.Itoa(primaryPort),
-		"FASCINATE_BASE_DOMAIN":  strings.TrimSpace(baseDomain),
-		"FASCINATE_HOST_ID":      strings.TrimSpace(hostID),
-		"FASCINATE_HOST_REGION":  strings.TrimSpace(hostRegion),
+		envVarMachineName: strings.TrimSpace(machineName),
+		envVarMachineID:   strings.TrimSpace(machineID),
+		envVarPublicURL:   machineURL(machineName, baseDomain),
+		envVarPrimaryPort: strconv.Itoa(primaryPort),
+		envVarBaseDomain:  strings.TrimSpace(baseDomain),
+		envVarHostID:      strings.TrimSpace(hostID),
+		envVarHostRegion:  strings.TrimSpace(hostRegion),
 	}
 }
 

@@ -8,6 +8,11 @@ Fascinate SHALL expose browser and API surfaces to manage user env vars and insp
 - **THEN** the user can list, set, edit, and unset their saved env vars
 - **AND** those actions affect only their own env-var object
 
+#### Scenario: Browser env-var controls explain built-in machine vars
+- **WHEN** a user opens the env-var controls in the Fascinate web app
+- **THEN** the UI lists the built-in machine env vars that Fascinate injects automatically
+- **AND** the UI includes descriptions for those built-ins so users can reference them in saved values
+
 #### Scenario: Operator or user inspects effective machine env
 - **WHEN** Fascinate is asked from the browser app or API for the effective env of a specific machine
 - **THEN** it returns the machine-specific rendered values, including built-ins

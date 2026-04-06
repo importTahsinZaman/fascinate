@@ -31,6 +31,7 @@ import {
   saveDefaultWorkspace,
   setEnvVar,
   verifyLogin,
+  type EnvVarCatalog,
   type Machine,
   type Snapshot,
   type WorkspaceWindow,
@@ -55,6 +56,11 @@ const windowGitStatusPollIntervalMs = 4_000;
 type MachineMutationContext = {
   previousMachines?: Machine[];
   removedWindows: RemovedMachineWindowsSnapshot | null;
+};
+
+const emptyEnvVarCatalog: EnvVarCatalog = {
+  envVars: [],
+  builtinEnvVars: [],
 };
 
 function upsertMachineList(current: Machine[] | undefined, machine: Machine) {
@@ -331,7 +337,9 @@ function CommandCenter() {
     [frontmostWindowZ, windows],
   );
   const snapshotList = snapshotsQuery.data ?? [];
-  const envList = envVarsQuery.data ?? [];
+  const envCatalog = envVarsQuery.data ?? emptyEnvVarCatalog;
+  const envList = envCatalog.envVars;
+  const builtinEnvList = envCatalog.builtinEnvVars;
   const windowsByMachine = useMemo(() => {
     const grouped = new Map<string, WorkspaceWindow[]>();
     for (const window of windows) {
@@ -658,12 +666,19 @@ function CommandCenter() {
     return (
       <AppModal
         title="Environment variables"
-        description="Manage the user-defined variables Fascinate injects into every VM."
+        description="Manage the user-defined variables Fascinate injects into every VM, alongside the built-in Fascinate machine vars available for interpolation."
         onClose={() => setModal(null)}
         wide
       >
         <div className="app-modal-body">
           <section className="app-modal-section">
+            <div className="app-modal-section-heading">
+              <h3>Saved env vars</h3>
+              <p>
+                Use <code>${"{NAME}"}</code> references to compose values from built-in <code>FASCINATE_*</code> vars
+                and your other saved entries.
+              </p>
+            </div>
             <label className="field">
               <span>Key</span>
               <input
@@ -701,8 +716,31 @@ function CommandCenter() {
           </section>
 
           <section className="app-modal-section">
+            <div className="app-modal-section-heading">
+              <h3>Built-in Fascinate vars</h3>
+              <p>These are injected automatically into every VM. Their values are filled in per machine when Fascinate creates, restores, or forks it.</p>
+            </div>
+            <div className="sidebar-record-list">
+              {builtinEnvList.map((entry) => (
+                <article key={entry.key} className="sidebar-record sidebar-record-static">
+                  <div>
+                    <div className="sidebar-record-heading">
+                      <strong>{entry.key}</strong>
+                      <span className="inline-chip">built-in</span>
+                    </div>
+                    <div className="muted">{entry.description}</div>
+                  </div>
+                </article>
+              ))}
+            </div>
+          </section>
+
+          <section className="app-modal-section">
+            <div className="app-modal-section-heading">
+              <h3>Current saved vars</h3>
+            </div>
             {envList.length === 0 ? (
-              <p className="muted">No env vars set yet.</p>
+              <p className="muted">No saved env vars yet.</p>
             ) : (
               <div className="sidebar-record-list">
                 {envList.map((entry) => (

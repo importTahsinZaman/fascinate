@@ -387,13 +387,15 @@ Current single-box defaults are tuned for the live OVH host target of about `8` 
 Fascinate now keeps plain user-defined env vars as a first-class per-user object and combines them with built-in machine identity vars inside every VM.
 
 Built-in machine vars currently include:
-- `FASCINATE_MACHINE_NAME`
-- `FASCINATE_MACHINE_ID`
-- `FASCINATE_PUBLIC_URL`
-- `FASCINATE_PRIMARY_PORT`
-- `FASCINATE_BASE_DOMAIN`
-- `FASCINATE_HOST_ID`
-- `FASCINATE_HOST_REGION`
+- `FASCINATE_MACHINE_NAME` — name of the current VM
+- `FASCINATE_MACHINE_ID` — stable Fascinate ID for the current VM
+- `FASCINATE_PUBLIC_URL` — public HTTPS URL for the current VM, routed to its primary port
+- `FASCINATE_PRIMARY_PORT` — primary port Fascinate exposes for the current VM
+- `FASCINATE_BASE_DOMAIN` — base domain Fascinate uses to generate machine URLs
+- `FASCINATE_HOST_ID` — ID of the host currently running the VM
+- `FASCINATE_HOST_REGION` — region advertised by the host currently running the VM
+
+The browser env-vars modal lists these built-ins with descriptions so users can safely reference them when composing saved vars.
 
 User-defined env vars:
 - are stored centrally per user

@@ -54,6 +54,18 @@ export type Snapshot = {
 export type EnvVar = {
   key: string;
   value: string;
+  created_at?: string;
+  updated_at?: string;
+};
+
+export type BuiltinEnvVar = {
+  key: string;
+  description: string;
+};
+
+export type EnvVarCatalog = {
+  envVars: EnvVar[];
+  builtinEnvVars: BuiltinEnvVar[];
 };
 
 export type MachineEnv = {
@@ -279,12 +291,18 @@ export async function deleteSnapshot(name: string) {
   });
 }
 
-export async function listEnvVars() {
+export async function listEnvVars(): Promise<EnvVarCatalog> {
   if (isMockUIEnabled()) {
     return listMockEnvVars();
   }
-  const body = await request<{ env_vars: { key: string; value: string }[] }>("/v1/env-vars");
-  return body.env_vars;
+  const body = await request<{
+    env_vars: EnvVar[];
+    builtin_env_vars: BuiltinEnvVar[];
+  }>("/v1/env-vars");
+  return {
+    envVars: body.env_vars,
+    builtinEnvVars: body.builtin_env_vars,
+  };
 }
 
 export async function setEnvVar(key: string, value: string) {
