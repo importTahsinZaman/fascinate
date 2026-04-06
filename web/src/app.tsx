@@ -10,7 +10,7 @@ import {
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from "react";
-import { ArrowClockwise, Camera, GitFork, Trash, WarningCircle, X } from "@phosphor-icons/react";
+import { ArrowClockwise, Camera, Eye, EyeSlash, GitFork, Trash, WarningCircle, X } from "@phosphor-icons/react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   forkMachine,
@@ -196,6 +196,7 @@ function CommandCenter() {
   const [snapshotName, setSnapshotName] = useState("");
   const [restoreTarget, setRestoreTarget] = useState("");
   const [envForm, setEnvForm] = useState({ key: "", value: "" });
+  const [editingEnvVar, setEditingEnvVar] = useState<{ key: string; value: string } | null>(null);
   const [revealedEnvVarKeys, setRevealedEnvVarKeys] = useState<Record<string, boolean>>({});
   const [shellCloseError, setShellCloseError] = useState<unknown>(null);
   const [closingShellIDs, setClosingShellIDs] = useState<string[]>([]);
@@ -253,6 +254,7 @@ function CommandCenter() {
     if (modal?.type === "env-vars") {
       return;
     }
+    setEditingEnvVar(null);
     setRevealedEnvVarKeys({});
   }, [modal]);
 
@@ -326,16 +328,26 @@ function CommandCenter() {
     mutationFn: deleteSnapshot,
     onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["snapshots"] }),
   });
-  const setEnvMutation = useMutation({
+  const createEnvMutation = useMutation({
     mutationFn: ({ key, value }: { key: string; value: string }) => setEnvVar(key, value),
     onSuccess: () => {
       setEnvForm({ key: "", value: "" });
       void queryClient.invalidateQueries({ queryKey: ["env-vars"] });
     },
   });
+  const updateEnvMutation = useMutation({
+    mutationFn: ({ key, value }: { key: string; value: string }) => setEnvVar(key, value),
+    onSuccess: () => {
+      setEditingEnvVar(null);
+      void queryClient.invalidateQueries({ queryKey: ["env-vars"] });
+    },
+  });
   const deleteEnvMutation = useMutation({
     mutationFn: deleteEnvVar,
-    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["env-vars"] }),
+    onSuccess: (_result, key) => {
+      setEditingEnvVar((current) => (current?.key === key ? null : current));
+      void queryClient.invalidateQueries({ queryKey: ["env-vars"] });
+    },
   });
   const logoutMutation = useMutation({
     mutationFn: logout,
@@ -707,7 +719,7 @@ function CommandCenter() {
         <div className="app-modal-body">
           <section className="app-modal-section">
             <label className="field">
-              <span>Key</span>
+              <span>Name</span>
               <input
                 value={envForm.key}
                 onChange={(event) => setEnvForm((current) => ({ ...current, key: event.target.value }))}
@@ -733,13 +745,13 @@ function CommandCenter() {
               <button
                 className="button-primary"
                 type="button"
-                onClick={() => setEnvMutation.mutate(envForm)}
-                disabled={!envForm.key || !envForm.value || setEnvMutation.isPending}
+                onClick={() => createEnvMutation.mutate(envForm)}
+                disabled={!envForm.key || !envForm.value || createEnvMutation.isPending}
               >
-                {setEnvMutation.isPending ? "Saving…" : "Save env var"}
+                {createEnvMutation.isPending ? "Saving…" : "Save env var"}
               </button>
             </div>
-            <StatusError mutationError={setEnvMutation.error} />
+            <StatusError mutationError={createEnvMutation.error} />
           </section>
 
           <section className="app-modal-section">
@@ -753,31 +765,85 @@ function CommandCenter() {
                     <div className="sidebar-record-heading">
                       <strong>{entry.key}</strong>
                     </div>
-                    <div
-                      className={`muted env-var-record-value${revealedEnvVarKeys[entry.key] ? "" : " env-var-record-value-masked"}`}
-                    >
-                      {revealedEnvVarKeys[entry.key] ? entry.value : maskEnvValue(entry.value)}
-                    </div>
+                    {editingEnvVar?.key === entry.key ? (
+                      <div className="env-var-editor">
+                        <label className="field">
+                          <span>Name</span>
+                          <input value={editingEnvVar.key} disabled />
+                        </label>
+                        <label className="field">
+                          <span>Value</span>
+                          <input
+                            autoFocus
+                            value={editingEnvVar.value}
+                            onChange={(event) =>
+                              setEditingEnvVar((current) =>
+                                current?.key === entry.key ? { ...current, value: event.target.value } : current,
+                              )
+                            }
+                          />
+                        </label>
+                      </div>
+                    ) : (
+                      <div
+                        className={`muted env-var-record-value${revealedEnvVarKeys[entry.key] ? "" : " env-var-record-value-masked"}`}
+                      >
+                        {revealedEnvVarKeys[entry.key] ? entry.value : maskEnvValue(entry.value)}
+                      </div>
+                    )}
                   </div>
                   <div className="actions">
-                    <button
-                      type="button"
-                      aria-label={`${revealedEnvVarKeys[entry.key] ? "Hide" : "Show"} value for ${entry.key}`}
-                      onClick={() =>
-                        setRevealedEnvVarKeys((current) => ({
-                          ...current,
-                          [entry.key]: !current[entry.key],
-                        }))
-                      }
-                    >
-                      {revealedEnvVarKeys[entry.key] ? "Hide" : "Show"}
-                    </button>
-                    <button type="button" onClick={() => setEnvForm({ key: entry.key, value: entry.value })}>
-                      Edit
-                    </button>
-                    <button className="danger" type="button" onClick={() => deleteEnvMutation.mutate(entry.key)}>
-                      Delete
-                    </button>
+                    {editingEnvVar?.key === entry.key ? (
+                      <>
+                        <button type="button" onClick={() => setEditingEnvVar(null)}>
+                          Cancel
+                        </button>
+                        <button
+                          className="button-primary"
+                          type="button"
+                          onClick={() => updateEnvMutation.mutate(editingEnvVar)}
+                          disabled={!editingEnvVar.value || updateEnvMutation.isPending}
+                        >
+                          {updateEnvMutation.isPending ? "Saving…" : "Save"}
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        <button
+                          className="icon-action-button"
+                          type="button"
+                          aria-label={`${revealedEnvVarKeys[entry.key] ? "Hide" : "Show"} value for ${entry.key}`}
+                          title={`${revealedEnvVarKeys[entry.key] ? "Hide" : "Show"} value for ${entry.key}`}
+                          onClick={() =>
+                            setRevealedEnvVarKeys((current) => ({
+                              ...current,
+                              [entry.key]: !current[entry.key],
+                            }))
+                          }
+                        >
+                          {revealedEnvVarKeys[entry.key] ? (
+                            <EyeSlash className="icon-svg" weight="regular" />
+                          ) : (
+                            <Eye className="icon-svg" weight="regular" />
+                          )}
+                        </button>
+                        <button
+                          type="button"
+                          aria-label={`Edit ${entry.key}`}
+                          onClick={() => setEditingEnvVar({ key: entry.key, value: entry.value })}
+                        >
+                          Edit
+                        </button>
+                        <button
+                          className="danger"
+                          type="button"
+                          aria-label={`Delete ${entry.key}`}
+                          onClick={() => deleteEnvMutation.mutate(entry.key)}
+                        >
+                          Delete
+                        </button>
+                      </>
+                    )}
                   </div>
                 </article>
               ))}
@@ -793,7 +859,7 @@ function CommandCenter() {
                 </article>
               ))}
             </div>
-            <StatusError mutationError={deleteEnvMutation.error} />
+            <StatusError mutationError={updateEnvMutation.error ?? deleteEnvMutation.error} />
           </section>
         </div>
       </AppModal>
