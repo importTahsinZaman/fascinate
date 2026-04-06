@@ -54,6 +54,7 @@ type terminalManager interface {
 	CreateSession(context.Context, string, string, int, int) (browserterm.SessionInit, error)
 	ReattachSession(context.Context, string, string, int, int) (browserterm.SessionInit, error)
 	CloseSession(context.Context, string, string) error
+	CloseMachineSessions(context.Context, string, string) error
 	GetGitStatus(context.Context, string, string, string) (browserterm.GitRepoStatus, error)
 	GetGitDiffBatch(context.Context, string, string, browserterm.GitDiffBatchRequest) (browserterm.GitDiffBatchResponse, error)
 	StreamSession(http.ResponseWriter, *http.Request, string) error
@@ -587,6 +588,9 @@ func New(cfg config.Config, store *database.Store, runtime runtimeChecker, machi
 				if err := machines.DeleteMachine(ctx, name, ownerEmail); err != nil {
 					writeServiceError(w, err)
 					return
+				}
+				if terminals != nil {
+					_ = terminals.CloseMachineSessions(ctx, ownerEmail, name)
 				}
 
 				w.WriteHeader(http.StatusNoContent)

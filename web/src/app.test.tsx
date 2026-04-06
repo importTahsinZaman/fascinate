@@ -439,6 +439,61 @@ describe("App", () => {
     expect(useWorkspaceStore.getState().windows).toHaveLength(1);
   });
 
+  it("closes all shell windows for a machine after deleting it", async () => {
+    let machineDeleted = false;
+    const fetchMock = createAuthenticatedFetchMock((path, init) => {
+      if (path === "/v1/machines") {
+        return jsonResponse({
+          machines: machineDeleted
+            ? []
+            : [
+                {
+                  id: "machine-1",
+                  name: "m-1",
+                  state: "RUNNING",
+                  primary_port: 3000,
+                  created_at: "2026-03-22T00:00:00Z",
+                  updated_at: "2026-03-22T00:00:00Z",
+                },
+              ],
+        });
+      }
+      if (path === "/v1/machines/m-1" && init?.method === "DELETE") {
+        machineDeleted = true;
+        return new Response(null, { status: 204 });
+      }
+      if (path.startsWith("/v1/terminal/sessions/")) {
+        return jsonResponse({ error: "terminal sessions should be cleaned up by machine delete" }, 500);
+      }
+      return undefined;
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderApp();
+
+    fireEvent.click(await screen.findByRole("button", { name: "New shell" }));
+    fireEvent.click(await screen.findByRole("button", { name: "New shell" }));
+
+    expect(await screen.findAllByTestId("terminal-m-1")).toHaveLength(2);
+
+    fireEvent.click(screen.getByRole("button", { name: "Delete m-1" }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/v1/machines/m-1",
+        expect.objectContaining({ method: "DELETE" }),
+      );
+    });
+    await waitFor(() => {
+      expect(useWorkspaceStore.getState().windows).toHaveLength(0);
+    });
+
+    expect(screen.queryByTestId("terminal-m-1")).toBeNull();
+    expect(
+      fetchMock.mock.calls.filter(([path]) => String(path).startsWith("/v1/terminal/sessions/")),
+    ).toHaveLength(0);
+  });
+
   it("keeps sidebar shell order stable when focusing a sibling shell", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const path = String(input);

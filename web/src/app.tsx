@@ -222,7 +222,14 @@ function CommandCenter() {
   });
   const deleteMachineMutation = useMutation({
     mutationFn: deleteMachine,
-    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["machines"] }),
+    onSuccess: (_data, deletedMachineName) => {
+      for (const window of windows) {
+        if (window.machineName === deletedMachineName) {
+          closeWindow(window.id);
+        }
+      }
+      void queryClient.invalidateQueries({ queryKey: ["machines"] });
+    },
   });
   const forkMachineMutation = useMutation({
     mutationFn: ({ source, target }: { source: string; target: string }) => forkMachine(source, target),

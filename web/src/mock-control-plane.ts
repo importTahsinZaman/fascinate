@@ -336,6 +336,15 @@ export async function createMockMachine(name: string, snapshotName?: string) {
 
 export async function deleteMockMachine(name: string) {
   state.machines = state.machines.filter((machine) => machine.name !== name);
+  state.workspace = {
+    ...state.workspace,
+    windows: state.workspace.windows.filter((window) => window.machineName !== name),
+  };
+  for (const [sessionId, session] of state.terminals.entries()) {
+    if (session.machineName === name) {
+      state.terminals.delete(sessionId);
+    }
+  }
 }
 
 export async function forkMockMachine(sourceName: string, targetName: string) {

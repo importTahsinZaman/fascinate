@@ -324,6 +324,37 @@ func (m *Manager) CloseSession(ctx context.Context, userEmail, sessionID string)
 	return nil
 }
 
+func (m *Manager) CloseMachineSessions(_ context.Context, userEmail, machineName string) error {
+	m.pruneExpiredSessions()
+
+	ownerEmail := strings.TrimSpace(userEmail)
+	targetMachine := strings.TrimSpace(machineName)
+	if ownerEmail == "" || targetMachine == "" {
+		return nil
+	}
+
+	sessions := make([]session, 0)
+
+	m.mu.Lock()
+	for id, sess := range m.sessions {
+		if !strings.EqualFold(strings.TrimSpace(sess.userEmail), ownerEmail) || strings.TrimSpace(sess.machineName) != targetMachine {
+			continue
+		}
+		sessions = append(sessions, cloneSession(sess))
+		delete(m.sessions, id)
+		m.totalDisconnects++
+	}
+	m.mu.Unlock()
+
+	for _, sess := range sessions {
+		destroyCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		_ = m.destroyRemoteSession(destroyCtx, sess)
+		cancel()
+	}
+
+	return nil
+}
+
 func (m *Manager) GetGitStatus(ctx context.Context, userEmail, sessionID, cwd string) (GitRepoStatus, error) {
 	sess, err := m.loadSession(sessionID, userEmail)
 	if err != nil {

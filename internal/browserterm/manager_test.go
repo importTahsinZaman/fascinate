@@ -18,10 +18,11 @@ import (
 )
 
 type fakeMachineManager struct {
-	machine controlplane.Machine
-	err     error
-	owner   string
-	name    string
+	machine        controlplane.Machine
+	machinesByName map[string]controlplane.Machine
+	err            error
+	owner          string
+	name           string
 }
 
 func (f *fakeMachineManager) GetMachine(_ context.Context, name, ownerEmail string) (controlplane.Machine, error) {
@@ -29,6 +30,13 @@ func (f *fakeMachineManager) GetMachine(_ context.Context, name, ownerEmail stri
 	f.owner = ownerEmail
 	if f.err != nil {
 		return controlplane.Machine{}, f.err
+	}
+	if f.machinesByName != nil {
+		machine, ok := f.machinesByName[name]
+		if !ok {
+			return controlplane.Machine{}, errors.New("machine not found")
+		}
+		return machine, nil
 	}
 	return f.machine, nil
 }
@@ -151,6 +159,62 @@ func TestCloseSessionAllowsMissingSession(t *testing.T) {
 	}
 	if diag := manager.Diagnostics(); diag.ActiveSessions != 0 {
 		t.Fatalf("expected no active sessions, got %+v", diag)
+	}
+}
+
+func TestCloseMachineSessionsRemovesAllMatchingSessions(t *testing.T) {
+	t.Parallel()
+
+	machines := &fakeMachineManager{
+		machinesByName: map[string]controlplane.Machine{
+			"m-1": {
+				Name:   "m-1",
+				HostID: "local-host",
+				State:  "RUNNING",
+				Runtime: &machineruntime.Machine{
+					SSHHost: "127.0.0.1",
+					SSHPort: 2222,
+				},
+			},
+			"m-2": {
+				Name:   "m-2",
+				HostID: "local-host",
+				State:  "RUNNING",
+				Runtime: &machineruntime.Machine{
+					SSHHost: "127.0.0.1",
+					SSHPort: 2223,
+				},
+			},
+		},
+	}
+	manager := New(config.Config{HostID: "local-host", TerminalSessionTTL: 2 * time.Minute}, machines)
+	manager.sshClientBinary = "true"
+
+	if _, err := manager.CreateSession(context.Background(), "dev@example.com", "m-1", 120, 40); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.CreateSession(context.Background(), "dev@example.com", "m-1", 120, 40); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.CreateSession(context.Background(), "ops@example.com", "m-1", 120, 40); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.CreateSession(context.Background(), "dev@example.com", "m-2", 120, 40); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := manager.CloseMachineSessions(context.Background(), "dev@example.com", "m-1"); err != nil {
+		t.Fatal(err)
+	}
+
+	diag := manager.Diagnostics()
+	if diag.ActiveSessions != 2 {
+		t.Fatalf("expected 2 active sessions after machine cleanup, got %+v", diag)
+	}
+	for _, sess := range diag.Sessions {
+		if sess.UserEmail == "dev@example.com" && sess.MachineName == "m-1" {
+			t.Fatalf("expected matching machine sessions to be removed, got %+v", diag)
+		}
 	}
 }
 

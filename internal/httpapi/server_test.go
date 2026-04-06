@@ -152,6 +152,7 @@ func (f *fakeBrowserAuth) Logout(context.Context, string) error {
 type fakeTerminalManager struct {
 	userEmail        string
 	machineName      string
+	closedMachine    string
 	sessionID        string
 	cols             int
 	rows             int
@@ -188,6 +189,12 @@ func (f *fakeTerminalManager) ReattachSession(_ context.Context, userEmail, sess
 func (f *fakeTerminalManager) CloseSession(_ context.Context, userEmail, sessionID string) error {
 	f.userEmail = userEmail
 	f.sessionID = sessionID
+	return f.err
+}
+
+func (f *fakeTerminalManager) CloseMachineSessions(_ context.Context, userEmail, machineName string) error {
+	f.userEmail = userEmail
+	f.closedMachine = machineName
 	return f.err
 }
 
@@ -572,7 +579,8 @@ func TestDeleteMachineEndpointCallsManager(t *testing.T) {
 	t.Parallel()
 
 	manager := &fakeMachineManager{}
-	handler := newTestHandler(t, &fakeRuntime{}, manager)
+	terminals := &fakeTerminalManager{}
+	handler := newTestHandlerWithExtras(t, config.Config{BaseDomain: "fascinate.dev"}, &fakeRuntime{}, manager, nil, terminals, nil, nil)
 
 	req := httptest.NewRequest(http.MethodDelete, "/v1/machines/habits?owner_email=dev@example.com", nil)
 	rec := httptest.NewRecorder()
@@ -586,6 +594,9 @@ func TestDeleteMachineEndpointCallsManager(t *testing.T) {
 	}
 	if manager.deleteOwner != "dev@example.com" {
 		t.Fatalf("expected delete owner dev@example.com, got %q", manager.deleteOwner)
+	}
+	if terminals.userEmail != "dev@example.com" || terminals.closedMachine != "habits" {
+		t.Fatalf("expected matching machine sessions to be closed, got %+v", terminals)
 	}
 }
 

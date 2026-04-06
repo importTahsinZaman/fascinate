@@ -77,6 +77,7 @@ Current browser HTTP API:
 - `GET /v1/diagnostics/terminal-sessions`
 
 Deleted machine and snapshot names are released immediately, so the same name can be reused after `DELETE /v1/machines/{name}` or `DELETE /v1/snapshots/{name}` succeeds.
+Deleting a machine also closes any browser terminal sessions for that machine and removes their shell windows from the browser workspace.
 
 ## Repo Layout
 
