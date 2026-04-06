@@ -666,19 +666,12 @@ function CommandCenter() {
     return (
       <AppModal
         title="Environment variables"
-        description="Manage the user-defined variables Fascinate injects into every VM, alongside the built-in Fascinate machine vars available for interpolation."
+        description="Use ${NAME} references to compose values from built-in FASCINATE_* vars and your other saved entries."
         onClose={() => setModal(null)}
         wide
       >
         <div className="app-modal-body">
           <section className="app-modal-section">
-            <div className="app-modal-section-heading">
-              <h3>Saved env vars</h3>
-              <p>
-                Use <code>${"{NAME}"}</code> references to compose values from built-in <code>FASCINATE_*</code> vars
-                and your other saved entries.
-              </p>
-            </div>
             <label className="field">
               <span>Key</span>
               <input
@@ -717,10 +710,28 @@ function CommandCenter() {
 
           <section className="app-modal-section">
             <div className="app-modal-section-heading">
-              <h3>Built-in Fascinate vars</h3>
-              <p>These are injected automatically into every VM. Their values are filled in per machine when Fascinate creates, restores, or forks it.</p>
+              <h3>Fascinate Env Vars</h3>
             </div>
             <div className="sidebar-record-list">
+              {envList.map((entry) => (
+                <article key={entry.key} className="sidebar-record">
+                  <div>
+                    <div className="sidebar-record-heading">
+                      <strong>{entry.key}</strong>
+                      <span className="inline-chip">env</span>
+                    </div>
+                    <div className="muted">{entry.value}</div>
+                  </div>
+                  <div className="actions">
+                    <button type="button" onClick={() => setEnvForm({ key: entry.key, value: entry.value })}>
+                      Edit
+                    </button>
+                    <button className="danger" type="button" onClick={() => deleteEnvMutation.mutate(entry.key)}>
+                      Delete
+                    </button>
+                  </div>
+                </article>
+              ))}
               {builtinEnvList.map((entry) => (
                 <article key={entry.key} className="sidebar-record sidebar-record-static">
                   <div>
@@ -733,37 +744,6 @@ function CommandCenter() {
                 </article>
               ))}
             </div>
-          </section>
-
-          <section className="app-modal-section">
-            <div className="app-modal-section-heading">
-              <h3>Current saved vars</h3>
-            </div>
-            {envList.length === 0 ? (
-              <p className="muted">No saved env vars yet.</p>
-            ) : (
-              <div className="sidebar-record-list">
-                {envList.map((entry) => (
-                  <article key={entry.key} className="sidebar-record">
-                    <div>
-                      <div className="sidebar-record-heading">
-                        <strong>{entry.key}</strong>
-                        <span className="inline-chip">env</span>
-                      </div>
-                      <div className="muted">{entry.value}</div>
-                    </div>
-                    <div className="actions">
-                      <button type="button" onClick={() => setEnvForm({ key: entry.key, value: entry.value })}>
-                        Edit
-                      </button>
-                      <button className="danger" type="button" onClick={() => deleteEnvMutation.mutate(entry.key)}>
-                        Delete
-                      </button>
-                    </div>
-                  </article>
-                ))}
-              </div>
-            )}
             <StatusError mutationError={deleteEnvMutation.error} />
           </section>
         </div>
