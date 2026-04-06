@@ -265,9 +265,12 @@ describe("App", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Env vars" }));
     expect(await screen.findByRole("dialog", { name: "Environment variables" })).toBeTruthy();
+    expect(screen.getByText("Set env vars for every Fascinate VM. Use ${NAME} to reference.")).toBeTruthy();
     expect(screen.getByText("FRONTEND_URL")).toBeTruthy();
     expect(screen.getByText("FASCINATE_PUBLIC_URL")).toBeTruthy();
-    expect(screen.getByText("Public HTTPS URL for the current VM, routed to its primary port.")).toBeTruthy();
+    expect(screen.getByText("Public HTTPS URL for the current VM, routed to its primary port. Example:")).toBeTruthy();
+    expect(screen.getByText("https://tic-tac-toe.fascinate.dev")).toBeTruthy();
+    expect(screen.queryByText("env")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Close modal" }));
 
     fireEvent.click(screen.getByRole("button", { name: "Snapshots" }));

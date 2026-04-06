@@ -63,6 +63,16 @@ const emptyEnvVarCatalog: EnvVarCatalog = {
   builtinEnvVars: [],
 };
 
+const builtinEnvVarExampleByKey: Record<string, string> = {
+  FASCINATE_MACHINE_NAME: "tic-tac-toe",
+  FASCINATE_MACHINE_ID: "machine-1",
+  FASCINATE_PUBLIC_URL: "https://tic-tac-toe.fascinate.dev",
+  FASCINATE_PRIMARY_PORT: "3000",
+  FASCINATE_BASE_DOMAIN: "fascinate.dev",
+  FASCINATE_HOST_ID: "fascinate-01",
+  FASCINATE_HOST_REGION: "ca-east",
+};
+
 function upsertMachineList(current: Machine[] | undefined, machine: Machine) {
   if (!current) {
     return [machine];
@@ -368,6 +378,18 @@ function CommandCenter() {
   } | null>(null);
   const [draggingSidebarShellID, setDraggingSidebarShellID] = useState<string | null>(null);
 
+  const renderBuiltinEnvDescription = (key: string, description: string) => {
+    const example = builtinEnvVarExampleByKey[key];
+    if (!example) {
+      return description;
+    }
+    return (
+      <>
+        {description} Example: <code>{example}</code>
+      </>
+    );
+  };
+
   const openMachineShell = (machineName: string) => {
     const shellCount = windowsByMachine.get(machineName)?.length ?? 0;
     const nextShellNumber = shellCount + 1;
@@ -666,7 +688,7 @@ function CommandCenter() {
     return (
       <AppModal
         title="Environment variables"
-        description="Use ${NAME} references to compose values from built-in FASCINATE_* vars and your other saved entries."
+        description="Set env vars for every Fascinate VM. Use ${NAME} to reference."
         onClose={() => setModal(null)}
         wide
       >
@@ -718,7 +740,6 @@ function CommandCenter() {
                   <div>
                     <div className="sidebar-record-heading">
                       <strong>{entry.key}</strong>
-                      <span className="inline-chip">env</span>
                     </div>
                     <div className="muted">{entry.value}</div>
                   </div>
@@ -739,7 +760,7 @@ function CommandCenter() {
                       <strong>{entry.key}</strong>
                       <span className="inline-chip">built-in</span>
                     </div>
-                    <div className="muted">{entry.description}</div>
+                    <div className="muted">{renderBuiltinEnvDescription(entry.key, entry.description)}</div>
                   </div>
                 </article>
               ))}
