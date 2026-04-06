@@ -77,8 +77,8 @@ Current browser HTTP API:
 - `GET /v1/diagnostics/terminal-sessions`
 
 Deleted machine and snapshot names are released immediately, so the same name can be reused after `DELETE /v1/machines/{name}` or `DELETE /v1/snapshots/{name}` succeeds.
-Deleting a machine also closes any browser terminal sessions for that machine, removes their shell windows from the browser workspace immediately, and disables the machine card actions while the delete is in flight.
-Fresh machine creation now stays in a visible `creating` state until guest bootstrap is actually ready, and machine actions remain disabled until the VM reaches a usable `running` state.
+Deleting a machine also closes any browser terminal sessions for that machine, removes their shell windows from the browser workspace immediately, and collapses the machine card to a right-edge spinner while the delete is in flight.
+Fresh machine creation now stays pending until guest bootstrap is actually ready, and the machine card shows only a right-edge spinner until the VM reaches a usable `running` state.
 
 ## Repo Layout
 

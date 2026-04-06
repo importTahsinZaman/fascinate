@@ -333,14 +333,14 @@ describe("App", () => {
     fireEvent.click(screen.getByRole("button", { name: "Create machine" }));
 
     expect(await screen.findByText("fresh-box")).toBeTruthy();
-    expect(await screen.findByText("creating")).toBeTruthy();
+    expect(await screen.findByLabelText("Creating fresh-box")).toBeTruthy();
 
     const machineCard = screen.getByText("fresh-box").closest(".machine-card");
     expect(machineCard?.getAttribute("aria-busy")).toBe("true");
-    expect((screen.getByRole("button", { name: "New shell" }) as HTMLButtonElement).disabled).toBe(true);
-    expect((screen.getByRole("button", { name: "Fork fresh-box" }) as HTMLButtonElement).disabled).toBe(true);
-    expect((screen.getByRole("button", { name: "Snapshot fresh-box" }) as HTMLButtonElement).disabled).toBe(true);
-    expect((screen.getByRole("button", { name: "Delete fresh-box" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.queryByRole("button", { name: "New shell" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Fork fresh-box" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Snapshot fresh-box" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Delete fresh-box" })).toBeNull();
   });
 
   it("reveals a shell from the sidebar within the horizontal strip", async () => {
@@ -546,10 +546,11 @@ describe("App", () => {
     await waitFor(() => expect(useWorkspaceStore.getState().windows).toHaveLength(0));
 
     expect(screen.queryByTestId("terminal-m-1")).toBeNull();
-    expect((screen.getByRole("button", { name: "New shell" }) as HTMLButtonElement).disabled).toBe(true);
-    expect((screen.getByRole("button", { name: "Fork m-1" }) as HTMLButtonElement).disabled).toBe(true);
-    expect((screen.getByRole("button", { name: "Snapshot m-1" }) as HTMLButtonElement).disabled).toBe(true);
-    expect((screen.getByRole("button", { name: "Deleting m-1" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.queryByRole("button", { name: "New shell" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Fork m-1" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Snapshot m-1" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Delete m-1" })).toBeNull();
+    expect(screen.getByLabelText("Deleting m-1")).toBeTruthy();
     expect(
       fetchMock.mock.calls.filter(([path]) => String(path).startsWith("/v1/terminal/sessions/")),
     ).toHaveLength(0);

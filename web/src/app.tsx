@@ -825,13 +825,13 @@ function CommandCenter() {
                 const isCreatingMachine = normalizedMachineState === "creating";
                 const isRunningMachine = normalizedMachineState === "running" || normalizedMachineState === "ready";
                 const isDeletingMachine = deletingMachineNameSet.has(machine.name);
+                const isPendingMachine = isCreatingMachine || isDeletingMachine;
                 const disableMachineShellActions = !isRunningMachine || isDeletingMachine;
-                const disableMachineDelete = isCreatingMachine || isDeletingMachine;
                 return (
                   <article
                     key={machine.id}
                     className="machine-card"
-                    aria-busy={isCreatingMachine || isDeletingMachine}
+                    aria-busy={isPendingMachine}
                     style={machineColorStyles[machine.name] ?? getMachineColorStyle(machine.name)}
                   >
                     <div className="machine-card-header">
@@ -839,56 +839,59 @@ function CommandCenter() {
                         <span className="machine-color-dot" aria-hidden="true" />
                         <div className="machine-card-title-meta">
                           <strong>{machine.name}</strong>
-                          <div className="machine-card-title-status">
-                            <StateBadge state={machine.state} />
-                            {isCreatingMachine ? <span className="basic-spinner machine-card-state-spinner" aria-hidden="true" /> : null}
-                          </div>
                         </div>
                       </div>
                       <div className="actions machine-card-actions">
-                        <button type="button" onClick={() => openMachineShell(machine.name)} disabled={disableMachineShellActions}>
-                          New shell
-                        </button>
-                        <button
-                          className="icon-action-button"
-                          type="button"
-                          aria-label={`Fork ${machine.name}`}
-                          title={`Fork ${machine.name}`}
-                          disabled={disableMachineShellActions}
-                          onClick={() => {
-                            setForkTarget(`${machine.name}-copy`);
-                            setModal({ type: "fork-machine", machine });
-                          }}
-                        >
-                          <GitFork className="icon-svg" weight="regular" />
-                        </button>
-                        <button
-                          className="icon-action-button"
-                          type="button"
-                          aria-label={`Snapshot ${machine.name}`}
-                          title={`Snapshot ${machine.name}`}
-                          disabled={disableMachineShellActions}
-                          onClick={() => {
-                            setSnapshotName(`${machine.name}-snapshot`);
-                            setModal({ type: "snapshot-machine", machine });
-                          }}
-                        >
-                          <Camera className="icon-svg" weight="regular" />
-                        </button>
-                        <button
-                          className="icon-action-button danger"
-                          type="button"
-                          aria-label={isDeletingMachine ? `Deleting ${machine.name}` : `Delete ${machine.name}`}
-                          title={isDeletingMachine ? `Deleting ${machine.name}` : `Delete ${machine.name}`}
-                          disabled={disableMachineDelete}
-                          onClick={() => deleteMachineMutation.mutate(machine.name)}
-                        >
-                          {isDeletingMachine ? (
+                        {isPendingMachine ? (
+                          <span
+                            className="machine-card-pending-indicator"
+                            role="status"
+                            aria-label={isDeletingMachine ? `Deleting ${machine.name}` : `Creating ${machine.name}`}
+                          >
                             <span className="basic-spinner" aria-hidden="true" />
-                          ) : (
-                            <Trash className="icon-svg" weight="regular" />
-                          )}
-                        </button>
+                          </span>
+                        ) : (
+                          <>
+                            <button type="button" onClick={() => openMachineShell(machine.name)} disabled={disableMachineShellActions}>
+                              New shell
+                            </button>
+                            <button
+                              className="icon-action-button"
+                              type="button"
+                              aria-label={`Fork ${machine.name}`}
+                              title={`Fork ${machine.name}`}
+                              disabled={disableMachineShellActions}
+                              onClick={() => {
+                                setForkTarget(`${machine.name}-copy`);
+                                setModal({ type: "fork-machine", machine });
+                              }}
+                            >
+                              <GitFork className="icon-svg" weight="regular" />
+                            </button>
+                            <button
+                              className="icon-action-button"
+                              type="button"
+                              aria-label={`Snapshot ${machine.name}`}
+                              title={`Snapshot ${machine.name}`}
+                              disabled={disableMachineShellActions}
+                              onClick={() => {
+                                setSnapshotName(`${machine.name}-snapshot`);
+                                setModal({ type: "snapshot-machine", machine });
+                              }}
+                            >
+                              <Camera className="icon-svg" weight="regular" />
+                            </button>
+                            <button
+                              className="icon-action-button danger"
+                              type="button"
+                              aria-label={`Delete ${machine.name}`}
+                              title={`Delete ${machine.name}`}
+                              onClick={() => deleteMachineMutation.mutate(machine.name)}
+                            >
+                              <Trash className="icon-svg" weight="regular" />
+                            </button>
+                          </>
+                        )}
                       </div>
                     </div>
                   </article>

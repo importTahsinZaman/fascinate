@@ -572,13 +572,6 @@ a {
   gap: var(--space-1);
 }
 
-.machine-card-title-status {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  flex-wrap: wrap;
-}
-
 .machine-card strong,
 .sidebar-record strong {
   display: block;
@@ -622,6 +615,16 @@ a {
   min-height: 30px;
   padding-inline: 11px;
   border-radius: var(--radius-sm);
+}
+
+.machine-card-pending-indicator {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  min-height: 28px;
+  height: 28px;
+  color: var(--text-secondary);
 }
 
 .machine-card-shells {
@@ -793,10 +796,6 @@ a {
   border-right-color: transparent;
   border-radius: 999px;
   animation: git-diff-sidebar-action-spin 0.72s linear infinite;
-}
-
-.machine-card-state-spinner {
-  color: var(--text-secondary);
 }
 
 .control-sidebar-footer {
