@@ -33,9 +33,9 @@
   --bg-active: #2d2d2d;
   --bg-tint: rgba(255, 255, 255, 0.06);
 
-  --border-subtle: rgba(255, 255, 255, 0.08);
-  --border-medium: rgba(255, 255, 255, 0.12);
-  --border-strong: rgba(255, 255, 255, 0.18);
+  --border-subtle: #ffffff14;
+  --border-medium: #ffffff1f;
+  --border-strong: #ffffff2e;
 
   --text-primary: #f3f1eb;
   --text-secondary: #b5b1a8;
@@ -68,7 +68,7 @@
   --space-8: 32px;
 
   --shadow-overlay: 0 20px 48px rgba(0, 0, 0, 0.42);
-  --focus-ring: 0 0 0 1px rgba(25, 227, 125, 0.45), 0 0 0 3px rgba(25, 227, 125, 0.14);
+  --focus-ring: 0 0 0 1px #3b82f680, 0 0 0 3px rgba(59, 130, 246, 0.14);
 
   background: var(--bg-page);
   color: var(--text-primary);
@@ -415,7 +415,7 @@ a {
   min-height: 120px;
   padding: var(--space-4);
   border-radius: var(--radius-md);
-  border: 1px dashed var(--border-subtle);
+  border: 1px solid var(--border-subtle);
   background: rgba(255, 255, 255, 0.015);
 }
 
@@ -447,7 +447,7 @@ a {
 }
 
 .sidebar-shell-row[data-active="true"] {
-  border-color: rgba(255, 255, 255, 0.12);
+  border-color: var(--border-medium);
   background: rgba(255, 255, 255, 0.03);
 }
 
@@ -1302,7 +1302,7 @@ a {
   z-index: 120;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
-  border-left: 1px solid rgba(255, 255, 255, 0.05);
+  border-left: 1px solid var(--border-subtle);
   border-radius: 0;
   background: #141414;
   box-shadow: -36px 0 88px rgba(0, 0, 0, 0.5);
@@ -1317,7 +1317,7 @@ a {
   gap: var(--space-5);
   align-items: start;
   padding: 16px 18px 14px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  border-bottom: 1px solid var(--border-subtle);
   background: #141414;
   backdrop-filter: blur(12px);
 }
@@ -1366,7 +1366,7 @@ a {
   min-height: 20px;
   width: fit-content;
   padding: 0 8px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--border-subtle);
   border-radius: 999px;
   background: #1f1f1f;
   color: var(--text-primary);
@@ -1405,7 +1405,7 @@ a {
   width: 28px;
   min-width: 28px;
   padding: 0;
-  border: 1px solid rgba(255, 255, 255, 0.07);
+  border: 1px solid var(--border-subtle);
   border-radius: 8px;
   background: rgba(255, 255, 255, 0.035);
   color: var(--text-secondary);
@@ -1413,7 +1413,7 @@ a {
 }
 
 .git-diff-sidebar-action:hover:not(:disabled) {
-  border-color: rgba(255, 255, 255, 0.1);
+  border-color: var(--border-subtle);
   background: rgba(255, 255, 255, 0.06);
   color: var(--text-primary);
 }
@@ -1469,7 +1469,7 @@ a {
 }
 
 .git-diff-file-body {
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--border-subtle);
   border-top: 0;
   border-radius: 0 0 8px 8px;
   background: #1f1f1f;
@@ -1498,7 +1498,7 @@ a {
   gap: 8px;
   padding: 14px 16px;
   border-radius: 8px;
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--border-subtle);
   background: rgba(255, 255, 255, 0.03);
 }
 
@@ -1523,7 +1523,7 @@ a {
   gap: 14px;
   align-items: start;
   padding: 18px;
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--border-subtle);
   border-radius: 14px;
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.022));
   box-shadow:
@@ -1537,7 +1537,7 @@ a {
   justify-content: center;
   width: 36px;
   height: 36px;
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--border-subtle);
   border-radius: 11px;
   background: rgba(255, 255, 255, 0.04);
   color: rgba(243, 241, 235, 0.72);
@@ -1598,8 +1598,7 @@ a {
   align-items: center;
   min-height: 40px;
   padding: 4px 8px 4px 10px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--border-subtle);
   border-radius: 8px 8px 0 0;
   background: #1f1f1f;
   backdrop-filter: blur(8px);
@@ -1608,7 +1607,7 @@ a {
 
 .git-diff-file-header-collapsed {
   border-radius: 8px;
-  border-bottom-color: rgba(255, 255, 255, 0.06);
+  border-bottom-color: var(--border-subtle);
 }
 
 .git-diff-file-header-main {
@@ -1794,7 +1793,7 @@ a {
   color: rgba(255, 255, 255, 0.3);
   text-align: right;
   user-select: none;
-  border-right: 1px solid rgba(255, 255, 255, 0.04);
+  border-right: 1px solid var(--border-subtle);
   background: #1f1f1f;
 }
 
@@ -1994,7 +1993,7 @@ a {
   max-width: min(320px, calc(100% - 36px));
   padding: 10px 12px;
   border-radius: 10px;
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  border: 1px solid var(--border-medium);
   background: rgba(24, 24, 24, 0.94);
   color: var(--text-primary);
   box-shadow: 0 16px 32px rgba(0, 0, 0, 0.34);
@@ -2038,7 +2037,7 @@ a {
 }
 
 .terminal-overlay[data-state="connecting"] .terminal-overlay-card {
-  border-color: rgba(255, 255, 255, 0.12);
+  border-color: var(--border-medium);
 }
 
 .terminal-overlay[data-state="closed"] .terminal-overlay-card {
@@ -2107,7 +2106,7 @@ a {
   .git-diff-sidebar {
     inset: 10px;
     width: auto;
-    border: 1px solid rgba(255, 255, 255, 0.08);
+    border: 1px solid var(--border-subtle);
     border-radius: 16px;
   }
 
