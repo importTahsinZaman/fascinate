@@ -1087,7 +1087,7 @@ func (s *Service) ReconcileRuntimeState(ctx context.Context) error {
 			}
 		}
 
-		if !strings.EqualFold(record.State, liveMachine.State) {
+		if shouldAdoptRuntimeState(record.State, liveMachine.State) {
 			if err := s.store.UpdateMachineState(ctx, record.ID, liveMachine.State); err != nil && !errors.Is(err, database.ErrNotFound) {
 				return err
 			}

@@ -1062,6 +1062,51 @@ func TestServiceReconcileRuntimeStateQueuesCreatingMachines(t *testing.T) {
 	}
 }
 
+func TestServiceReconcileRuntimeStateDoesNotPromoteCreatingFromRuntimeLiveness(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, runtime := newTestServiceDeps(t, ctx)
+
+	user, err := store.UpsertUser(ctx, "dev@example.com", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := store.CreateMachine(ctx, database.CreateMachineParams{
+		ID:          "machine-creating",
+		Name:        "habits",
+		OwnerUserID: user.ID,
+		RuntimeName: "habits",
+		State:       machineStateCreating,
+		PrimaryPort: 3000,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	runtime.machines["habits"] = machineruntime.Machine{
+		Name:   "habits",
+		Type:   "vm",
+		State:  machineStateRunning,
+		CPU:    "1",
+		Memory: "2GiB",
+		Disk:   "20GiB",
+	}
+
+	service := newTestService(store, runtime)
+	if err := service.ReconcileRuntimeState(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	record, err := store.GetMachineByName(ctx, "habits")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.State != machineStateCreating {
+		t.Fatalf("expected machine state %s after reconcile, got %q", machineStateCreating, record.State)
+	}
+}
+
 func TestServiceReconcileRuntimeStateRestartsStoppedMachines(t *testing.T) {
 	t.Parallel()
 
