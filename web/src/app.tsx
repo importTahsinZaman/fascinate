@@ -10,7 +10,7 @@ import {
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from "react";
-import { ArrowClockwise, Camera, Eye, EyeSlash, GitFork, Trash, WarningCircle, X } from "@phosphor-icons/react";
+import { ArrowClockwise, ArrowUpRight, Camera, Eye, EyeSlash, GitFork, Trash, WarningCircle, X } from "@phosphor-icons/react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   forkMachine,
@@ -1150,10 +1150,13 @@ function CommandCenter() {
                         href={machinePublicURL}
                         target="_blank"
                         rel="noreferrer"
-                        aria-label={`Open app for ${machine.name}`}
+                        aria-label={`Open app for ${machine.name} on port ${machine.primary_port}`}
                         title={machinePublicURL}
                       >
-                        <span className="sidebar-text-button-label">Open app</span>
+                        <span className="sidebar-text-button-label">
+                          <span>{`Port ${machine.primary_port}`}</span>
+                          <ArrowUpRight className="icon-svg" weight="regular" />
+                        </span>
                       </a>
                       {isRunningMachine && !isPendingMachine ? (
                         <button
@@ -1567,7 +1570,6 @@ function WindowFrame({
       <header
         className="window-header"
         data-dragging={isDragging ? "true" : "false"}
-        data-leading-window={isLeadingWindow ? "true" : "false"}
         onPointerDown={onHeaderPointerDown}
         onPointerMove={onHeaderPointerMove}
         onPointerUp={onHeaderPointerUp}

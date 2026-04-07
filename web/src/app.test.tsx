@@ -267,9 +267,10 @@ describe("App", () => {
     expect(screen.getByRole("button", { name: "Env vars" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Snapshots" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Sign out" })).toBeTruthy();
-    expect((screen.getByRole("link", { name: "Open app for m-1" }) as HTMLAnchorElement).href).toBe(
+    expect((screen.getByRole("link", { name: "Open app for m-1 on port 3000" }) as HTMLAnchorElement).href).toBe(
       "https://m-1.fascinate.dev/",
     );
+    expect(screen.getByText("Port 3000")).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "New machine" }));
     expect(await screen.findByRole("dialog", { name: "Create machine" })).toBeTruthy();
@@ -411,7 +412,7 @@ describe("App", () => {
     expect(await screen.findByRole("button", { name: "Delete m-1" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Start" })).toBeNull();
     expect(screen.getByRole("button", { name: "Delete m-1" })).toBeTruthy();
-    expect((screen.getByRole("link", { name: "Open app for m-1" }) as HTMLAnchorElement).href).toBe(
+    expect((screen.getByRole("link", { name: "Open app for m-1 on port 3000" }) as HTMLAnchorElement).href).toBe(
       "https://m-1.fascinate.dev/",
     );
     expect(screen.queryByRole("button", { name: "New shell" })).toBeNull();

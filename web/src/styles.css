@@ -83,9 +83,6 @@
   --accent-primary-hover: #3ea4f0;
   --accent-primary-pressed: #318fd8;
   --accent-soft: rgba(255, 255, 255, 0.08);
-  --brandmark-text: rgba(243, 241, 235, 0.94);
-  --workspace-brand-width: 132px;
-  --workspace-brand-offset: calc(var(--workspace-brand-width) + 12px);
 
   --radius-sm: 6px;
   --radius-md: 8px;
@@ -746,13 +743,9 @@ a {
 
 .machine-card-footer {
   display: flex;
-  justify-content: space-between;
+  justify-content: flex-end;
   gap: var(--space-2);
   padding: 0 0 10px;
-}
-
-.sidebar-machines-section .button-primary {
-  color: var(--brandmark-text);
 }
 
 .sidebar-text-button {
@@ -1250,27 +1243,18 @@ a {
 }
 
 .window-header-brand {
-  position: fixed;
-  top: 0;
-  left: 0;
-  z-index: 80;
   display: inline-flex;
   align-items: center;
-  width: var(--workspace-brand-width);
-  min-width: var(--workspace-brand-width);
-  min-height: 42px;
+  min-width: 132px;
   padding: 0 16px 0 18px;
-  background: #49b0ff;
   border-right: 1px solid var(--border-medium);
-  border-bottom: 1px solid var(--border-medium);
-  color: var(--brandmark-text);
+  color: rgba(243, 241, 235, 0.94);
   font-size: 18px;
   line-height: 24px;
   letter-spacing: -0.025em;
   font-weight: 700;
   white-space: nowrap;
   flex: none;
-  pointer-events: none;
 }
 
 .window-header-main {
@@ -1281,10 +1265,6 @@ a {
   min-width: 0;
   flex: 1 1 auto;
   padding: 4px 12px;
-}
-
-.window-header[data-leading-window="true"] .window-header-main {
-  padding-left: var(--workspace-brand-offset);
 }
 
 .window-header-title {
@@ -2285,7 +2265,6 @@ a {
   }
 
   .window-header-brand {
-    width: 112px;
     min-width: 112px;
     padding: 0 12px 0 14px;
     font-size: 16px;
@@ -2295,10 +2274,6 @@ a {
   .window-header-main {
     gap: var(--space-3);
     padding: 4px 10px;
-  }
-
-  .window-header[data-leading-window="true"] .window-header-main {
-    padding-left: 122px;
   }
 
   .control-sidebar {
