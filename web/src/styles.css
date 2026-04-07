@@ -437,7 +437,7 @@ a {
 .sidebar-shell-list {
   display: grid;
   align-content: start;
-  gap: var(--space-2);
+  gap: 0;
   min-height: 0;
   overflow: auto;
   padding-right: 2px;
@@ -471,25 +471,29 @@ a {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
   align-items: stretch;
-  min-height: 36px;
-  border-radius: var(--radius-md);
-  border: 1px solid var(--border-subtle);
-  background: rgba(255, 255, 255, 0.015);
+  min-height: 32px;
+  border-radius: 0;
+  border: 0;
+  border-bottom: 1px solid var(--border-subtle);
+  background: #141414;
   overflow: hidden;
 }
 
-.sidebar-shell-row + .sidebar-shell-row {
-  margin-top: 0;
+.sidebar-shell-row:first-child {
+  border-top: 0;
+}
+
+.sidebar-shell-row:last-child {
+  border-bottom: 0;
 }
 
 .sidebar-shell-row[data-active="true"] {
-  border-color: var(--border-medium);
   background: rgba(255, 255, 255, 0.03);
 }
 
 .sidebar-shell-close {
-  width: 36px;
-  min-height: 34px;
+  width: 32px;
+  min-height: 32px;
   padding: 0;
   border: 0;
   border-right: 1px solid var(--border-subtle);
@@ -510,8 +514,8 @@ a {
   justify-content: space-between;
   gap: var(--space-3);
   width: 100%;
-  min-height: 34px;
-  padding: 0 var(--space-4);
+  min-height: 32px;
+  padding: 0 9px;
   border: 0;
   border-radius: 0;
   background: transparent;
@@ -726,17 +730,35 @@ a {
 }
 
 .machine-card-shell-button {
-  padding: 0;
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 28px;
+  height: 28px;
+  padding: 0 10px;
   border: 0;
+  border-radius: 6px;
   background: transparent;
-  color: #18e37d;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 18px;
+  font-weight: 500;
+  white-space: nowrap;
 }
 
 .machine-card-shell-button:hover,
 .machine-card-shell-button:active {
   border-color: transparent;
-  background: transparent;
-  color: #18e37d;
+  background: var(--bg-tint);
+  color: var(--text-secondary);
+}
+
+.machine-card-shell-button-label {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 6px;
 }
 
 .machine-card-shells {

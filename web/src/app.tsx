@@ -1045,7 +1045,7 @@ function CommandCenter() {
                           type="button"
                           onClick={() => openMachineShell(machine.name)}
                         >
-                          New shell
+                          <span className="machine-card-shell-button-label">New shell</span>
                         </button>
                       </div>
                     ) : null}
