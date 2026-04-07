@@ -118,6 +118,18 @@ func (r Runner) runDiagnostics(ctx context.Context, args []string) error {
 }
 
 func (r Runner) runExec(ctx context.Context, args []string) error {
+	argsBeforeCommand, commandArgs := splitArgsOnDoubleDash(args)
+	normalizedArgs, err := reorderKnownFlags(argsBeforeCommand, map[string]bool{
+		"json":  true,
+		"jsonl": true,
+	}, map[string]bool{
+		"base-url": true,
+		"cwd":      true,
+		"timeout":  true,
+	})
+	if err != nil {
+		return err
+	}
 	flags := flag.NewFlagSet("exec", flag.ContinueOnError)
 	flags.SetOutput(r.Stderr)
 	baseURL := flags.String("base-url", "", "Fascinate API base URL")
@@ -125,13 +137,13 @@ func (r Runner) runExec(ctx context.Context, args []string) error {
 	timeoutText := flags.String("timeout", "", "maximum runtime (for example 30s or 120)")
 	jsonOutput := flags.Bool("json", false, "print the final structured result as JSON")
 	jsonLines := flags.Bool("jsonl", false, "stream execution events as JSON lines")
-	if err := flags.Parse(args); err != nil {
+	if err := flags.Parse(normalizedArgs); err != nil {
 		return err
 	}
 	if *jsonOutput && *jsonLines {
 		return fmt.Errorf("--json and --jsonl cannot be combined")
 	}
-	if flags.NArg() < 2 {
+	if flags.NArg() < 1 {
 		return fmt.Errorf("usage: fascinate exec [--cwd <path>] [--timeout <duration>] [--json|--jsonl] <machine> -- <command...>")
 	}
 	timeout, err := parseTimeout(strings.TrimSpace(*timeoutText))
@@ -144,7 +156,15 @@ func (r Runner) runExec(ctx context.Context, args []string) error {
 		return err
 	}
 	machineName := flags.Arg(0)
-	commandText := strings.TrimSpace(strings.Join(flags.Args()[1:], " "))
+	commandText := strings.TrimSpace(strings.Join(commandArgs, " "))
+	if len(commandArgs) == 0 {
+		if flags.NArg() < 2 {
+			return fmt.Errorf("usage: fascinate exec [--cwd <path>] [--timeout <duration>] [--json|--jsonl] <machine> -- <command...>")
+		}
+		commandText = strings.TrimSpace(strings.Join(flags.Args()[1:], " "))
+	} else if flags.NArg() != 1 {
+		return fmt.Errorf("usage: fascinate exec [--cwd <path>] [--timeout <duration>] [--json|--jsonl] <machine> -- <command...>")
+	}
 	if commandText == "" {
 		return fmt.Errorf("command is required")
 	}
@@ -197,7 +217,7 @@ func (r Runner) runMachineList(ctx context.Context, args []string) error {
 		return err
 	}
 	if *jsonOutput {
-		return writeJSON(r.Stdout, machines)
+		return writeJSON(r.Stdout, map[string]any{"machines": machines})
 	}
 	for _, machine := range machines {
 		if _, err := fmt.Fprintf(r.Stdout, "%s\t%s\t%s\t%s\n", machine.Name, machine.State, machine.HostID, machine.URL); err != nil {
@@ -242,12 +262,21 @@ func (r Runner) runMachineGet(ctx context.Context, args []string) error {
 }
 
 func (r Runner) runMachineCreate(ctx context.Context, args []string) error {
+	normalizedArgs, err := reorderKnownFlags(args, map[string]bool{
+		"json": true,
+	}, map[string]bool{
+		"base-url": true,
+		"snapshot": true,
+	})
+	if err != nil {
+		return err
+	}
 	flags := flag.NewFlagSet("machine create", flag.ContinueOnError)
 	flags.SetOutput(r.Stderr)
 	baseURL := flags.String("base-url", "", "Fascinate API base URL")
 	snapshot := flags.String("snapshot", "", "restore from a snapshot")
 	jsonOutput := flags.Bool("json", false, "print JSON to stdout")
-	if err := flags.Parse(args); err != nil {
+	if err := flags.Parse(normalizedArgs); err != nil {
 		return err
 	}
 	if flags.NArg() != 1 {
@@ -269,11 +298,19 @@ func (r Runner) runMachineCreate(ctx context.Context, args []string) error {
 }
 
 func (r Runner) runMachineFork(ctx context.Context, args []string) error {
+	normalizedArgs, err := reorderKnownFlags(args, map[string]bool{
+		"json": true,
+	}, map[string]bool{
+		"base-url": true,
+	})
+	if err != nil {
+		return err
+	}
 	flags := flag.NewFlagSet("machine fork", flag.ContinueOnError)
 	flags.SetOutput(r.Stderr)
 	baseURL := flags.String("base-url", "", "Fascinate API base URL")
 	jsonOutput := flags.Bool("json", false, "print JSON to stdout")
-	if err := flags.Parse(args); err != nil {
+	if err := flags.Parse(normalizedArgs); err != nil {
 		return err
 	}
 	if flags.NArg() != 2 {
@@ -295,11 +332,19 @@ func (r Runner) runMachineFork(ctx context.Context, args []string) error {
 }
 
 func (r Runner) runMachineDelete(ctx context.Context, args []string) error {
+	normalizedArgs, err := reorderKnownFlags(args, map[string]bool{
+		"yes": true,
+	}, map[string]bool{
+		"base-url": true,
+	})
+	if err != nil {
+		return err
+	}
 	flags := flag.NewFlagSet("machine delete", flag.ContinueOnError)
 	flags.SetOutput(r.Stderr)
 	baseURL := flags.String("base-url", "", "Fascinate API base URL")
 	yes := flags.Bool("yes", false, "skip the confirmation prompt")
-	if err := flags.Parse(args); err != nil {
+	if err := flags.Parse(normalizedArgs); err != nil {
 		return err
 	}
 	if flags.NArg() != 1 {
@@ -320,11 +365,19 @@ func (r Runner) runMachineDelete(ctx context.Context, args []string) error {
 }
 
 func (r Runner) runMachineEnv(ctx context.Context, args []string) error {
+	normalizedArgs, err := reorderKnownFlags(args, map[string]bool{
+		"json": true,
+	}, map[string]bool{
+		"base-url": true,
+	})
+	if err != nil {
+		return err
+	}
 	flags := flag.NewFlagSet("machine env", flag.ContinueOnError)
 	flags.SetOutput(r.Stderr)
 	baseURL := flags.String("base-url", "", "Fascinate API base URL")
 	jsonOutput := flags.Bool("json", false, "print JSON to stdout")
-	if err := flags.Parse(args); err != nil {
+	if err := flags.Parse(normalizedArgs); err != nil {
 		return err
 	}
 	if flags.NArg() != 1 {
@@ -366,7 +419,7 @@ func (r Runner) runSnapshotList(ctx context.Context, args []string) error {
 		return err
 	}
 	if *jsonOutput {
-		return writeJSON(r.Stdout, snapshots)
+		return writeJSON(r.Stdout, map[string]any{"snapshots": snapshots})
 	}
 	for _, snapshot := range snapshots {
 		if _, err := fmt.Fprintf(r.Stdout, "%s\t%s\t%s\n", snapshot.Name, snapshot.State, snapshot.SourceMachineName); err != nil {
@@ -377,11 +430,19 @@ func (r Runner) runSnapshotList(ctx context.Context, args []string) error {
 }
 
 func (r Runner) runSnapshotCreate(ctx context.Context, args []string) error {
+	normalizedArgs, err := reorderKnownFlags(args, map[string]bool{
+		"json": true,
+	}, map[string]bool{
+		"base-url": true,
+	})
+	if err != nil {
+		return err
+	}
 	flags := flag.NewFlagSet("snapshot create", flag.ContinueOnError)
 	flags.SetOutput(r.Stderr)
 	baseURL := flags.String("base-url", "", "Fascinate API base URL")
 	jsonOutput := flags.Bool("json", false, "print JSON to stdout")
-	if err := flags.Parse(args); err != nil {
+	if err := flags.Parse(normalizedArgs); err != nil {
 		return err
 	}
 	if flags.NArg() != 2 {
@@ -403,11 +464,19 @@ func (r Runner) runSnapshotCreate(ctx context.Context, args []string) error {
 }
 
 func (r Runner) runSnapshotRestore(ctx context.Context, args []string) error {
+	normalizedArgs, err := reorderKnownFlags(args, map[string]bool{
+		"json": true,
+	}, map[string]bool{
+		"base-url": true,
+	})
+	if err != nil {
+		return err
+	}
 	flags := flag.NewFlagSet("snapshot restore", flag.ContinueOnError)
 	flags.SetOutput(r.Stderr)
 	baseURL := flags.String("base-url", "", "Fascinate API base URL")
 	jsonOutput := flags.Bool("json", false, "print JSON to stdout")
-	if err := flags.Parse(args); err != nil {
+	if err := flags.Parse(normalizedArgs); err != nil {
 		return err
 	}
 	if flags.NArg() != 2 {
@@ -429,11 +498,19 @@ func (r Runner) runSnapshotRestore(ctx context.Context, args []string) error {
 }
 
 func (r Runner) runSnapshotDelete(ctx context.Context, args []string) error {
+	normalizedArgs, err := reorderKnownFlags(args, map[string]bool{
+		"yes": true,
+	}, map[string]bool{
+		"base-url": true,
+	})
+	if err != nil {
+		return err
+	}
 	flags := flag.NewFlagSet("snapshot delete", flag.ContinueOnError)
 	flags.SetOutput(r.Stderr)
 	baseURL := flags.String("base-url", "", "Fascinate API base URL")
 	yes := flags.Bool("yes", false, "skip the confirmation prompt")
-	if err := flags.Parse(args); err != nil {
+	if err := flags.Parse(normalizedArgs); err != nil {
 		return err
 	}
 	if flags.NArg() != 1 {
@@ -582,7 +659,7 @@ func (r Runner) runDiagnosticsHosts(ctx context.Context, args []string) error {
 		return err
 	}
 	if *jsonOutput {
-		return writeJSON(r.Stdout, hosts)
+		return writeJSON(r.Stdout, map[string]any{"hosts": hosts})
 	}
 	for _, host := range hosts {
 		if _, err := fmt.Fprintf(r.Stdout, "%s\t%s\t%s\t%d machines\n", host.ID, host.Status, host.Region, host.MachineCount); err != nil {
@@ -639,15 +716,23 @@ func (r Runner) runDiagnosticsToolAuth(ctx context.Context, args []string) error
 }
 
 func (r Runner) runDiagnosticsMachine(ctx context.Context, args []string) error {
+	normalizedArgs, err := reorderKnownFlags(args, map[string]bool{
+		"json": true,
+	}, map[string]bool{
+		"base-url": true,
+	})
+	if err != nil {
+		return err
+	}
 	flags := flag.NewFlagSet("diagnostics machine", flag.ContinueOnError)
 	flags.SetOutput(r.Stderr)
 	baseURL := flags.String("base-url", "", "Fascinate API base URL")
 	jsonOutput := flags.Bool("json", false, "print JSON to stdout")
-	if err := flags.Parse(args); err != nil {
+	if err := flags.Parse(normalizedArgs); err != nil {
 		return err
 	}
 	if flags.NArg() != 1 {
-		return fmt.Errorf("usage: fascinate diagnostics machine <name>")
+		return fmt.Errorf("usage: fascinate diagnostics machine [--base-url <url>] [--json] <name>")
 	}
 	client, err := r.authedClient(*baseURL)
 	if err != nil {
@@ -665,15 +750,23 @@ func (r Runner) runDiagnosticsMachine(ctx context.Context, args []string) error 
 }
 
 func (r Runner) runDiagnosticsSnapshot(ctx context.Context, args []string) error {
+	normalizedArgs, err := reorderKnownFlags(args, map[string]bool{
+		"json": true,
+	}, map[string]bool{
+		"base-url": true,
+	})
+	if err != nil {
+		return err
+	}
 	flags := flag.NewFlagSet("diagnostics snapshot", flag.ContinueOnError)
 	flags.SetOutput(r.Stderr)
 	baseURL := flags.String("base-url", "", "Fascinate API base URL")
 	jsonOutput := flags.Bool("json", false, "print JSON to stdout")
-	if err := flags.Parse(args); err != nil {
+	if err := flags.Parse(normalizedArgs); err != nil {
 		return err
 	}
 	if flags.NArg() != 1 {
-		return fmt.Errorf("usage: fascinate diagnostics snapshot <name>")
+		return fmt.Errorf("usage: fascinate diagnostics snapshot [--base-url <url>] [--json] <name>")
 	}
 	client, err := r.authedClient(*baseURL)
 	if err != nil {

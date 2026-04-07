@@ -188,6 +188,7 @@ fascinate diagnostics execs --json
 The CLI is optimized for automation:
 - `--json` prints only structured JSON to stdout
 - `--jsonl` streams ordered exec events to stdout for agents
+- collection-style `--json` commands use named top-level keys like `machines`, `snapshots`, `shells`, `lines`, `hosts`, and `events`
 - human prompts stay off stdout and destructive commands require `--yes` when stdin/stdout are not interactive
 - `fascinate help --json [topic]` returns machine-readable onboarding and command reference data
 

@@ -127,7 +127,39 @@ func TestShellListJSON(t *testing.T) {
 	if err := runner.Run(context.Background(), []string{"shell", "list", "--json"}); err != nil {
 		t.Fatal(err)
 	}
+	if !strings.Contains(stdout.String(), `"shells": [`) {
+		t.Fatalf("expected wrapped shells output, got %q", stdout.String())
+	}
 	if !strings.Contains(stdout.String(), `"id": "shell-1"`) {
+		t.Fatalf("unexpected stdout %q", stdout.String())
+	}
+}
+
+func TestShellLinesAcceptsTrailingJSONFlag(t *testing.T) {
+	t.Setenv(envCLIConfigPath, t.TempDir()+"/config.json")
+	t.Setenv(envToken, "test-token")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/shells/shell-1/lines" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"lines": []string{"hello", "world"},
+		})
+	}))
+	defer server.Close()
+
+	t.Setenv(envBaseURL, server.URL)
+	stdout := &bytes.Buffer{}
+	runner := Runner{
+		Stdin:  bytes.NewBuffer(nil),
+		Stdout: stdout,
+		Stderr: &bytes.Buffer{},
+	}
+	if err := runner.Run(context.Background(), []string{"shell", "lines", "shell-1", "--json"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stdout.String(), `"lines": [`) || !strings.Contains(stdout.String(), `"hello"`) {
 		t.Fatalf("unexpected stdout %q", stdout.String())
 	}
 }
@@ -194,6 +226,9 @@ func TestMachineListJSON(t *testing.T) {
 	if err := runner.Run(context.Background(), []string{"machine", "list", "--json"}); err != nil {
 		t.Fatal(err)
 	}
+	if !strings.Contains(stdout.String(), `"machines": [`) {
+		t.Fatalf("expected wrapped machine output, got %q", stdout.String())
+	}
 	if !strings.Contains(stdout.String(), `"name": "m-1"`) {
 		t.Fatalf("unexpected stdout %q", stdout.String())
 	}
@@ -241,6 +276,13 @@ func TestExecJSONReturnsExitCodeAndStructuredResult(t *testing.T) {
 			if r.Method != http.MethodPost {
 				t.Fatalf("unexpected method %s", r.Method)
 			}
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			if got := body["command_text"]; got != "false" {
+				t.Fatalf("expected command_text false, got %#v", got)
+			}
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"exec": map[string]any{
 					"id":           "exec-1",
@@ -285,6 +327,78 @@ func TestExecJSONReturnsExitCodeAndStructuredResult(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), `"state": "FAILED"`) {
 		t.Fatalf("expected structured exec result, got %q", stdout.String())
+	}
+}
+
+func TestDiagnosticsMachineAcceptsTrailingJSONFlag(t *testing.T) {
+	t.Setenv(envCLIConfigPath, t.TempDir()+"/config.json")
+	t.Setenv(envToken, "test-token")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/diagnostics/machines/m-1" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"machine": map[string]any{
+				"id":    "machine-1",
+				"name":  "m-1",
+				"state": "RUNNING",
+			},
+			"recent_events": []map[string]any{},
+		})
+	}))
+	defer server.Close()
+
+	t.Setenv(envBaseURL, server.URL)
+	stdout := &bytes.Buffer{}
+	runner := Runner{
+		Stdin:  bytes.NewBuffer(nil),
+		Stdout: stdout,
+		Stderr: &bytes.Buffer{},
+	}
+	if err := runner.Run(context.Background(), []string{"diagnostics", "machine", "m-1", "--json"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stdout.String(), `"name": "m-1"`) {
+		t.Fatalf("unexpected stdout %q", stdout.String())
+	}
+}
+
+func TestSnapshotRestoreAcceptsTrailingJSONFlag(t *testing.T) {
+	t.Setenv(envCLIConfigPath, t.TempDir()+"/config.json")
+	t.Setenv(envToken, "test-token")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/machines" || r.Method != http.MethodPost {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if body["name"] != "restored" || body["snapshot_name"] != "snap-1" {
+			t.Fatalf("unexpected body %#v", body)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id":    "machine-1",
+			"name":  "restored",
+			"state": "CREATING",
+		})
+	}))
+	defer server.Close()
+
+	t.Setenv(envBaseURL, server.URL)
+	stdout := &bytes.Buffer{}
+	runner := Runner{
+		Stdin:  bytes.NewBuffer(nil),
+		Stdout: stdout,
+		Stderr: &bytes.Buffer{},
+	}
+	if err := runner.Run(context.Background(), []string{"snapshot", "restore", "snap-1", "restored", "--json"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stdout.String(), `"name": "restored"`) {
+		t.Fatalf("unexpected stdout %q", stdout.String())
 	}
 }
 

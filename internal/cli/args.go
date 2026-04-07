@@ -55,3 +55,12 @@ func parseFlagToken(arg string) (name string, hasInlineValue bool, ok bool) {
 	}
 	return trimmed, false, true
 }
+
+func splitArgsOnDoubleDash(args []string) (before []string, after []string) {
+	for i, arg := range args {
+		if arg == "--" {
+			return append([]string(nil), args[:i]...), append([]string(nil), args[i+1:]...)
+		}
+	}
+	return append([]string(nil), args...), nil
+}

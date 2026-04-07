@@ -148,6 +148,7 @@ func buildHelpDoc(topic string) (helpDoc, bool) {
 			Conventions: []string{
 				"Use --json whenever a command offers it if another tool needs to parse stdout.",
 				"Use --jsonl with exec when an agent wants ordered streaming events instead of a final block.",
+				"Collection JSON output uses named top-level keys such as machines, snapshots, shells, lines, hosts, and events.",
 				"Use -- before the remote command for fascinate exec.",
 				"Non-interactive destructive commands require --yes instead of prompting.",
 				"Shells are durable backend resources, so shell create, send, attach, and delete stay in sync with the web UI.",

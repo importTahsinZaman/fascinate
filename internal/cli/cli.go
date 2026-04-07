@@ -231,7 +231,7 @@ func (r Runner) runShellList(ctx context.Context, args []string) error {
 		return err
 	}
 	if *jsonOutput {
-		return writeJSON(r.Stdout, shells)
+		return writeJSON(r.Stdout, map[string]any{"shells": shells})
 	}
 	for _, shell := range shells {
 		if _, err := fmt.Fprintf(r.Stdout, "%s\t%s\t%s\t%s\n", shell.ID, shell.MachineName, shell.State, shell.Name); err != nil {
@@ -242,12 +242,21 @@ func (r Runner) runShellList(ctx context.Context, args []string) error {
 }
 
 func (r Runner) runShellCreate(ctx context.Context, args []string) error {
+	normalizedArgs, err := reorderKnownFlags(args, map[string]bool{
+		"json": true,
+	}, map[string]bool{
+		"base-url": true,
+		"name":     true,
+	})
+	if err != nil {
+		return err
+	}
 	flags := flag.NewFlagSet("shell create", flag.ContinueOnError)
 	flags.SetOutput(r.Stderr)
 	baseURL := flags.String("base-url", "", "Fascinate API base URL")
 	name := flags.String("name", "", "shell name")
 	jsonOutput := flags.Bool("json", false, "print JSON to stdout")
-	if err := flags.Parse(args); err != nil {
+	if err := flags.Parse(normalizedArgs); err != nil {
 		return err
 	}
 	if flags.NArg() != 1 {
@@ -269,11 +278,19 @@ func (r Runner) runShellCreate(ctx context.Context, args []string) error {
 }
 
 func (r Runner) runShellDelete(ctx context.Context, args []string) error {
+	normalizedArgs, err := reorderKnownFlags(args, map[string]bool{
+		"yes": true,
+	}, map[string]bool{
+		"base-url": true,
+	})
+	if err != nil {
+		return err
+	}
 	flags := flag.NewFlagSet("shell delete", flag.ContinueOnError)
 	flags.SetOutput(r.Stderr)
 	baseURL := flags.String("base-url", "", "Fascinate API base URL")
 	yes := flags.Bool("yes", false, "skip the confirmation prompt")
-	if err := flags.Parse(args); err != nil {
+	if err := flags.Parse(normalizedArgs); err != nil {
 		return err
 	}
 	if flags.NArg() != 1 {
@@ -294,12 +311,20 @@ func (r Runner) runShellDelete(ctx context.Context, args []string) error {
 }
 
 func (r Runner) runShellAttach(ctx context.Context, args []string) error {
+	normalizedArgs, err := reorderKnownFlags(args, nil, map[string]bool{
+		"base-url": true,
+		"cols":     true,
+		"rows":     true,
+	})
+	if err != nil {
+		return err
+	}
 	flags := flag.NewFlagSet("shell attach", flag.ContinueOnError)
 	flags.SetOutput(r.Stderr)
 	baseURL := flags.String("base-url", "", "Fascinate API base URL")
 	cols := flags.Int("cols", 0, "terminal columns")
 	rows := flags.Int("rows", 0, "terminal rows")
-	if err := flags.Parse(args); err != nil {
+	if err := flags.Parse(normalizedArgs); err != nil {
 		return err
 	}
 	if flags.NArg() != 1 {
@@ -364,12 +389,21 @@ func (r Runner) runShellSend(ctx context.Context, args []string) error {
 }
 
 func (r Runner) runShellLines(ctx context.Context, args []string) error {
+	normalizedArgs, err := reorderKnownFlags(args, map[string]bool{
+		"json": true,
+	}, map[string]bool{
+		"base-url": true,
+		"limit":    true,
+	})
+	if err != nil {
+		return err
+	}
 	flags := flag.NewFlagSet("shell lines", flag.ContinueOnError)
 	flags.SetOutput(r.Stderr)
 	baseURL := flags.String("base-url", "", "Fascinate API base URL")
 	limit := flags.Int("limit", 100, "maximum lines to return")
 	jsonOutput := flags.Bool("json", false, "print JSON to stdout")
-	if err := flags.Parse(args); err != nil {
+	if err := flags.Parse(normalizedArgs); err != nil {
 		return err
 	}
 	if flags.NArg() != 1 {
@@ -384,7 +418,7 @@ func (r Runner) runShellLines(ctx context.Context, args []string) error {
 		return err
 	}
 	if *jsonOutput {
-		return writeJSON(r.Stdout, lines)
+		return writeJSON(r.Stdout, map[string]any{"lines": lines})
 	}
 	for _, line := range lines {
 		if _, err := fmt.Fprintln(r.Stdout, line); err != nil {
