@@ -23,7 +23,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	command := "serve"
+	command := ""
 	if len(os.Args) > 1 {
 		command = os.Args[1]
 	}
@@ -81,7 +81,7 @@ func main() {
 
 func requiresServerConfig(command string) bool {
 	switch strings.TrimSpace(command) {
-	case "", "serve", "migrate", "runtime-machines", "netns-forward":
+	case "serve", "migrate", "runtime-machines", "netns-forward":
 		return true
 	default:
 		return false
