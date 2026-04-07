@@ -55,6 +55,7 @@ func TestHelpIncludesQuickstartAndTopicHints(t *testing.T) {
 		"Quick start",
 		"fascinate login --email you@example.com",
 		"fascinate help --json [topic]",
+		"https://fascinate.dev by default",
 		"Agent notes",
 	} {
 		if !strings.Contains(body, want) {

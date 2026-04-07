@@ -613,7 +613,7 @@ func (r Runner) streamShellAttachment(ctx context.Context, baseURL, attachURL st
 func resolveWebSocketURL(baseURL, attachURL string) (string, error) {
 	baseURL = normalizeBaseURL(baseURL)
 	if baseURL == "" {
-		baseURL = "http://127.0.0.1:8080"
+		baseURL = defaultBaseURL
 	}
 	if strings.HasPrefix(attachURL, "ws://") || strings.HasPrefix(attachURL, "wss://") {
 		return attachURL, nil

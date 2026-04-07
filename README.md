@@ -156,6 +156,8 @@ curl -fsSL https://fascinate.dev/install.sh | bash
 
 The curl bootstrap installs only the user CLI. It resolves the latest or pinned CLI artifact from a public release index, verifies the archive checksum before installation, and installs `fascinate` into `~/.local/bin` by default.
 
+The public CLI targets `https://fascinate.dev` by default. For self-hosted or local development workflows, pass `--base-url` explicitly or set `FASCINATE_BASE_URL`.
+
 To publish a new public CLI release:
 
 ```bash

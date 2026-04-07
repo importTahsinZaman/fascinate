@@ -14,6 +14,7 @@ const (
 	envCLIConfigDir  = "FASCINATE_CLI_CONFIG_DIR"
 	envBaseURL       = "FASCINATE_BASE_URL"
 	envToken         = "FASCINATE_TOKEN"
+	defaultBaseURL   = "https://fascinate.dev"
 )
 
 type Config struct {
@@ -85,7 +86,7 @@ func ResolveBaseURL(stored Config) string {
 	if value := strings.TrimSpace(stored.BaseURL); value != "" {
 		return normalizeBaseURL(value)
 	}
-	return "http://127.0.0.1:8080"
+	return defaultBaseURL
 }
 
 func ResolveToken(stored Config) string {
@@ -98,7 +99,7 @@ func ResolveToken(stored Config) string {
 func normalizeBaseURL(value string) string {
 	value = strings.TrimSpace(value)
 	if value == "" {
-		return "http://127.0.0.1:8080"
+		return defaultBaseURL
 	}
 	if !strings.Contains(value, "://") {
 		if isLocalHostReference(value) {

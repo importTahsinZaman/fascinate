@@ -132,7 +132,7 @@ func buildHelpDoc(topic string) (helpDoc, bool) {
 					"--base-url on the command",
 					envBaseURL,
 					"saved CLI config base_url",
-					"http://127.0.0.1:8080 by default",
+					defaultBaseURL + " by default",
 				},
 				TokenResolution: []string{
 					envToken,
@@ -185,7 +185,7 @@ func buildHelpDoc(topic string) (helpDoc, bool) {
 					"--base-url on the command",
 					envBaseURL,
 					"saved CLI config base_url",
-					"http://127.0.0.1:8080 by default",
+					defaultBaseURL + " by default",
 				},
 				TokenResolution: []string{
 					envToken,

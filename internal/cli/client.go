@@ -452,7 +452,7 @@ func (c Client) request(ctx context.Context, method, path string, input any, out
 func (c Client) newRequest(ctx context.Context, method, path string, input any) (*http.Request, error) {
 	baseURL := normalizeBaseURL(c.BaseURL)
 	if baseURL == "" {
-		baseURL = "http://127.0.0.1:8080"
+		baseURL = defaultBaseURL
 	}
 
 	var body io.Reader

@@ -42,9 +42,9 @@ func TestResolveTokenHonorsEnvironmentOverride(t *testing.T) {
 	}
 }
 
-func TestResolveBaseURLDefaultsToLocalhost(t *testing.T) {
+func TestResolveBaseURLDefaultsToPublicOrigin(t *testing.T) {
 	t.Setenv(envBaseURL, "")
-	if got := ResolveBaseURL(Config{}); got != "http://127.0.0.1:8080" {
+	if got := ResolveBaseURL(Config{}); got != defaultBaseURL {
 		t.Fatalf("unexpected base URL %q", got)
 	}
 }
