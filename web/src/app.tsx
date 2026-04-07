@@ -1567,6 +1567,7 @@ function WindowFrame({
       <header
         className="window-header"
         data-dragging={isDragging ? "true" : "false"}
+        data-leading-window={isLeadingWindow ? "true" : "false"}
         onPointerDown={onHeaderPointerDown}
         onPointerMove={onHeaderPointerMove}
         onPointerUp={onHeaderPointerUp}
