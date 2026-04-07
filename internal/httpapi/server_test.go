@@ -203,6 +203,16 @@ type fakeTerminalManager struct {
 	readLinesShellID  string
 	readLinesLimit    int
 	readLinesResult   []string
+	uploadUser        string
+	uploadMachine     string
+	uploadPath        string
+	uploadBody        string
+	uploadResult      browserterm.FileTransfer
+	downloadUser      string
+	downloadMachine   string
+	downloadPath      string
+	downloadBody      string
+	downloadResult    browserterm.FileTransfer
 	listExecsUser     string
 	listExecsLimit    int
 	listExecsResult   []browserterm.Exec
@@ -318,6 +328,38 @@ func (f *fakeTerminalManager) ReadLines(_ context.Context, userEmail, shellID st
 		return nil, f.err
 	}
 	return f.readLinesResult, nil
+}
+
+func (f *fakeTerminalManager) UploadArchive(_ context.Context, userEmail, machineName, remotePath string, archive io.Reader) (browserterm.FileTransfer, error) {
+	f.uploadUser = userEmail
+	f.uploadMachine = machineName
+	f.uploadPath = remotePath
+	if archive != nil {
+		payload, err := io.ReadAll(archive)
+		if err != nil {
+			return browserterm.FileTransfer{}, err
+		}
+		f.uploadBody = string(payload)
+	}
+	if f.err != nil {
+		return browserterm.FileTransfer{}, f.err
+	}
+	return f.downloadResult, nil
+}
+
+func (f *fakeTerminalManager) DownloadArchive(_ context.Context, userEmail, machineName, remotePath string, output io.Writer) (browserterm.FileTransfer, error) {
+	f.downloadUser = userEmail
+	f.downloadMachine = machineName
+	f.downloadPath = remotePath
+	if f.err != nil {
+		return browserterm.FileTransfer{}, f.err
+	}
+	if output != nil && f.downloadBody != "" {
+		if _, err := io.WriteString(output, f.downloadBody); err != nil {
+			return browserterm.FileTransfer{}, err
+		}
+	}
+	return f.uploadResult, nil
 }
 
 func (f *fakeTerminalManager) CreateExec(_ context.Context, userEmail, machineName string, request browserterm.ExecRequest) (browserterm.Exec, error) {
@@ -1756,6 +1798,81 @@ func TestCreateExecEndpointUsesBearerToken(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), `"stream_url":"/v1/execs/exec-1/stream"`) {
 		t.Fatalf("expected stream url in response, got %s", rec.Body.String())
+	}
+}
+
+func TestCreateExecEndpointForwardsStdinText(t *testing.T) {
+	t.Parallel()
+
+	auth := &fakeBrowserAuth{
+		apiToken: "cli-token",
+		apiTokenSession: browserauth.APITokenSession{
+			User:   database.User{ID: "user-1", Email: "dev@example.com"},
+			Record: database.APITokenRecord{ID: "token-1", UserID: "user-1", UserEmail: "dev@example.com", Name: "fascinate-cli"},
+		},
+	}
+	terminals := &fakeTerminalManager{
+		createExecResult: browserterm.Exec{ID: "exec-1", MachineName: "m-1", State: "RUNNING"},
+	}
+	handler := newTestHandlerWithExtras(t, config.Config{BaseDomain: "fascinate.dev"}, &fakeRuntime{}, &fakeMachineManager{}, auth, terminals, nil, nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/execs", strings.NewReader(`{"machine_name":"m-1","command_text":"bash","stdin_text":"echo hello\n","timeout_seconds":30}`))
+	req.Header.Set("Authorization", "Bearer cli-token")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if terminals.createExecRequest.StdinText != "echo hello\n" {
+		t.Fatalf("expected stdin text to be forwarded, got %#v", terminals.createExecRequest)
+	}
+}
+
+func TestMachineFileEndpointsUseBearerToken(t *testing.T) {
+	t.Parallel()
+
+	auth := &fakeBrowserAuth{
+		apiToken: "cli-token",
+		apiTokenSession: browserauth.APITokenSession{
+			User:   database.User{ID: "user-1", Email: "dev@example.com"},
+			Record: database.APITokenRecord{ID: "token-1", UserID: "user-1", UserEmail: "dev@example.com", Name: "fascinate-cli"},
+		},
+	}
+	terminals := &fakeTerminalManager{
+		uploadResult:   browserterm.FileTransfer{MachineName: "m-1", Path: "/tmp/demo.txt", Direction: "upload", BytesTransferred: 12},
+		downloadBody:   "archive-body",
+		downloadResult: browserterm.FileTransfer{MachineName: "m-1", Path: "/tmp/demo.txt", Direction: "download", BytesTransferred: 12},
+	}
+	handler := newTestHandlerWithExtras(t, config.Config{BaseDomain: "fascinate.dev"}, &fakeRuntime{}, &fakeMachineManager{}, auth, terminals, nil, nil)
+
+	uploadReq := httptest.NewRequest(http.MethodPost, "/v1/machines/m-1/files?path=%2Ftmp%2Fdemo.txt", strings.NewReader("archive-body"))
+	uploadReq.Header.Set("Authorization", "Bearer cli-token")
+	uploadRec := httptest.NewRecorder()
+	handler.ServeHTTP(uploadRec, uploadReq)
+	if uploadRec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", uploadRec.Code, uploadRec.Body.String())
+	}
+	if terminals.uploadUser != "dev@example.com" || terminals.uploadMachine != "m-1" || terminals.uploadPath != "/tmp/demo.txt" {
+		t.Fatalf("unexpected upload args %+v", terminals)
+	}
+	if terminals.uploadBody != "archive-body" {
+		t.Fatalf("expected upload body to be forwarded, got %q", terminals.uploadBody)
+	}
+
+	downloadReq := httptest.NewRequest(http.MethodGet, "/v1/machines/m-1/files?path=%2Ftmp%2Fdemo.txt", nil)
+	downloadReq.Header.Set("Authorization", "Bearer cli-token")
+	downloadRec := httptest.NewRecorder()
+	handler.ServeHTTP(downloadRec, downloadReq)
+	if downloadRec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", downloadRec.Code, downloadRec.Body.String())
+	}
+	if terminals.downloadUser != "dev@example.com" || terminals.downloadMachine != "m-1" || terminals.downloadPath != "/tmp/demo.txt" {
+		t.Fatalf("unexpected download args %+v", terminals)
+	}
+	if downloadRec.Body.String() != "archive-body" {
+		t.Fatalf("unexpected download body %q", downloadRec.Body.String())
 	}
 }
 

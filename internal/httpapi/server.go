@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"html/template"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -68,6 +69,8 @@ type terminalManager interface {
 	CancelExec(context.Context, string, string) error
 	StreamExec(http.ResponseWriter, *http.Request, string, string) error
 	ExecDiagnostics(context.Context, string, int) (browserterm.ExecDiagnostics, error)
+	UploadArchive(context.Context, string, string, string, io.Reader) (browserterm.FileTransfer, error)
+	DownloadArchive(context.Context, string, string, string, io.Writer) (browserterm.FileTransfer, error)
 	GetGitStatus(context.Context, string, string, string) (browserterm.GitRepoStatus, error)
 	GetGitDiffBatch(context.Context, string, string, browserterm.GitDiffBatchRequest) (browserterm.GitDiffBatchResponse, error)
 	StreamSession(http.ResponseWriter, *http.Request, string) error
@@ -602,6 +605,7 @@ func New(cfg config.Config, store *database.Store, runtime runtimeChecker, machi
 			var body struct {
 				MachineName    string `json:"machine_name"`
 				CommandText    string `json:"command_text"`
+				StdinText      string `json:"stdin_text"`
 				CWD            string `json:"cwd"`
 				TimeoutSeconds int    `json:"timeout_seconds"`
 				OwnerEmail     string `json:"owner_email"`
@@ -618,6 +622,7 @@ func New(cfg config.Config, store *database.Store, runtime runtimeChecker, machi
 			timeout := time.Duration(body.TimeoutSeconds) * time.Second
 			execResult, err := terminals.CreateExec(ctx, ownerEmail, body.MachineName, browserterm.ExecRequest{
 				CommandText: body.CommandText,
+				StdinText:   body.StdinText,
 				CWD:         body.CWD,
 				Timeout:     timeout,
 			})
@@ -1083,6 +1088,45 @@ func New(cfg config.Config, store *database.Store, runtime runtimeChecker, machi
 				return
 			}
 			writeJSON(w, http.StatusOK, env)
+			return
+		}
+
+		if len(parts) == 2 && parts[1] == "files" {
+			if terminals == nil {
+				http.NotFound(w, r)
+				return
+			}
+			remotePath := strings.TrimSpace(r.URL.Query().Get("path"))
+			if remotePath == "" {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "path is required"})
+				return
+			}
+			ownerEmail, err := ownerEmailForRequest(r.Context(), r, cfg, auth, strings.TrimSpace(r.URL.Query().Get("owner_email")))
+			if err != nil {
+				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
+				return
+			}
+			switch r.Method {
+			case http.MethodPost:
+				ctx, cancel := context.WithTimeout(r.Context(), 30*time.Minute)
+				defer cancel()
+				result, err := terminals.UploadArchive(ctx, ownerEmail, name, remotePath, r.Body)
+				if err != nil {
+					writeServiceError(w, err)
+					return
+				}
+				writeJSON(w, http.StatusOK, result)
+			case http.MethodGet:
+				ctx, cancel := context.WithTimeout(r.Context(), 30*time.Minute)
+				defer cancel()
+				w.Header().Set("Content-Type", "application/x-tar")
+				w.Header().Set("Cache-Control", "no-store")
+				if _, err := terminals.DownloadArchive(ctx, ownerEmail, name, remotePath, w); err != nil {
+					writeServiceError(w, err)
+				}
+			default:
+				writeMethodNotAllowed(w, http.MethodGet, http.MethodPost)
+			}
 			return
 		}
 

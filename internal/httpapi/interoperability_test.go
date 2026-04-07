@@ -283,6 +283,14 @@ func (m *interoperabilityTerminalManager) ExecDiagnostics(context.Context, strin
 	return browserterm.ExecDiagnostics{}, nil
 }
 
+func (m *interoperabilityTerminalManager) UploadArchive(context.Context, string, string, string, io.Reader) (browserterm.FileTransfer, error) {
+	return browserterm.FileTransfer{}, fmt.Errorf("file transfer is not implemented in interoperability tests")
+}
+
+func (m *interoperabilityTerminalManager) DownloadArchive(context.Context, string, string, string, io.Writer) (browserterm.FileTransfer, error) {
+	return browserterm.FileTransfer{}, fmt.Errorf("file transfer is not implemented in interoperability tests")
+}
+
 func (m *interoperabilityTerminalManager) GetGitStatus(context.Context, string, string, string) (browserterm.GitRepoStatus, error) {
 	return browserterm.GitRepoStatus{}, fmt.Errorf("git status is not implemented in interoperability tests")
 }

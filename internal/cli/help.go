@@ -68,7 +68,7 @@ func (r Runner) runHelp(args []string) error {
 		return err
 	}
 	if flags.NArg() > 1 {
-		return fmt.Errorf("usage: fascinate help [--json] [overview|auth|machine|shell|exec|snapshot|env|diagnostics|agents]")
+		return fmt.Errorf("usage: fascinate help [--json] [overview|auth|machine|shell|exec|files|snapshot|env|diagnostics|agents]")
 	}
 	topic := "overview"
 	if flags.NArg() == 1 {
@@ -76,7 +76,7 @@ func (r Runner) runHelp(args []string) error {
 	}
 	doc, ok := buildHelpDoc(topic)
 	if !ok {
-		return fmt.Errorf("unknown help topic %q; available topics: overview, auth, machine, shell, exec, snapshot, env, diagnostics, agents", flags.Arg(0))
+		return fmt.Errorf("unknown help topic %q; available topics: overview, auth, machine, shell, exec, files, snapshot, env, diagnostics, agents", flags.Arg(0))
 	}
 	if *jsonOutput {
 		return writeJSON(r.Stdout, doc)
@@ -122,6 +122,16 @@ func buildHelpDoc(topic string) (helpDoc, bool) {
 					Note:    "Best default for agents because it returns structured stdout, stderr, state, and exit code.",
 				},
 				{
+					Label:   "Run a multiline script safely",
+					Command: "cat script.sh | fascinate exec --stdin my-machine -- bash",
+					Note:    "Best default when quoting or heredocs would otherwise become fragile.",
+				},
+				{
+					Label:   "Move files without heredocs",
+					Command: "fascinate upload ./project my-machine:/home/ubuntu/project/",
+					Note:    "Uploads a local file or directory through the control plane instead of shell escaping.",
+				},
+				{
 					Label:   "Inspect platform state",
 					Command: "fascinate diagnostics events --json",
 					Note:    "Streams recent lifecycle events from the same backend the web UI consumes.",
@@ -150,12 +160,16 @@ func buildHelpDoc(topic string) (helpDoc, bool) {
 				"Use --jsonl with exec when an agent wants ordered streaming events instead of a final block.",
 				"Collection JSON output uses named top-level keys such as machines, snapshots, shells, lines, hosts, and events.",
 				"Use -- before the remote command for fascinate exec.",
+				"Use exec --stdin for multiline scripts or heredoc-like input and shell send --stdin for durable shell sessions.",
+				"Use upload and download for file movement instead of embedding large file contents into shell commands.",
 				"Non-interactive destructive commands require --yes instead of prompting.",
 				"Shells are durable backend resources, so shell create, send, attach, and delete stay in sync with the web UI.",
 			},
 			AgentNotes: []string{
 				"Prefer fascinate exec --json for one-shot tasks and validations.",
+				"Prefer fascinate exec --stdin when a command needs multiline shell input or generated script content.",
 				"Use shell create plus shell send and shell lines when you need a long-lived shared session.",
+				"Use fascinate upload and fascinate download for files and directories instead of shell-quoted heredocs.",
 				"Use fascinate help --json to discover commands and usage programmatically.",
 			},
 			Topics:   topicRefs,
@@ -216,6 +230,8 @@ func normalizeHelpTopic(topic string) string {
 		return "shell"
 	case "exec", "execution":
 		return "exec"
+	case "files", "file", "transfer", "upload", "download":
+		return "files"
 	case "snapshot", "snapshots":
 		return "snapshot"
 	case "env", "env-var", "env-vars":
@@ -346,6 +362,7 @@ func helpTopics() []helpTopicRef {
 		{Name: "machine", Summary: "create, inspect, fork, delete, and read machine env"},
 		{Name: "shell", Summary: "shared shell lifecycle, attach, send, lines, and delete"},
 		{Name: "exec", Summary: "non-interactive command execution for humans and agents"},
+		{Name: "files", Summary: "upload and download files or directories without shell quoting"},
 		{Name: "snapshot", Summary: "save, restore, list, and delete VM snapshots"},
 		{Name: "env", Summary: "list, set, and unset user env vars"},
 		{Name: "diagnostics", Summary: "inspect events, hosts, budgets, machines, snapshots, shells, and execs"},
@@ -392,8 +409,19 @@ func helpTopicByName(name string) (helpTopicMeta, bool) {
 			Notes: []string{
 				"Prefer exec --json for agent workflows that need stable stdout, stderr, exit code, and timeout fields.",
 				"Prefer exec --jsonl when a consumer needs ordered streaming events before completion.",
+				"Use exec --stdin when the remote command should read a script or multiline input from local stdin.",
 			},
 			CommandSet: commandSet("exec"),
+		},
+		"files": {
+			Name:    "files",
+			Title:   "Fascinate CLI File Transfer",
+			Summary: "Upload and download files or directories through the same machine-scoped control plane used by exec and shells.",
+			Notes: []string{
+				"Use upload when a workflow needs local files inside the machine without shell-escaped heredocs.",
+				"Use download when a workflow needs to bring generated files or directories back to the local workstation or agent.",
+			},
+			CommandSet: commandSet("upload", "download"),
 		},
 		"snapshot": {
 			Name:    "snapshot",
@@ -434,8 +462,9 @@ func helpTopicByName(name string) (helpTopicMeta, bool) {
 				"Prefer exec --json or --jsonl over shell attach when a task can run non-interactively.",
 				"Use shell create, shell send, and shell lines only for stateful or multi-step interactive flows.",
 				"Pass --base-url explicitly when a workflow may target multiple Fascinate environments.",
+				"Use upload and download for file movement so agents do not have to encode large blobs into shell commands.",
 			},
-			CommandSet: commandSet("help", "exec", "machine list", "machine get", "shell list", "shell create", "shell send", "shell lines", "diagnostics events", "diagnostics shells", "diagnostics execs"),
+			CommandSet: commandSet("help", "exec", "upload", "download", "machine list", "machine get", "shell list", "shell create", "shell send", "shell lines", "diagnostics events", "diagnostics shells", "diagnostics execs"),
 		},
 	}
 	meta, ok := topics[name]
@@ -558,11 +587,32 @@ func helpCommands() []helpCommand {
 		{
 			Group:   "exec",
 			Path:    "exec",
-			Usage:   "fascinate exec [--base-url <url>] [--cwd <path>] [--timeout <duration>] [--json|--jsonl] <machine> -- <command...>",
+			Usage:   "fascinate exec [--base-url <url>] [--cwd <path>] [--timeout <duration>] [--stdin] [--json|--jsonl] <machine> -- <command...>",
 			Summary: "Run a one-shot command in a machine and return structured results.",
 			Examples: []string{
 				"fascinate exec --json my-machine -- pwd",
 				"fascinate exec --jsonl my-machine -- sh -lc 'echo hello; echo err >&2'",
+				"cat script.sh | fascinate exec --stdin my-machine -- bash",
+			},
+		},
+		{
+			Group:   "files",
+			Path:    "upload",
+			Usage:   "fascinate upload [--base-url <url>] [--json] <local-path> <machine>:<remote-path>",
+			Summary: "Upload a local file or directory into a machine without shell quoting tricks.",
+			Examples: []string{
+				"fascinate upload ./project my-machine:/home/ubuntu/project/",
+				"fascinate upload ./build/output.bin my-machine:/tmp/output.bin",
+			},
+		},
+		{
+			Group:   "files",
+			Path:    "download",
+			Usage:   "fascinate download [--base-url <url>] [--json] <machine>:<remote-path> <local-path>",
+			Summary: "Download a file or directory from a machine into the local filesystem.",
+			Examples: []string{
+				"fascinate download my-machine:/home/ubuntu/project ./project-copy",
+				"fascinate download my-machine:/tmp/output.bin ./output.bin",
 			},
 		},
 		{

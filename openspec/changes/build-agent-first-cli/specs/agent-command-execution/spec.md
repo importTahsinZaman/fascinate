@@ -34,6 +34,11 @@ Fascinate SHALL support streaming or machine-readable exec output modes that rem
 - **THEN** Fascinate emits ordered execution output events as the command runs
 - **AND** it finishes with a final execution result event carrying the terminal status
 
+#### Scenario: Agent sends multiline stdin safely
+- **WHEN** an agent runs a supported exec command with local stdin attached
+- **THEN** Fascinate forwards that stdin into the remote command without requiring shell-escaped heredocs
+- **AND** the remote command still reports structured exit status, stdout, stderr, and timeout metadata
+
 #### Scenario: Exec does not require a preexisting shared shell
 - **WHEN** a user runs a non-interactive command against a machine that has no existing shared shell
 - **THEN** Fascinate executes that command successfully through the exec surface

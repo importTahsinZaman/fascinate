@@ -40,6 +40,8 @@ func (r Runner) Run(ctx context.Context, args []string) error {
 		return r.runHelp(args[1:])
 	case "diagnostics":
 		return r.runDiagnostics(ctx, args[1:])
+	case "download":
+		return r.runDownload(ctx, args[1:])
 	case "env":
 		return r.runEnv(ctx, args[1:])
 	case "exec":
@@ -54,6 +56,8 @@ func (r Runner) Run(ctx context.Context, args []string) error {
 		return r.runShell(ctx, args[1:])
 	case "snapshot":
 		return r.runSnapshot(ctx, args[1:])
+	case "upload":
+		return r.runUpload(ctx, args[1:])
 	case "whoami":
 		return r.runWhoAmI(ctx, args[1:])
 	case "help":

@@ -1,10 +1,13 @@
 package browserterm
 
 import (
+	"archive/tar"
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -568,6 +571,144 @@ func TestCreateExecCapturesOutputAndExitCode(t *testing.T) {
 	}
 	if !strings.Contains(record.StderrText, "warn") {
 		t.Fatalf("expected stderr to be captured, got %q", record.StderrText)
+	}
+}
+
+func TestCreateExecReadsStdin(t *testing.T) {
+	t.Parallel()
+
+	machines := &fakeMachineManager{machine: controlplane.Machine{
+		ID:     "machine-1",
+		Name:   "m-1",
+		HostID: "local-host",
+		State:  "RUNNING",
+		Runtime: &machineruntime.Machine{
+			SSHHost: "127.0.0.1",
+			SSHPort: 2222,
+		},
+	}}
+	manager, store := newTestManagerWithStore(t, config.Config{HostID: "local-host"}, machines)
+	manager.sshClientBinary = fakeSSHBinary(t)
+
+	execResult, err := manager.CreateExec(context.Background(), "dev@example.com", "m-1", ExecRequest{
+		CommandText: "cat",
+		StdinText:   "hello from stdin\n",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	record := waitForExecRecord(t, store, execResult.ID)
+	if record.State != execStateSucceeded {
+		t.Fatalf("expected succeeded exec state, got %+v", record)
+	}
+	if !strings.Contains(record.StdoutText, "hello from stdin") {
+		t.Fatalf("expected stdin to reach remote command, got %q", record.StdoutText)
+	}
+}
+
+func TestUploadArchiveExtractsIntoDestination(t *testing.T) {
+	t.Parallel()
+
+	machines := &fakeMachineManager{machine: controlplane.Machine{
+		ID:     "machine-1",
+		Name:   "m-1",
+		HostID: "local-host",
+		State:  "RUNNING",
+		Runtime: &machineruntime.Machine{
+			SSHHost: "127.0.0.1",
+			SSHPort: 2222,
+		},
+	}}
+	manager := newTestManager(t, config.Config{HostID: "local-host"}, machines)
+	manager.sshClientBinary = fakeSSHBinary(t)
+
+	var archive bytes.Buffer
+	tw := tar.NewWriter(&archive)
+	body := []byte("payload\n")
+	if err := tw.WriteHeader(&tar.Header{Name: "demo.txt", Mode: 0o644, Size: int64(len(body))}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tw.Write(body); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	destinationDir := t.TempDir()
+	result, err := manager.UploadArchive(context.Background(), "dev@example.com", "m-1", destinationDir+"/", bytes.NewReader(archive.Bytes()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Direction != "upload" || result.BytesTransferred == 0 {
+		t.Fatalf("unexpected upload result %+v", result)
+	}
+	content, err := os.ReadFile(filepath.Join(destinationDir, "demo.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != "payload\n" {
+		t.Fatalf("unexpected uploaded content %q", string(content))
+	}
+}
+
+func TestDownloadArchiveStreamsRemotePath(t *testing.T) {
+	t.Parallel()
+
+	machines := &fakeMachineManager{machine: controlplane.Machine{
+		ID:     "machine-1",
+		Name:   "m-1",
+		HostID: "local-host",
+		State:  "RUNNING",
+		Runtime: &machineruntime.Machine{
+			SSHHost: "127.0.0.1",
+			SSHPort: 2222,
+		},
+	}}
+	manager := newTestManager(t, config.Config{HostID: "local-host"}, machines)
+	manager.sshClientBinary = fakeSSHBinary(t)
+
+	sourceDir := t.TempDir()
+	sourcePath := filepath.Join(sourceDir, "demo.txt")
+	if err := os.WriteFile(sourcePath, []byte("payload\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var archive bytes.Buffer
+	result, err := manager.DownloadArchive(context.Background(), "dev@example.com", "m-1", sourcePath, &archive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Direction != "download" || result.BytesTransferred == 0 {
+		t.Fatalf("unexpected download result %+v", result)
+	}
+
+	tr := tar.NewReader(bytes.NewReader(archive.Bytes()))
+	found := false
+	for {
+		header, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if header.Name != "demo.txt" {
+			continue
+		}
+		payload, err := io.ReadAll(tr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(payload) != "payload\n" {
+			t.Fatalf("unexpected downloaded payload %q", string(payload))
+		}
+		found = true
+		break
+	}
+	if !found {
+		t.Fatalf("expected demo.txt entry in archive")
 	}
 }
 

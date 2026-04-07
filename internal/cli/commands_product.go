@@ -122,6 +122,7 @@ func (r Runner) runExec(ctx context.Context, args []string) error {
 	normalizedArgs, err := reorderKnownFlags(argsBeforeCommand, map[string]bool{
 		"json":  true,
 		"jsonl": true,
+		"stdin": true,
 	}, map[string]bool{
 		"base-url": true,
 		"cwd":      true,
@@ -137,6 +138,7 @@ func (r Runner) runExec(ctx context.Context, args []string) error {
 	timeoutText := flags.String("timeout", "", "maximum runtime (for example 30s or 120)")
 	jsonOutput := flags.Bool("json", false, "print the final structured result as JSON")
 	jsonLines := flags.Bool("jsonl", false, "stream execution events as JSON lines")
+	readFromStdin := flags.Bool("stdin", false, "read command stdin from local stdin")
 	if err := flags.Parse(normalizedArgs); err != nil {
 		return err
 	}
@@ -168,9 +170,17 @@ func (r Runner) runExec(ctx context.Context, args []string) error {
 	if commandText == "" {
 		return fmt.Errorf("command is required")
 	}
+	stdinText := ""
+	if *readFromStdin {
+		payload, err := io.ReadAll(r.Stdin)
+		if err != nil {
+			return err
+		}
+		stdinText = string(payload)
+	}
 	createCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	launch, err := client.CreateExec(createCtx, machineName, commandText, *cwd, timeout)
+	launch, err := client.CreateExecWithInput(createCtx, machineName, commandText, stdinText, *cwd, timeout)
 	if err != nil {
 		return err
 	}

@@ -1,12 +1,15 @@
 package cli
 
 import (
+	"archive/tar"
 	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -376,6 +379,164 @@ func TestExecJSONReturnsExitCodeAndStructuredResult(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), `"state": "FAILED"`) {
 		t.Fatalf("expected structured exec result, got %q", stdout.String())
+	}
+}
+
+func TestExecStdinForwardsInput(t *testing.T) {
+	t.Setenv(envCLIConfigPath, t.TempDir()+"/config.json")
+	t.Setenv(envToken, "test-token")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/execs":
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			if got := body["stdin_text"]; got != "echo hello\n" {
+				t.Fatalf("expected stdin_text to be forwarded, got %#v", got)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"exec": map[string]any{
+					"id":           "exec-1",
+					"machine_name": "m-1",
+					"state":        "RUNNING",
+				},
+				"stream_url": "/v1/execs/exec-1/stream",
+				"cancel_url": "/v1/execs/exec-1/cancel",
+			})
+		case "/v1/execs/exec-1":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id":           "exec-1",
+				"machine_name": "m-1",
+				"state":        "SUCCEEDED",
+				"stdout_text":  "ok\n",
+			})
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	t.Setenv(envBaseURL, server.URL)
+	stdout := &bytes.Buffer{}
+	runner := Runner{
+		Stdin:  bytes.NewBufferString("echo hello\n"),
+		Stdout: stdout,
+		Stderr: &bytes.Buffer{},
+	}
+	if err := runner.Run(context.Background(), []string{"exec", "--stdin", "--json", "m-1", "--", "bash"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stdout.String(), `"state": "SUCCEEDED"`) {
+		t.Fatalf("unexpected stdout %q", stdout.String())
+	}
+}
+
+func TestUploadStreamsArchiveToServer(t *testing.T) {
+	t.Setenv(envCLIConfigPath, t.TempDir()+"/config.json")
+	t.Setenv(envToken, "test-token")
+
+	localDir := t.TempDir()
+	localPath := filepath.Join(localDir, "demo.txt")
+	if err := os.WriteFile(localPath, []byte("payload\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/machines/m-1/files" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		if got := r.URL.Query().Get("path"); got != "/tmp/demo.txt" {
+			t.Fatalf("unexpected remote path %q", got)
+		}
+		tr := tar.NewReader(r.Body)
+		header, err := tr.Next()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if header.Name != "demo.txt" {
+			t.Fatalf("unexpected archive root %q", header.Name)
+		}
+		payload, err := io.ReadAll(tr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(payload) != "payload\n" {
+			t.Fatalf("unexpected payload %q", string(payload))
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"machine_name":      "m-1",
+			"path":              "/tmp/demo.txt",
+			"direction":         "upload",
+			"bytes_transferred": 123,
+		})
+	}))
+	defer server.Close()
+
+	t.Setenv(envBaseURL, server.URL)
+	stdout := &bytes.Buffer{}
+	runner := Runner{
+		Stdin:  bytes.NewBuffer(nil),
+		Stdout: stdout,
+		Stderr: &bytes.Buffer{},
+	}
+	if err := runner.Run(context.Background(), []string{"upload", "--json", localPath, "m-1:/tmp/demo.txt"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stdout.String(), `"direction": "upload"`) {
+		t.Fatalf("unexpected stdout %q", stdout.String())
+	}
+}
+
+func TestDownloadExtractsArchiveToDestination(t *testing.T) {
+	t.Setenv(envCLIConfigPath, t.TempDir()+"/config.json")
+	t.Setenv(envToken, "test-token")
+
+	var archive bytes.Buffer
+	tw := tar.NewWriter(&archive)
+	body := []byte("payload\n")
+	if err := tw.WriteHeader(&tar.Header{Name: "demo.txt", Mode: 0o644, Size: int64(len(body))}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tw.Write(body); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/machines/m-1/files" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		if got := r.URL.Query().Get("path"); got != "/remote/demo.txt" {
+			t.Fatalf("unexpected remote path %q", got)
+		}
+		w.Header().Set("Content-Type", "application/x-tar")
+		if _, err := w.Write(archive.Bytes()); err != nil {
+			t.Fatal(err)
+		}
+	}))
+	defer server.Close()
+
+	t.Setenv(envBaseURL, server.URL)
+	destinationDir := t.TempDir()
+	destinationPath := filepath.Join(destinationDir, "renamed.txt")
+	runner := Runner{
+		Stdin:  bytes.NewBuffer(nil),
+		Stdout: &bytes.Buffer{},
+		Stderr: &bytes.Buffer{},
+	}
+	if err := runner.Run(context.Background(), []string{"download", "m-1:/remote/demo.txt", destinationPath}); err != nil {
+		t.Fatal(err)
+	}
+	content, err := os.ReadFile(destinationPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != "payload\n" {
+		t.Fatalf("unexpected downloaded content %q", string(content))
 	}
 }
 

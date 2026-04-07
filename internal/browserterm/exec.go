@@ -58,6 +58,7 @@ type Exec struct {
 
 type ExecRequest struct {
 	CommandText string
+	StdinText   string
 	CWD         string
 	Timeout     time.Duration
 	ID          string
@@ -169,7 +170,7 @@ func (m *Manager) CreateExec(ctx context.Context, userEmail, machineName string,
 		"timeout_seconds": record.RequestedTimeoutSeconds,
 	})
 
-	go m.runExec(jobCtx, job, record, machine)
+	go m.runExec(jobCtx, job, record, machine, req.StdinText)
 	return execFromRecord(record), nil
 }
 
@@ -291,7 +292,7 @@ func (m *Manager) StreamExec(w http.ResponseWriter, r *http.Request, userEmail, 
 	}
 }
 
-func (m *Manager) runExec(ctx context.Context, job *execJob, record database.ExecRecord, machine controlplane.Machine) {
+func (m *Manager) runExec(ctx context.Context, job *execJob, record database.ExecRecord, machine controlplane.Machine, stdinText string) {
 	defer func() {
 		m.execMu.Lock()
 		delete(m.execJobs, record.ID)
@@ -305,7 +306,6 @@ func (m *Manager) runExec(ctx context.Context, job *execJob, record database.Exe
 	state := execStateSucceeded
 	var exitCode *int
 	var failureClass *string
-
 	args, err := m.execSSHArgs(ctx, machine, record.CWD, record.CommandText)
 	if err != nil {
 		state, exitCode, failureClass = classifyExecError(job, ctx, err)
@@ -314,6 +314,15 @@ func (m *Manager) runExec(ctx context.Context, job *execJob, record database.Exe
 	}
 
 	cmd := exec.CommandContext(ctx, m.sshClientBinary, args...)
+	var stdinPipe io.WriteCloser
+	if stdinText != "" {
+		stdinPipe, err = cmd.StdinPipe()
+		if err != nil {
+			state, exitCode, failureClass = classifyExecError(job, ctx, err)
+			m.finishExec(job, record, state, exitCode, failureClass, stdoutBuffer, stderrBuffer, err)
+			return
+		}
+	}
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
 		state, exitCode, failureClass = classifyExecError(job, ctx, err)
@@ -331,6 +340,12 @@ func (m *Manager) runExec(ctx context.Context, job *execJob, record database.Exe
 		state, exitCode, failureClass = classifyExecError(job, ctx, err)
 		m.finishExec(job, record, state, exitCode, failureClass, stdoutBuffer, stderrBuffer, err)
 		return
+	}
+	if stdinPipe != nil {
+		go func() {
+			_, _ = io.WriteString(stdinPipe, stdinText)
+			_ = stdinPipe.Close()
+		}()
 	}
 
 	readErrCh := make(chan error, 2)

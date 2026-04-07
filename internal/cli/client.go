@@ -314,6 +314,10 @@ func (c Client) DiagnosticsExecs(ctx context.Context, limit int) (browserterm.Ex
 }
 
 func (c Client) CreateExec(ctx context.Context, machineName, commandText, cwd string, timeout time.Duration) (ExecLaunch, error) {
+	return c.CreateExecWithInput(ctx, machineName, commandText, "", cwd, timeout)
+}
+
+func (c Client) CreateExecWithInput(ctx context.Context, machineName, commandText, stdinText, cwd string, timeout time.Duration) (ExecLaunch, error) {
 	var out ExecLaunch
 	timeoutSeconds := 0
 	if timeout > 0 {
@@ -325,6 +329,7 @@ func (c Client) CreateExec(ctx context.Context, machineName, commandText, cwd st
 	err := c.request(ctx, http.MethodPost, "/v1/execs", map[string]any{
 		"machine_name":    strings.TrimSpace(machineName),
 		"command_text":    strings.TrimSpace(commandText),
+		"stdin_text":      stdinText,
 		"cwd":             strings.TrimSpace(cwd),
 		"timeout_seconds": timeoutSeconds,
 	}, &out)
@@ -351,6 +356,42 @@ func (c Client) ListExecs(ctx context.Context, limit int) ([]browserterm.Exec, e
 
 func (c Client) CancelExec(ctx context.Context, execID string) error {
 	return c.request(ctx, http.MethodPost, "/v1/execs/"+url.PathEscape(strings.TrimSpace(execID))+"/cancel", nil, nil)
+}
+
+func (c Client) UploadArchive(ctx context.Context, machineName, remotePath string, archive io.Reader) (browserterm.FileTransfer, error) {
+	var out browserterm.FileTransfer
+	req, err := c.newArchiveRequest(ctx, http.MethodPost, machineName, remotePath, archive)
+	if err != nil {
+		return browserterm.FileTransfer{}, err
+	}
+	resp, err := c.httpClientForStream().Do(req)
+	if err != nil {
+		return browserterm.FileTransfer{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return browserterm.FileTransfer{}, decodeProblem(resp)
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return browserterm.FileTransfer{}, err
+	}
+	return out, nil
+}
+
+func (c Client) DownloadArchive(ctx context.Context, machineName, remotePath string) (io.ReadCloser, error) {
+	req, err := c.newArchiveRequest(ctx, http.MethodGet, machineName, remotePath, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.httpClientForStream().Do(req)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode >= 400 {
+		defer resp.Body.Close()
+		return nil, decodeProblem(resp)
+	}
+	return resp.Body, nil
 }
 
 func (c Client) StreamExec(ctx context.Context, execID string, handler func(browserterm.ExecStreamEvent) error) error {
@@ -420,6 +461,36 @@ func (c Client) StreamExec(ctx context.Context, execID string, handler func(brow
 			return nil
 		}
 	}
+}
+
+func (c Client) newArchiveRequest(ctx context.Context, method, machineName, remotePath string, body io.Reader) (*http.Request, error) {
+	baseURL := normalizeBaseURL(c.BaseURL)
+	if baseURL == "" {
+		baseURL = defaultBaseURL
+	}
+	path := "/v1/machines/" + url.PathEscape(strings.TrimSpace(machineName)) + "/files?path=" + url.QueryEscape(strings.TrimSpace(remotePath))
+	req, err := http.NewRequestWithContext(ctx, method, baseURL+path, body)
+	if err != nil {
+		return nil, err
+	}
+	if method == http.MethodPost {
+		req.Header.Set("Content-Type", "application/x-tar")
+	}
+	if strings.TrimSpace(c.Token) != "" {
+		req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(c.Token))
+	}
+	return req, nil
+}
+
+func decodeProblem(resp *http.Response) error {
+	var problem struct {
+		Error string `json:"error"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&problem)
+	if strings.TrimSpace(problem.Error) != "" {
+		return fmt.Errorf("%s", problem.Error)
+	}
+	return fmt.Errorf("%s", resp.Status)
 }
 
 func (c Client) request(ctx context.Context, method, path string, input any, output any) error {

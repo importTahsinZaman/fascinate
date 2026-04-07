@@ -139,11 +139,27 @@ Why:
 - Reusing interactive shells for non-interactive jobs produces unreliable parsing, prompt ambiguity, and weak exit handling.
 - A dedicated exec path makes stdout/stderr separation and timeout semantics explicit.
 
+The exec contract will also support optional caller-provided stdin so agents can pipe multiline scripts or generated command bodies directly into the remote command without relying on shell-escaped heredocs.
+
 Alternatives considered:
 - Force agents to use only interactive shells plus `shell send`.
   - Rejected because it is brittle and hard to automate correctly.
 - Implement exec by creating hidden tmux shells.
   - Rejected because it blurs two different product primitives and makes exit semantics harder to reason about.
+
+### 10. Add archive-based upload and download for file movement
+
+Fascinate will add machine-scoped file transfer endpoints and CLI commands that move files or directories as tar archives over the same authenticated control-plane contract used by exec and shells.
+
+Core transfer semantics:
+- `fascinate upload <local-path> <machine>:<remote-path>` streams a local file or directory archive into a running machine
+- `fascinate download <machine>:<remote-path> <local-path>` streams a file or directory archive back to the local workstation or agent
+- transfer traffic uses the control plane for authentication and host routing, not direct workstation SSH
+
+Why:
+- Agents and humans need a first-class way to move scripts, projects, and outputs without converting file contents into shell-escaped heredocs.
+- Archive transfer supports both files and directories while staying simple to route through the existing host-local SSH gateway.
+- Reusing the control plane preserves the multi-surface model and keeps direct machine access optional rather than required.
 
 ### 7. Refactor the web workspace to reference shell IDs instead of owning shell existence
 

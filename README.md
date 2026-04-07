@@ -89,9 +89,11 @@ Current API surface:
 - `GET /v1/machines`
 - `POST /v1/machines`
 - `GET /v1/machines/{name}`
+- `GET /v1/machines/{name}/files`
 - `GET /v1/machines/{name}/env`
 - `DELETE /v1/machines/{name}`
 - `POST /v1/machines/{name}/fork`
+- `POST /v1/machines/{name}/files`
 - `GET /v1/env-vars`
 - `PUT /v1/env-vars`
 - `DELETE /v1/env-vars/{key}`
@@ -184,12 +186,17 @@ fascinate machine create my-machine
 fascinate shell create my-machine
 fascinate shell attach <shell-id>
 fascinate exec my-machine -- pwd
+cat script.sh | fascinate exec --stdin my-machine -- bash
+fascinate upload ./project my-machine:/home/ubuntu/project/
+fascinate download my-machine:/home/ubuntu/project ./project-copy
 fascinate diagnostics execs --json
 ```
 
 The CLI is optimized for automation:
 - `--json` prints only structured JSON to stdout
 - `--jsonl` streams ordered exec events to stdout for agents
+- `exec --stdin` lets agents send multiline scripts and heredoc-style input through stdin instead of shell-escaping them
+- `upload` and `download` move files or directories without embedding file contents into shell commands
 - collection-style `--json` commands use named top-level keys like `machines`, `snapshots`, `shells`, `lines`, `hosts`, and `events`
 - human prompts stay off stdout and destructive commands require `--yes` when stdin/stdout are not interactive
 - `fascinate help --json [topic]` returns machine-readable onboarding and command reference data

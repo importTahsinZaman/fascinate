@@ -26,6 +26,11 @@ Fascinate SHALL let a user manage machines, snapshots, env vars, diagnostics, an
 - **THEN** Fascinate returns user-scoped env-var and diagnostics information through the CLI
 - **AND** those commands do not require the browser app to complete the workflow
 
+#### Scenario: User moves files through the CLI
+- **WHEN** a user runs supported CLI upload or download commands against a running machine
+- **THEN** Fascinate transfers the requested file or directory through the machine-scoped control plane
+- **AND** the workflow does not require shell-escaped heredocs or direct SSH access from the user workstation
+
 ### Requirement: Fascinate SHALL provide automation-safe CLI output and exit behavior
 Fascinate SHALL make CLI commands safe for automation and AI-agent use by providing stable machine-readable output, predictable prompting rules, and consistent exit semantics.
 
