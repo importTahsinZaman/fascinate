@@ -28,7 +28,10 @@ quote_env_value() {
 }
 
 write_env_file() {
-  mkdir -p "${CONFIG_DIR}" "${DATA_DIR}" "${DATA_DIR}/images" "${DATA_DIR}/machines" "${DATA_DIR}/snapshots"
+  local public_assets_dir
+  public_assets_dir="${FASCINATE_PUBLIC_ASSETS_DIR:-${INSTALL_DIR}/public}"
+
+  mkdir -p "${CONFIG_DIR}" "${DATA_DIR}" "${DATA_DIR}/images" "${DATA_DIR}/machines" "${DATA_DIR}/snapshots" "${public_assets_dir}" "${public_assets_dir}/cli"
 
   cat >"${ENV_FILE}" <<EOF_ENV
 FASCINATE_HTTP_ADDR=$(quote_env_value "${FASCINATE_HTTP_ADDR:-127.0.0.1:8080}")
@@ -36,6 +39,7 @@ FASCINATE_DATA_DIR=$(quote_env_value "${DATA_DIR}")
 FASCINATE_DB_PATH=$(quote_env_value "${FASCINATE_DB_PATH:-${DATA_DIR}/fascinate.db}")
 FASCINATE_BASE_DOMAIN=$(quote_env_value "${FASCINATE_BASE_DOMAIN:-}")
 FASCINATE_ADMIN_EMAILS=$(quote_env_value "${FASCINATE_ADMIN_EMAILS:-}")
+FASCINATE_PUBLIC_ASSETS_DIR=$(quote_env_value "${public_assets_dir}")
 FASCINATE_RUNTIME_BINARY=$(quote_env_value "${FASCINATE_RUNTIME_BINARY:-cloud-hypervisor}")
 FASCINATE_RUNTIME_STATE_DIR=$(quote_env_value "${FASCINATE_RUNTIME_STATE_DIR:-${DATA_DIR}/machines}")
 FASCINATE_RUNTIME_SNAPSHOT_DIR=$(quote_env_value "${FASCINATE_RUNTIME_SNAPSHOT_DIR:-${DATA_DIR}/snapshots}")
@@ -80,6 +84,22 @@ FASCINATE_SIGNUP_CODE_TTL=$(quote_env_value "${FASCINATE_SIGNUP_CODE_TTL:-15m}")
 FASCINATE_ACME_EMAIL=$(quote_env_value "${FASCINATE_ACME_EMAIL:-}")
 FASCINATE_WEB_DIST_DIR=$(quote_env_value "${FASCINATE_WEB_DIST_DIR:-${WEB_DIST_TARGET_DIR}}")
 EOF_ENV
+}
+
+ensure_public_assets_env() {
+  local public_assets_dir
+  public_assets_dir="${FASCINATE_PUBLIC_ASSETS_DIR:-${INSTALL_DIR}/public}"
+
+  mkdir -p "${public_assets_dir}" "${public_assets_dir}/cli"
+  touch "${ENV_FILE}"
+
+  if grep -q '^FASCINATE_PUBLIC_ASSETS_DIR=' "${ENV_FILE}"; then
+    sed -i.bak "s#^FASCINATE_PUBLIC_ASSETS_DIR=.*#FASCINATE_PUBLIC_ASSETS_DIR=$(quote_env_value "${public_assets_dir}")#" "${ENV_FILE}"
+    rm -f "${ENV_FILE}.bak"
+    return
+  fi
+
+  printf '\nFASCINATE_PUBLIC_ASSETS_DIR=%s\n' "$(quote_env_value "${public_assets_dir}")" >>"${ENV_FILE}"
 }
 
 default_host_id() {
@@ -165,6 +185,8 @@ main() {
 
   if [[ ! -f "${ENV_FILE}" || "${OVERWRITE_ENV}" == "1" ]]; then
     write_env_file
+  else
+    ensure_public_assets_env
   fi
 
   set -a

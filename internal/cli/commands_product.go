@@ -208,11 +208,19 @@ func (r Runner) runMachineList(ctx context.Context, args []string) error {
 }
 
 func (r Runner) runMachineGet(ctx context.Context, args []string) error {
+	normalizedArgs, err := reorderKnownFlags(args, map[string]bool{
+		"json": true,
+	}, map[string]bool{
+		"base-url": true,
+	})
+	if err != nil {
+		return err
+	}
 	flags := flag.NewFlagSet("machine get", flag.ContinueOnError)
 	flags.SetOutput(r.Stderr)
 	baseURL := flags.String("base-url", "", "Fascinate API base URL")
 	jsonOutput := flags.Bool("json", false, "print JSON to stdout")
-	if err := flags.Parse(args); err != nil {
+	if err := flags.Parse(normalizedArgs); err != nil {
 		return err
 	}
 	if flags.NArg() != 1 {

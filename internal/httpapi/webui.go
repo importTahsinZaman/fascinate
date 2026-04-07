@@ -3,6 +3,7 @@ package httpapi
 import (
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 
@@ -10,6 +11,20 @@ import (
 )
 
 func newWebUIHandler(cfg config.Config) http.Handler {
+	webHandler := newApplicationWebHandler(cfg)
+	publicDir := strings.TrimSpace(cfg.PublicAssetsDir)
+	if publicDir == "" {
+		return webHandler
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if servePublicAsset(publicDir, w, r) {
+			return
+		}
+		webHandler.ServeHTTP(w, r)
+	})
+}
+
+func newApplicationWebHandler(cfg config.Config) http.Handler {
 	distDir := strings.TrimSpace(cfg.WebDistDir)
 	indexPath := filepath.Join(distDir, "index.html")
 	if distDir == "" {
@@ -37,6 +52,58 @@ func newWebUIHandler(cfg config.Config) http.Handler {
 		}
 		http.ServeFile(w, r, indexPath)
 	})
+}
+
+func servePublicAsset(publicDir string, w http.ResponseWriter, r *http.Request) bool {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		return false
+	}
+	cleanPath := path.Clean("/" + strings.TrimSpace(r.URL.Path))
+	switch {
+	case cleanPath == "/install.sh":
+	case strings.HasPrefix(cleanPath, "/cli/"):
+	default:
+		return false
+	}
+
+	fullPath, ok := resolvePublicAssetPath(publicDir, cleanPath)
+	if !ok {
+		http.NotFound(w, r)
+		return true
+	}
+	info, err := os.Stat(fullPath)
+	if err != nil || info.IsDir() {
+		http.NotFound(w, r)
+		return true
+	}
+
+	switch cleanPath {
+	case "/install.sh", "/cli/index.json":
+		w.Header().Set("Cache-Control", "no-store")
+	default:
+		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+	}
+	http.ServeFile(w, r, fullPath)
+	return true
+}
+
+func resolvePublicAssetPath(publicDir, requestPath string) (string, bool) {
+	publicDir = filepath.Clean(strings.TrimSpace(publicDir))
+	if publicDir == "" {
+		return "", false
+	}
+	relativePath := strings.TrimPrefix(path.Clean("/"+requestPath), "/")
+	if relativePath == "" || relativePath == "." {
+		return "", false
+	}
+	fullPath := filepath.Clean(filepath.Join(publicDir, filepath.FromSlash(relativePath)))
+	if fullPath == publicDir {
+		return "", false
+	}
+	if !strings.HasPrefix(fullPath, publicDir+string(os.PathSeparator)) {
+		return "", false
+	}
+	return fullPath, true
 }
 
 func fallbackRootHandler(cfg config.Config) http.Handler {

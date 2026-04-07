@@ -39,6 +39,68 @@ func TestWhoAmIRequiresToken(t *testing.T) {
 	}
 }
 
+func TestHelpIncludesQuickstartAndTopicHints(t *testing.T) {
+	stdout := &bytes.Buffer{}
+	runner := Runner{
+		Stdin:  bytes.NewBuffer(nil),
+		Stdout: stdout,
+		Stderr: &bytes.Buffer{},
+	}
+	if err := runner.Run(context.Background(), []string{"help"}); err != nil {
+		t.Fatal(err)
+	}
+	body := stdout.String()
+	for _, want := range []string{
+		"Fascinate CLI",
+		"Quick start",
+		"fascinate login --email you@example.com",
+		"fascinate help --json [topic]",
+		"Agent notes",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("expected help output to contain %q, got %q", want, body)
+		}
+	}
+}
+
+func TestHelpJSONSupportsTopicSelection(t *testing.T) {
+	stdout := &bytes.Buffer{}
+	runner := Runner{
+		Stdin:  bytes.NewBuffer(nil),
+		Stdout: stdout,
+		Stderr: &bytes.Buffer{},
+	}
+	if err := runner.Run(context.Background(), []string{"help", "agents", "--json"}); err != nil {
+		t.Fatal(err)
+	}
+	body := stdout.String()
+	for _, want := range []string{
+		`"topic": "agents"`,
+		`"title": "Fascinate CLI For Agents"`,
+		`"path": "exec"`,
+		`"path": "shell create"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("expected help json to contain %q, got %q", want, body)
+		}
+	}
+}
+
+func TestDashHelpAlias(t *testing.T) {
+	stdout := &bytes.Buffer{}
+	runner := Runner{
+		Stdin:  bytes.NewBuffer(nil),
+		Stdout: stdout,
+		Stderr: &bytes.Buffer{},
+	}
+	if err := runner.Run(context.Background(), []string{"--help"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stdout.String(), "Fascinate CLI") {
+		t.Fatalf("unexpected stdout %q", stdout.String())
+	}
+}
+
 func TestShellListJSON(t *testing.T) {
 	t.Setenv(envCLIConfigPath, t.TempDir()+"/config.json")
 	t.Setenv(envBaseURL, "")
@@ -133,6 +195,37 @@ func TestMachineListJSON(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !strings.Contains(stdout.String(), `"name": "m-1"`) {
+		t.Fatalf("unexpected stdout %q", stdout.String())
+	}
+}
+
+func TestMachineGetAcceptsTrailingJSONFlag(t *testing.T) {
+	t.Setenv(envCLIConfigPath, t.TempDir()+"/config.json")
+	t.Setenv(envToken, "test-token")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/machines/hello" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id":    "machine-hello",
+			"name":  "hello",
+			"state": "RUNNING",
+		})
+	}))
+	defer server.Close()
+
+	t.Setenv(envBaseURL, server.URL)
+	stdout := &bytes.Buffer{}
+	runner := Runner{
+		Stdin:  bytes.NewBuffer(nil),
+		Stdout: stdout,
+		Stderr: &bytes.Buffer{},
+	}
+	if err := runner.Run(context.Background(), []string{"machine", "get", "hello", "--json"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stdout.String(), `"name": "hello"`) {
 		t.Fatalf("unexpected stdout %q", stdout.String())
 	}
 }

@@ -13,6 +13,7 @@ type Config struct {
 	DataDir                 string
 	DBPath                  string
 	WebDistDir              string
+	PublicAssetsDir         string
 	BaseDomain              string
 	AdminEmails             []string
 	HostID                  string
@@ -114,6 +115,7 @@ func Load() Config {
 		DataDir:                 dataDir,
 		DBPath:                  dbPath,
 		WebDistDir:              getenv("FASCINATE_WEB_DIST_DIR", "./web/dist"),
+		PublicAssetsDir:         getenv("FASCINATE_PUBLIC_ASSETS_DIR", ""),
 		BaseDomain:              getenv("FASCINATE_BASE_DOMAIN", ""),
 		AdminEmails:             splitCSV(getenv("FASCINATE_ADMIN_EMAILS", "")),
 		HostID:                  hostID,

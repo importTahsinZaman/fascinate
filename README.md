@@ -156,9 +156,26 @@ curl -fsSL https://fascinate.dev/install.sh | bash
 
 The curl bootstrap installs only the user CLI. It resolves the latest or pinned CLI artifact from a public release index, verifies the archive checksum before installation, and installs `fascinate` into `~/.local/bin` by default.
 
+To publish a new public CLI release:
+
+```bash
+export FASCINATE_DEPLOY_HOST=fascinate.dev
+export FASCINATE_DEPLOY_USER=ubuntu
+export FASCINATE_DEPLOY_PORT=2220
+bash ./ops/release/publish-cli-release.sh --version 0.1.0 --latest 0.1.0
+```
+
+That command:
+- builds CLI-only artifacts for the supported Linux and macOS targets
+- updates the public CLI release index served from `https://downloads.fascinate.dev/cli/index.json`
+- publishes the stable installer at `https://fascinate.dev/install.sh`
+- uploads the artifacts into the host public-assets directory so they are immediately downloadable through the live Fascinate service
+
 Useful CLI workflows:
 
 ```bash
+fascinate help
+fascinate help --json agents
 fascinate login --email you@example.com
 fascinate machine list
 fascinate machine create my-machine
@@ -172,6 +189,7 @@ The CLI is optimized for automation:
 - `--json` prints only structured JSON to stdout
 - `--jsonl` streams ordered exec events to stdout for agents
 - human prompts stay off stdout and destructive commands require `--yes` when stdin/stdout are not interactive
+- `fascinate help --json [topic]` returns machine-readable onboarding and command reference data
 
 ### Fresh Host
 
@@ -333,6 +351,7 @@ export FASCINATE_DATA_DIR=./data
 export FASCINATE_DB_PATH=./data/fascinate.db
 export FASCINATE_BASE_DOMAIN=fascinate.dev
 export FASCINATE_ADMIN_EMAILS=you@example.com,ops@example.com
+export FASCINATE_PUBLIC_ASSETS_DIR=./public
 export FASCINATE_RUNTIME_BINARY=cloud-hypervisor
 export FASCINATE_RUNTIME_STATE_DIR=./data/machines
 export FASCINATE_RUNTIME_SNAPSHOT_DIR=./data/snapshots

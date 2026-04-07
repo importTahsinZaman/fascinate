@@ -43,6 +43,7 @@ verify-ops:
 	bash -n ops/release/verify-artifact.sh
 	bash -n ops/release/build-cli-artifact.sh
 	bash -n ops/release/build-cli-release-index.sh
+	bash -n ops/release/publish-cli-release.sh
 	bash -n ops/release/build-full-artifact.sh
 	bash -n ops/release/build-web-artifact.sh
 	bash -n ops/release/deploy-full-artifact.sh

@@ -143,6 +143,30 @@ Important:
 - restarting `fascinate` drops active browser shell attachments because terminal sessions live in-process today
 - persistent shells inside the guest still survive because they run under `tmux`
 
+### Public CLI publish
+
+Use the CLI publish path when you need `curl -fsSL https://fascinate.dev/install.sh | bash` to install a newly released CLI version:
+
+```bash
+export FASCINATE_DEPLOY_HOST=fascinate.dev
+export FASCINATE_DEPLOY_USER=ubuntu
+export FASCINATE_DEPLOY_PORT=2220
+bash ./ops/release/publish-cli-release.sh --version 0.1.0 --latest 0.1.0
+```
+
+This path:
+
+- builds CLI-only artifacts for the supported Linux and macOS targets
+- updates the public release index at `https://downloads.fascinate.dev/cli/index.json`
+- publishes `install.sh` at `https://fascinate.dev/install.sh`
+- uploads the artifacts into `FASCINATE_PUBLIC_ASSETS_DIR` on the target host so the live service can serve them immediately
+
+If you only want to stage the publish output locally without uploading it:
+
+```bash
+bash ./ops/release/publish-cli-release.sh --version 0.1.0 --local-dir ./.tmp/public-cli
+```
+
 ### Verification after deploy
 
 For either deploy path:

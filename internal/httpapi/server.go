@@ -1442,9 +1442,19 @@ func withMachineProxy(cfg config.Config, machines machineManager, next http.Hand
 		return next
 	}
 
+	reservedHosts := map[string]struct{}{
+		baseDomain:                {},
+		"www." + baseDomain:       {},
+		"downloads." + baseDomain: {},
+	}
+
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		host := normalizeHost(r.Host)
-		if host == "" || host == baseDomain || host == "www."+baseDomain {
+		if host == "" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if _, ok := reservedHosts[host]; ok {
 			next.ServeHTTP(w, r)
 			return
 		}

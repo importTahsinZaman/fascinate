@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -1218,6 +1219,40 @@ func TestMachineSubdomainReturnsNotFoundForUnknownMachine(t *testing.T) {
 		t.Fatalf("expected 404, got %d", rec.Code)
 	}
 	if body := rec.Body.String(); !strings.Contains(body, "Unknown machine") {
+		t.Fatalf("unexpected body: %q", body)
+	}
+}
+
+func TestReservedDownloadsSubdomainServesCLIAssets(t *testing.T) {
+	t.Parallel()
+
+	publicDir := t.TempDir()
+	distDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(publicDir, "cli"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(publicDir, "cli", "index.json"), []byte("{\"latestVersion\":\"0.1.0\"}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(distDir, "index.html"), []byte("<html>app</html>\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	handler := newTestHandlerWithConfig(t, config.Config{
+		BaseDomain:      "fascinate.dev",
+		PublicAssetsDir: publicDir,
+		WebDistDir:      distDir,
+	}, &fakeRuntime{}, &fakeMachineManager{})
+
+	req := httptest.NewRequest(http.MethodGet, "http://downloads.fascinate.dev/cli/index.json", nil)
+	req.Host = "downloads.fascinate.dev"
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if body := rec.Body.String(); body != "{\"latestVersion\":\"0.1.0\"}\n" {
 		t.Fatalf("unexpected body: %q", body)
 	}
 }

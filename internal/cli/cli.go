@@ -33,9 +33,11 @@ func Run(ctx context.Context, args []string) error {
 
 func (r Runner) Run(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		return r.printHelp()
+		return r.runHelp(nil)
 	}
 	switch args[0] {
+	case "-h", "--help":
+		return r.runHelp(args[1:])
 	case "diagnostics":
 		return r.runDiagnostics(ctx, args[1:])
 	case "env":
@@ -55,7 +57,7 @@ func (r Runner) Run(ctx context.Context, args []string) error {
 	case "whoami":
 		return r.runWhoAmI(ctx, args[1:])
 	case "help":
-		return r.printHelp()
+		return r.runHelp(args[1:])
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}
@@ -393,8 +395,7 @@ func (r Runner) runShellLines(ctx context.Context, args []string) error {
 }
 
 func (r Runner) printHelp() error {
-	_, err := fmt.Fprintln(r.Stdout, "Usage: fascinate <login|logout|whoami|machine|snapshot|env|shell|exec|diagnostics>")
-	return err
+	return r.runHelp(nil)
 }
 
 func (r Runner) prompt(label string) (string, error) {
