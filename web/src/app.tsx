@@ -999,9 +999,6 @@ function CommandCenter() {
                           <>
                             {isRunningMachine ? (
                               <>
-                                <button type="button" onClick={() => openMachineShell(machine.name)}>
-                                  New shell
-                                </button>
                                 <button
                                   className="icon-action-button"
                                   type="button"
@@ -1041,6 +1038,17 @@ function CommandCenter() {
                         )}
                       </div>
                     </div>
+                    {isRunningMachine && !isPendingMachine ? (
+                      <div className="machine-card-footer">
+                        <button
+                          className="machine-card-shell-button"
+                          type="button"
+                          onClick={() => openMachineShell(machine.name)}
+                        >
+                          New shell
+                        </button>
+                      </div>
+                    ) : null}
                   </article>
                 );
               })}

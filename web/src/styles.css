@@ -1,23 +1,54 @@
+@font-face {
+  font-family: "Inter";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("/fonts/Inter-100_900.ttf") format("truetype");
+}
+
+@font-face {
+  font-family: "Inter";
+  font-style: italic;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("/fonts/Inter-100_900-Italic.ttf") format("truetype");
+}
+
+@font-face {
+  font-family: "Roboto Mono";
+  font-style: normal;
+  font-weight: 100 700;
+  font-display: swap;
+  src: url("/fonts/Roboto_Mono-100_700.ttf") format("truetype");
+}
+
+@font-face {
+  font-family: "Roboto Mono";
+  font-style: italic;
+  font-weight: 100 700;
+  font-display: swap;
+  src: url("/fonts/Roboto_Mono-100_700-Italic.ttf") format("truetype");
+}
+
 :root {
   color-scheme: dark;
   font-family:
-    -apple-system,
-    BlinkMacSystemFont,
-    "SF Pro Text",
-    "SF Pro Display",
+    "Inter",
     "Helvetica Neue",
     "Segoe UI",
+    -apple-system,
+    BlinkMacSystemFont,
     sans-serif;
 
   --font-sans:
-    -apple-system,
-    BlinkMacSystemFont,
-    "SF Pro Text",
-    "SF Pro Display",
+    "Inter",
     "Helvetica Neue",
     "Segoe UI",
+    -apple-system,
+    BlinkMacSystemFont,
     sans-serif;
   --font-mono:
+    "Roboto Mono",
     "SF Mono",
     "SFMono-Regular",
     ui-monospace,
@@ -384,7 +415,12 @@ a {
   line-height: 20px;
 }
 
-.sidebar-machine-list,
+.sidebar-machine-list {
+  display: grid;
+  gap: 0;
+  content-visibility: auto;
+}
+
 .sidebar-record-list {
   display: grid;
   gap: var(--space-3);
@@ -532,7 +568,23 @@ a {
   text-overflow: ellipsis;
 }
 
-.machine-card,
+.machine-card {
+  display: grid;
+  gap: 0;
+  border-radius: 0;
+  background: #141414;
+  border: 0;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.machine-card:first-child {
+  border-top: 0;
+}
+
+.machine-card:last-child {
+  border-bottom: 0;
+}
+
 .sidebar-record {
   display: grid;
   gap: var(--space-4);
@@ -563,7 +615,7 @@ a {
   grid-template-columns: minmax(0, 1fr) auto;
   gap: var(--space-4);
   align-items: center;
-  padding: 10px 12px;
+  padding: 10px 0;
   border-bottom: 0;
 }
 
@@ -665,6 +717,26 @@ a {
   min-height: 28px;
   height: 28px;
   color: var(--text-secondary);
+}
+
+.machine-card-footer {
+  display: flex;
+  justify-content: flex-end;
+  padding: 0 0 10px;
+}
+
+.machine-card-shell-button {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #18e37d;
+}
+
+.machine-card-shell-button:hover,
+.machine-card-shell-button:active {
+  border-color: transparent;
+  background: transparent;
+  color: #18e37d;
 }
 
 .machine-card-shells {
@@ -1975,7 +2047,7 @@ a {
   margin: 0;
   padding: 0;
   color: #f3f1eb;
-  font-family: "SF Mono", "SFMono-Regular", ui-monospace, Menlo, Consolas, monospace;
+  font-family: var(--font-mono);
   font-size: 15px;
   line-height: 1.5;
   white-space: pre-wrap;
