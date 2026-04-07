@@ -333,13 +333,17 @@ func New(cfg config.Config, store *database.Store, runtime runtimeChecker, machi
 			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "CLI auth is not configured"})
 			return
 		}
+		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+		defer cancel()
+		if _, err := requireAPIToken(ctx, r, auth); err != nil {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
+			return
+		}
 		header := strings.TrimSpace(r.Header.Get("Authorization"))
-		if len(header) >= len("Bearer ")+1 && strings.EqualFold(header[:len("Bearer ")], "Bearer ") {
-			rawToken := strings.TrimSpace(header[len("Bearer "):])
-			if err := auth.LogoutAPIToken(r.Context(), rawToken); err != nil {
-				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
-				return
-			}
+		rawToken := strings.TrimSpace(header[len("Bearer "):])
+		if err := auth.LogoutAPIToken(ctx, rawToken); err != nil {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
+			return
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})

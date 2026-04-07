@@ -121,6 +121,7 @@ type fakeBrowserAuth struct {
 	apiToken        string
 	logoutToken     string
 	logoutAPIToken  string
+	logoutAPIErr    error
 	session         browserauth.Session
 	apiTokenSession browserauth.APITokenSession
 	authErr         error
@@ -175,7 +176,7 @@ func (f *fakeBrowserAuth) AuthenticateAPIToken(_ context.Context, rawToken strin
 
 func (f *fakeBrowserAuth) LogoutAPIToken(_ context.Context, rawToken string) error {
 	f.logoutAPIToken = rawToken
-	return nil
+	return f.logoutAPIErr
 }
 
 type fakeTerminalManager struct {
@@ -1518,7 +1519,7 @@ func TestCLISessionEndpointUsesBearerToken(t *testing.T) {
 func TestCLILogoutEndpointRevokesBearerToken(t *testing.T) {
 	t.Parallel()
 
-	auth := &fakeBrowserAuth{}
+	auth := &fakeBrowserAuth{apiToken: "cli-token"}
 	handler := newTestHandlerWithExtras(t, config.Config{BaseDomain: "fascinate.dev"}, &fakeRuntime{}, &fakeMachineManager{}, auth, nil, nil, nil)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/cli/auth/logout", nil)
@@ -1531,6 +1532,24 @@ func TestCLILogoutEndpointRevokesBearerToken(t *testing.T) {
 	}
 	if auth.logoutAPIToken != "cli-token" {
 		t.Fatalf("expected cli token logout, got %q", auth.logoutAPIToken)
+	}
+}
+
+func TestCLILogoutEndpointRequiresBearerToken(t *testing.T) {
+	t.Parallel()
+
+	auth := &fakeBrowserAuth{}
+	handler := newTestHandlerWithExtras(t, config.Config{BaseDomain: "fascinate.dev"}, &fakeRuntime{}, &fakeMachineManager{}, auth, nil, nil, nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/cli/auth/logout", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if auth.logoutAPIToken != "" {
+		t.Fatalf("expected no logout call without bearer token, got %q", auth.logoutAPIToken)
 	}
 }
 

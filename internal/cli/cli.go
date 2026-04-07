@@ -154,12 +154,18 @@ func (r Runner) runLogout(ctx context.Context, args []string) error {
 		BaseURL: firstNonEmpty(*baseURL, ResolveBaseURL(stored)),
 		Token:   ResolveToken(stored),
 	}
+	var logoutWarn error
 	if strings.TrimSpace(client.Token) != "" {
-		_ = client.Logout(ctx)
+		logoutWarn = client.Logout(ctx)
 	}
 	stored.Token = ""
 	if err := SaveConfig(path, stored); err != nil {
 		return err
+	}
+	if logoutWarn != nil {
+		if _, err := fmt.Fprintf(r.Stderr, "Warning: remote token revocation failed: %v\n", logoutWarn); err != nil {
+			return err
+		}
 	}
 	_, err = fmt.Fprintln(r.Stdout, "Logged out.")
 	return err

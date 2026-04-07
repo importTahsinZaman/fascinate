@@ -32,6 +32,8 @@ main() {
   local install_dir
   local pinned_dir
   local bad_dir
+  local missing_sha_dir
+  local traversal_dir
   local artifact_path
   local output
 
@@ -40,7 +42,9 @@ main() {
   install_dir="${work_dir}/install"
   pinned_dir="${work_dir}/pinned"
   bad_dir="${work_dir}/bad"
-  mkdir -p "${artifact_dir}" "${install_dir}" "${pinned_dir}" "${bad_dir}"
+  missing_sha_dir="${work_dir}/missing-sha"
+  traversal_dir="${work_dir}/traversal"
+  mkdir -p "${artifact_dir}" "${install_dir}" "${pinned_dir}" "${bad_dir}" "${missing_sha_dir}" "${traversal_dir}"
   trap 'rm -rf "${work_dir}"' EXIT
 
   (
@@ -91,6 +95,50 @@ PY
 
     if FASCINATE_INSTALL_BASE_URL="file://${artifact_dir}" FASCINATE_INSTALL_DIR="${work_dir}/missing-install" FASCINATE_VERSION="9.9.9" bash ./install.sh >/dev/null 2>&1; then
       echo "expected missing version install to fail" >&2
+      exit 1
+    fi
+
+    cp "${artifact_path}" "${missing_sha_dir}/$(basename "${artifact_path}")"
+    cp "${artifact_dir}/index.json" "${missing_sha_dir}/index.json"
+    python3 - <<'PY' "${missing_sha_dir}/index.json"
+import json, sys
+path = sys.argv[1]
+with open(path, "r", encoding="utf-8") as fh:
+    data = json.load(fh)
+del data["releases"][0]["artifacts"][0]["sha256"]
+with open(path, "w", encoding="utf-8") as fh:
+    json.dump(data, fh)
+PY
+    if FASCINATE_INSTALL_BASE_URL="file://${missing_sha_dir}" FASCINATE_INSTALL_DIR="${work_dir}/missing-sha-install" bash ./install.sh >/dev/null 2>&1; then
+      echo "expected missing checksum install to fail" >&2
+      exit 1
+    fi
+
+    if FASCINATE_INSTALL_BASE_URL="http://example.com/cli" FASCINATE_INSTALL_DIR="${work_dir}/insecure-install" bash ./install.sh >/dev/null 2>&1; then
+      echo "expected insecure http install base to fail" >&2
+      exit 1
+    fi
+
+    cp "${artifact_dir}/index.json" "${traversal_dir}/index.json"
+    python3 - <<'PY' "${traversal_dir}/evil.tar.gz" "${traversal_dir}/index.json"
+import hashlib, io, json, sys, tarfile
+archive_path, index_path = sys.argv[1], sys.argv[2]
+with tarfile.open(archive_path, "w:gz") as tf:
+    info = tarfile.TarInfo(name="../../escape.txt")
+    payload = b"owned"
+    info.size = len(payload)
+    tf.addfile(info, io.BytesIO(payload))
+with open(archive_path, "rb") as fh:
+    sha = hashlib.sha256(fh.read()).hexdigest()
+with open(index_path, "r", encoding="utf-8") as fh:
+    data = json.load(fh)
+data["releases"][0]["artifacts"][0]["url"] = "file://" + archive_path
+data["releases"][0]["artifacts"][0]["sha256"] = sha
+with open(index_path, "w", encoding="utf-8") as fh:
+    json.dump(data, fh)
+PY
+    if FASCINATE_INSTALL_BASE_URL="file://${traversal_dir}" FASCINATE_INSTALL_DIR="${work_dir}/traversal-install" bash ./install.sh >/dev/null 2>&1; then
+      echo "expected traversal archive install to fail" >&2
       exit 1
     fi
   )

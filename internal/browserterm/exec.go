@@ -390,6 +390,17 @@ func (m *Manager) finishExec(job *execJob, record database.ExecRecord, state str
 		}
 		m.recordExecEventBestEffort(finished, "exec.completed", payload)
 		record = finished
+	} else {
+		now := time.Now().UTC().Format(time.RFC3339)
+		record.State = state
+		record.ExitCode = cloneIntPointer(exitCode)
+		record.FailureClass = cloneStringPointer(failureClass)
+		record.StdoutText = stdoutBuffer.String()
+		record.StderrText = stderrBuffer.String()
+		record.StdoutTruncated = stdoutBuffer.Truncated()
+		record.StderrTruncated = stderrBuffer.Truncated()
+		record.CompletedAt = stringPointer(now)
+		record.UpdatedAt = now
 	}
 
 	result := execFromRecord(record)
@@ -549,6 +560,22 @@ func execPointer(value Exec) *Exec {
 	return &value
 }
 
+func cloneIntPointer(value *int) *int {
+	if value == nil {
+		return nil
+	}
+	copy := *value
+	return &copy
+}
+
+func cloneStringPointer(value *string) *string {
+	if value == nil {
+		return nil
+	}
+	copy := *value
+	return &copy
+}
+
 func writeExecSSEEvent(w http.ResponseWriter, event ExecStreamEvent) error {
 	body, err := json.Marshal(event)
 	if err != nil {
@@ -591,8 +618,13 @@ func (j *execJob) subscribe() (<-chan ExecStreamEvent, func()) {
 func (j *execJob) broadcast(event ExecStreamEvent) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	for _, ch := range j.subscribers {
-		ch <- event
+	for id, ch := range j.subscribers {
+		select {
+		case ch <- event:
+		default:
+			delete(j.subscribers, id)
+			close(ch)
+		}
 	}
 }
 

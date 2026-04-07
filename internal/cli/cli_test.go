@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -36,6 +37,53 @@ func TestWhoAmIRequiresToken(t *testing.T) {
 	err := runner.Run(context.Background(), []string{"whoami"})
 	if err == nil || !strings.Contains(err.Error(), "no API token configured") {
 		t.Fatalf("expected missing token error, got %v", err)
+	}
+}
+
+func TestLogoutWarnsWhenRemoteRevocationFails(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.json")
+	t.Setenv(envCLIConfigPath, configPath)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/cli/auth/logout" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadGateway)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "gateway unavailable"})
+	}))
+	defer server.Close()
+
+	if err := SaveConfig(configPath, Config{
+		BaseURL: server.URL,
+		Token:   "cli-token",
+		Email:   "dev@example.com",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout := &bytes.Buffer{}
+	stderr := &bytes.Buffer{}
+	runner := Runner{
+		Stdin:  bytes.NewBuffer(nil),
+		Stdout: stdout,
+		Stderr: stderr,
+	}
+	if err := runner.Run(context.Background(), []string{"logout"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stdout.String(), "Logged out.") {
+		t.Fatalf("unexpected stdout %q", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "remote token revocation failed") {
+		t.Fatalf("expected warning on stderr, got %q", stderr.String())
+	}
+	cfg, _, err := LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Token != "" {
+		t.Fatalf("expected token to be cleared locally, got %+v", cfg)
 	}
 }
 

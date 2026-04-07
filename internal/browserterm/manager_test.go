@@ -28,6 +28,19 @@ type fakeMachineManager struct {
 	name           string
 }
 
+type fakeShellConnection struct {
+	closed bool
+	status websocket.StatusCode
+	reason string
+}
+
+func (f *fakeShellConnection) Close(status websocket.StatusCode, reason string) error {
+	f.closed = true
+	f.status = status
+	f.reason = reason
+	return nil
+}
+
 func (f *fakeMachineManager) GetMachine(_ context.Context, name, ownerEmail string) (controlplane.Machine, error) {
 	f.name = name
 	f.owner = ownerEmail
@@ -166,6 +179,68 @@ func TestCloseSessionAllowsMissingSession(t *testing.T) {
 	}
 	if diag := manager.Diagnostics(); diag.ActiveSessions != 0 {
 		t.Fatalf("expected no active sessions, got %+v", diag)
+	}
+}
+
+func TestDeleteShellDoesNotInflateDisconnectsWithoutAttachments(t *testing.T) {
+	t.Parallel()
+
+	machines := &fakeMachineManager{machine: controlplane.Machine{
+		ID:     "machine-1",
+		Name:   "m-1",
+		HostID: "local-host",
+		State:  "RUNNING",
+		Runtime: &machineruntime.Machine{
+			SSHHost: "127.0.0.1",
+			SSHPort: 2222,
+		},
+	}}
+	manager := newTestManager(t, config.Config{HostID: "local-host", TerminalSessionTTL: 2 * time.Minute}, machines)
+	manager.sshClientBinary = "true"
+
+	shell, err := manager.CreateShell(context.Background(), "dev@example.com", "m-1", "primary")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.DeleteShell(context.Background(), "dev@example.com", shell.ID); err != nil {
+		t.Fatal(err)
+	}
+	if diag := manager.Diagnostics(); diag.TotalDisconnects != 0 {
+		t.Fatalf("expected delete without attachments to avoid disconnect inflation, got %+v", diag)
+	}
+}
+
+func TestDeleteShellClosesActiveConnections(t *testing.T) {
+	t.Parallel()
+
+	machines := &fakeMachineManager{machine: controlplane.Machine{
+		ID:     "machine-1",
+		Name:   "m-1",
+		HostID: "local-host",
+		State:  "RUNNING",
+		Runtime: &machineruntime.Machine{
+			SSHHost: "127.0.0.1",
+			SSHPort: 2222,
+		},
+	}}
+	manager := newTestManager(t, config.Config{HostID: "local-host", TerminalSessionTTL: 2 * time.Minute}, machines)
+	manager.sshClientBinary = "true"
+
+	shell, err := manager.CreateShell(context.Background(), "dev@example.com", "m-1", "primary")
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn := &fakeShellConnection{}
+	manager.registerShellConnection(shell.ID, conn)
+
+	if err := manager.DeleteShell(context.Background(), "dev@example.com", shell.ID); err != nil {
+		t.Fatal(err)
+	}
+	if !conn.closed {
+		t.Fatalf("expected active shell connection to be closed")
+	}
+	if conn.status != websocket.StatusGoingAway || conn.reason != "shell deleted" {
+		t.Fatalf("unexpected close details %+v", conn)
 	}
 }
 
@@ -493,6 +568,116 @@ func TestCreateExecCapturesOutputAndExitCode(t *testing.T) {
 	}
 	if !strings.Contains(record.StderrText, "warn") {
 		t.Fatalf("expected stderr to be captured, got %q", record.StderrText)
+	}
+}
+
+func TestExecBroadcastDropsSlowSubscribers(t *testing.T) {
+	t.Parallel()
+
+	slow := make(chan ExecStreamEvent, 1)
+	slow <- ExecStreamEvent{Type: "stdout", Data: "backed up"}
+	fast := make(chan ExecStreamEvent, 1)
+	job := &execJob{
+		subscribers: map[int]chan ExecStreamEvent{
+			1: slow,
+			2: fast,
+		},
+	}
+
+	done := make(chan struct{})
+	go func() {
+		job.broadcast(ExecStreamEvent{Type: "result"})
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("timed out waiting for broadcast to finish")
+	}
+
+	select {
+	case event := <-fast:
+		if event.Type != "result" {
+			t.Fatalf("expected fast subscriber to receive result, got %+v", event)
+		}
+	default:
+		t.Fatal("expected fast subscriber to receive an event")
+	}
+
+	job.mu.Lock()
+	_, slowActive := job.subscribers[1]
+	_, fastActive := job.subscribers[2]
+	job.mu.Unlock()
+	if slowActive {
+		t.Fatalf("expected slow subscriber to be evicted")
+	}
+	if !fastActive {
+		t.Fatalf("expected fast subscriber to remain registered")
+	}
+}
+
+func TestFinishExecFallsBackToInMemoryResultWhenStoreUpdateFails(t *testing.T) {
+	t.Parallel()
+
+	machines := &fakeMachineManager{machine: controlplane.Machine{
+		ID:     "machine-1",
+		Name:   "m-1",
+		HostID: "local-host",
+		State:  "RUNNING",
+		Runtime: &machineruntime.Machine{
+			SSHHost: "127.0.0.1",
+			SSHPort: 2222,
+		},
+	}}
+	manager, store := newTestManagerWithStore(t, config.Config{HostID: "local-host"}, machines)
+
+	user, err := store.GetUserByEmail(context.Background(), "dev@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := store.CreateExec(context.Background(), database.CreateExecParams{
+		ID:          "exec-fallback",
+		UserID:      user.ID,
+		MachineID:   machines.machine.ID,
+		HostID:      stringPtr("local-host"),
+		CommandText: "false",
+		State:       execStateRunning,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	job := &execJob{subscribers: map[int]chan ExecStreamEvent{}}
+	stream, unsubscribe := job.subscribe()
+	defer unsubscribe()
+
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	stdoutBuffer := cappedStringBuffer{limit: execOutputStoreLimit}
+	stdoutBuffer.WriteString("hello\n")
+	stderrBuffer := cappedStringBuffer{limit: execOutputStoreLimit}
+	stderrBuffer.WriteString("warn\n")
+	exitCode := 7
+	failureClass := stringPointer(execFailureCommandExit)
+
+	manager.finishExec(job, record, execStateFailed, &exitCode, failureClass, stdoutBuffer, stderrBuffer, nil)
+
+	select {
+	case event, ok := <-stream:
+		if !ok || event.Exec == nil {
+			t.Fatalf("expected final exec event, got ok=%v event=%+v", ok, event)
+		}
+		if event.Exec.State != execStateFailed || event.Exec.ExitCode == nil || *event.Exec.ExitCode != 7 {
+			t.Fatalf("unexpected final exec %+v", event.Exec)
+		}
+		if !strings.Contains(event.Exec.StdoutText, "hello") || !strings.Contains(event.Exec.StderrText, "warn") {
+			t.Fatalf("expected in-memory output to survive store failure, got %+v", event.Exec)
+		}
+	default:
+		t.Fatal("expected final exec event")
 	}
 }
 

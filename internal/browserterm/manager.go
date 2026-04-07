@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"os/exec"
@@ -48,6 +49,7 @@ type Manager struct {
 
 	mu                  sync.Mutex
 	attachments         map[string]*attachment
+	activeConnections   map[string]map[shellConnection]struct{}
 	totalCreated        int
 	totalAttachFailures int
 	totalDisconnects    int
@@ -157,6 +159,10 @@ type attachment struct {
 	attachedAt *time.Time
 }
 
+type shellConnection interface {
+	Close(websocket.StatusCode, string) error
+}
+
 type controlMessage struct {
 	Type   string `json:"type"`
 	Cols   int    `json:"cols,omitempty"`
@@ -189,17 +195,18 @@ func New(cfg config.Config, machines machineManager, stores ...*database.Store) 
 		store = stores[0]
 	}
 	return &Manager{
-		cfg:             cfg,
-		store:           store,
-		machines:        machines,
-		sshClientBinary: firstNonEmpty(strings.TrimSpace(cfg.SSHClientBinary), "ssh"),
-		guestSSHKeyPath: strings.TrimSpace(cfg.GuestSSHKeyPath),
-		localHostID:     localHostID,
-		guestReadyWait:  20 * time.Second,
-		guestReadyPoll:  1500 * time.Millisecond,
-		attachments:     map[string]*attachment{},
-		gitCommandGates: map[string]chan struct{}{},
-		execJobs:        map[string]*execJob{},
+		cfg:               cfg,
+		store:             store,
+		machines:          machines,
+		sshClientBinary:   firstNonEmpty(strings.TrimSpace(cfg.SSHClientBinary), "ssh"),
+		guestSSHKeyPath:   strings.TrimSpace(cfg.GuestSSHKeyPath),
+		localHostID:       localHostID,
+		guestReadyWait:    20 * time.Second,
+		guestReadyPoll:    1500 * time.Millisecond,
+		attachments:       map[string]*attachment{},
+		activeConnections: map[string]map[shellConnection]struct{}{},
+		gitCommandGates:   map[string]chan struct{}{},
+		execJobs:          map[string]*execJob{},
 	}
 }
 
@@ -361,8 +368,10 @@ func (m *Manager) DeleteShell(ctx context.Context, userEmail, shellID string) er
 		return err
 	}
 	m.dropShellAttachments(record.ID)
-	m.totalDisconnects++
-	_ = m.destroyRemoteShell(ctx, record)
+	m.closeShellConnections(record.ID, websocket.StatusGoingAway, "shell deleted")
+	if err := m.destroyRemoteShell(ctx, record); err != nil {
+		log.Printf("fascinate: destroy remote shell %s: %v", record.ID, err)
+	}
 	m.recordShellEventBestEffort(record, "shell.deleted", map[string]any{
 		"shell_id":     record.ID,
 		"machine_id":   record.MachineID,
@@ -610,6 +619,8 @@ func (m *Manager) StreamSession(w http.ResponseWriter, r *http.Request, id strin
 		return err
 	}
 	defer conn.CloseNow()
+	m.registerShellConnection(record.ID, conn)
+	defer m.unregisterShellConnection(record.ID, conn)
 
 	ctx := r.Context()
 
@@ -855,6 +866,55 @@ func (m *Manager) dropShellAttachments(shellID string) {
 		if attach.shellID == shellID {
 			delete(m.attachments, key)
 		}
+	}
+}
+
+func (m *Manager) registerShellConnection(shellID string, conn shellConnection) {
+	if conn == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	connections := m.activeConnections[shellID]
+	if connections == nil {
+		connections = map[shellConnection]struct{}{}
+		m.activeConnections[shellID] = connections
+	}
+	connections[conn] = struct{}{}
+}
+
+func (m *Manager) unregisterShellConnection(shellID string, conn shellConnection) {
+	if conn == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	connections := m.activeConnections[shellID]
+	if connections == nil {
+		return
+	}
+	delete(connections, conn)
+	if len(connections) == 0 {
+		delete(m.activeConnections, shellID)
+	}
+}
+
+func (m *Manager) closeShellConnections(shellID string, status websocket.StatusCode, reason string) {
+	m.mu.Lock()
+	connections := m.activeConnections[shellID]
+	if len(connections) == 0 {
+		delete(m.activeConnections, shellID)
+		m.mu.Unlock()
+		return
+	}
+	delete(m.activeConnections, shellID)
+	toClose := make([]shellConnection, 0, len(connections))
+	for conn := range connections {
+		toClose = append(toClose, conn)
+	}
+	m.mu.Unlock()
+	for _, conn := range toClose {
+		_ = conn.Close(status, reason)
 	}
 }
 

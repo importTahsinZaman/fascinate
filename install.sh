@@ -34,6 +34,37 @@ sha256_file() {
   shasum -a 256 "${path}" | awk '{print $1}'
 }
 
+require_secure_url() {
+  local kind="$1"
+  local value="$2"
+  case "${value}" in
+    https://*|file://*|http://127.0.0.1*|http://localhost*|http://[::1]*|http://0.0.0.0*)
+      return
+      ;;
+  esac
+  echo "${kind} must use https:// (or file:// for local testing)" >&2
+  exit 1
+}
+
+validate_archive_entries() {
+  local archive="$1"
+  local entry=""
+  while IFS= read -r entry; do
+    entry="${entry#./}"
+    [[ -z "${entry}" ]] && continue
+    if [[ "${entry}" == /* ]]; then
+      echo "refusing to extract archive with absolute path entry: ${entry}" >&2
+      exit 1
+    fi
+    case "/${entry}/" in
+      *"/../"*)
+        echo "refusing to extract archive with parent path entry: ${entry}" >&2
+        exit 1
+        ;;
+    esac
+  done < <(tar -tzf "${archive}")
+}
+
 detect_os() {
   case "$(uname -s)" in
     Linux) printf 'linux' ;;
@@ -81,6 +112,7 @@ main() {
   require tar
 
   parse_args "$@"
+  require_secure_url "install base URL" "${BASE_URL}"
 
   local target_os
   local target_arch
@@ -117,6 +149,11 @@ main() {
     echo "no fascinate CLI artifact is published for version ${resolved_version} on ${target_os}/${target_arch}" >&2
     exit 1
   fi
+  if [[ -z "${artifact_sha}" || "${artifact_sha}" == "null" ]]; then
+    echo "published artifact for version ${resolved_version} on ${target_os}/${target_arch} is missing a checksum" >&2
+    exit 1
+  fi
+  require_secure_url "artifact URL" "${artifact_url}"
 
   artifact_path="${TMP_DIR}/artifact.tar.gz"
   curl -fsSL "${artifact_url}" -o "${artifact_path}"
@@ -127,6 +164,7 @@ main() {
 
   unpack_dir="${TMP_DIR}/unpack"
   mkdir -p "${unpack_dir}"
+  validate_archive_entries "${artifact_path}"
   tar -xzf "${artifact_path}" -C "${unpack_dir}"
   artifact_root="$(find "${unpack_dir}" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
   if [[ ! -x "${artifact_root}/payload/bin/fascinate" ]]; then
