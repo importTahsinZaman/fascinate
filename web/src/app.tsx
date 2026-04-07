@@ -915,18 +915,6 @@ function CommandCenter() {
                   >
                     <button
                       type="button"
-                      className="sidebar-shell-close"
-                      aria-label={`Delete ${shellLabel}`}
-                      title={`Delete ${shellLabel}`}
-                      onClick={() => {
-                        void closeShellWindow(window);
-                      }}
-                      disabled={closingShellIDs.includes(window.id)}
-                    >
-                      <X className="icon-svg" weight="regular" />
-                    </button>
-                    <button
-                      type="button"
                       className="sidebar-shell-focus"
                       aria-label={shellLabel}
                       title={`${shellLabel} · ${window.machineName}`}
@@ -941,6 +929,18 @@ function CommandCenter() {
                         <span className="machine-color-dot sidebar-shell-machine-dot" />
                         <span className="sidebar-shell-machine-name">{window.machineName}</span>
                       </span>
+                    </button>
+                    <button
+                      type="button"
+                      className="sidebar-shell-close"
+                      aria-label={`Delete ${shellLabel}`}
+                      title={`Delete ${shellLabel}`}
+                      onClick={() => {
+                        void closeShellWindow(window);
+                      }}
+                      disabled={closingShellIDs.includes(window.id)}
+                    >
+                      <X className="icon-svg" weight="regular" />
                     </button>
                   </div>
                 );
@@ -1041,11 +1041,11 @@ function CommandCenter() {
                     {isRunningMachine && !isPendingMachine ? (
                       <div className="machine-card-footer">
                         <button
-                          className="machine-card-shell-button"
+                          className="sidebar-text-button"
                           type="button"
                           onClick={() => openMachineShell(machine.name)}
                         >
-                          <span className="machine-card-shell-button-label">New shell</span>
+                          <span className="sidebar-text-button-label">New shell</span>
                         </button>
                       </div>
                     ) : null}
@@ -1061,11 +1061,11 @@ function CommandCenter() {
           <div className="control-sidebar-manage">
             <h2 className="control-sidebar-manage-label">Manage</h2>
             <div className="control-sidebar-manage-actions">
-              <button type="button" onClick={() => setModal({ type: "env-vars" })}>
-                Env vars
+              <button className="sidebar-text-button" type="button" onClick={() => setModal({ type: "env-vars" })}>
+                <span className="sidebar-text-button-label">Env vars</span>
               </button>
-              <button type="button" onClick={() => setModal({ type: "snapshots" })}>
-                Snapshots
+              <button className="sidebar-text-button" type="button" onClick={() => setModal({ type: "snapshots" })}>
+                <span className="sidebar-text-button-label">Snapshots</span>
               </button>
             </div>
           </div>

@@ -403,6 +403,7 @@ a {
 .sidebar-section h2,
 .sidebar-shells-section h2 {
   margin: 0;
+  color: #8f8f8f;
   font-size: 14px;
   line-height: 20px;
   letter-spacing: -0.01em;
@@ -468,10 +469,9 @@ a {
 
 .sidebar-shell-row {
   position: relative;
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
+  display: block;
   align-items: stretch;
-  min-height: 32px;
+  min-height: 35px;
   border-radius: 0;
   border: 0;
   border-bottom: 1px solid var(--border-subtle);
@@ -487,20 +487,33 @@ a {
   border-bottom: 0;
 }
 
-.sidebar-shell-row[data-active="true"] {
-  background: rgba(255, 255, 255, 0.03);
-}
-
 .sidebar-shell-close {
-  width: 32px;
-  min-height: 32px;
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 40px;
+  height: 35px;
+  min-height: 35px;
   padding: 0;
   border: 0;
-  border-right: 1px solid var(--border-subtle);
+  border-left: 1px solid var(--border-subtle);
   border-radius: 0;
-  background: transparent;
+  background: #141414;
   color: var(--text-tertiary);
   cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    opacity 120ms ease,
+    background-color 120ms ease,
+    color 120ms ease;
+  z-index: 1;
+}
+
+.sidebar-shell-row:hover .sidebar-shell-close,
+.sidebar-shell-row:focus-within .sidebar-shell-close {
+  opacity: 1;
+  pointer-events: auto;
 }
 
 .sidebar-shell-close:hover {
@@ -512,16 +525,19 @@ a {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: var(--space-3);
+  gap: var(--space-4);
   width: 100%;
-  min-height: 32px;
-  padding: 0 9px;
+  min-height: 35px;
+  padding: 0;
   border: 0;
   border-radius: 0;
   background: transparent;
   text-align: left;
   cursor: grab;
   user-select: none;
+  transition:
+    background-color 120ms ease,
+    gap 120ms ease;
 }
 
 .sidebar-shell-focus:hover {
@@ -555,9 +571,25 @@ a {
   align-items: center;
   justify-content: flex-end;
   gap: var(--space-2);
+  max-width: 180px;
   color: var(--text-tertiary);
   font-size: 14px;
   line-height: 20px;
+  opacity: 1;
+  transition:
+    max-width 120ms ease,
+    opacity 120ms ease;
+}
+
+.sidebar-shell-row:hover .sidebar-shell-focus,
+.sidebar-shell-row:focus-within .sidebar-shell-focus {
+  gap: 0;
+}
+
+.sidebar-shell-row:hover .sidebar-shell-machine,
+.sidebar-shell-row:focus-within .sidebar-shell-machine {
+  max-width: 0;
+  opacity: 0;
 }
 
 .sidebar-shell-machine-dot {
@@ -729,7 +761,7 @@ a {
   padding: 0 0 10px;
 }
 
-.machine-card-shell-button {
+.sidebar-text-button {
   position: relative;
   display: flex;
   align-items: center;
@@ -747,14 +779,14 @@ a {
   white-space: nowrap;
 }
 
-.machine-card-shell-button:hover,
-.machine-card-shell-button:active {
+.sidebar-text-button:hover,
+.sidebar-text-button:active {
   border-color: transparent;
   background: var(--bg-tint);
   color: var(--text-secondary);
 }
 
-.machine-card-shell-button-label {
+.sidebar-text-button-label {
   display: flex;
   flex: 1 1 auto;
   align-items: center;
@@ -948,7 +980,7 @@ a {
 
 .control-sidebar-manage-label {
   margin: 0;
-  color: var(--text-primary);
+  color: #8f8f8f;
   font-size: 14px;
   line-height: 20px;
   font-weight: 600;
@@ -973,6 +1005,26 @@ a {
 
 .control-sidebar-footer button:hover {
   background: rgba(255, 255, 255, 0.03);
+}
+
+.control-sidebar-footer .sidebar-text-button {
+  min-height: 28px;
+  height: 28px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 18px;
+  font-weight: 500;
+}
+
+.control-sidebar-footer .sidebar-text-button:hover,
+.control-sidebar-footer .sidebar-text-button:active {
+  border-color: transparent;
+  background: var(--bg-tint);
+  color: var(--text-secondary);
 }
 
 .sidebar-signout-row {
