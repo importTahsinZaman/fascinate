@@ -6,12 +6,17 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 
 	_ "modernc.org/sqlite"
 )
 
 type Store struct {
 	db *sql.DB
+
+	eventSubsMu     sync.Mutex
+	eventSubsNextID int
+	eventSubs       map[int]chan EventRecord
 }
 
 func Open(ctx context.Context, path string) (*Store, error) {
@@ -46,7 +51,10 @@ func Open(ctx context.Context, path string) (*Store, error) {
 		return nil, err
 	}
 
-	return &Store{db: db}, nil
+	return &Store{
+		db:        db,
+		eventSubs: map[int]chan EventRecord{},
+	}, nil
 }
 
 func (s *Store) Close() error {

@@ -20,9 +20,11 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/creack/pty"
+	"github.com/google/uuid"
 
 	"fascinate/internal/config"
 	"fascinate/internal/controlplane"
+	"fascinate/internal/database"
 )
 
 type machineManager interface {
@@ -36,6 +38,7 @@ var (
 
 type Manager struct {
 	cfg             config.Config
+	store           *database.Store
 	machines        machineManager
 	sshClientBinary string
 	guestSSHKeyPath string
@@ -44,13 +47,16 @@ type Manager struct {
 	guestReadyPoll  time.Duration
 
 	mu                  sync.Mutex
-	sessions            map[string]*session
+	attachments         map[string]*attachment
 	totalCreated        int
 	totalAttachFailures int
 	totalDisconnects    int
 
 	gitCommandMu    sync.Mutex
 	gitCommandGates map[string]chan struct{}
+
+	execMu   sync.Mutex
+	execJobs map[string]*execJob
 }
 
 type SessionInit struct {
@@ -59,6 +65,20 @@ type SessionInit struct {
 	MachineName string `json:"machine_name"`
 	AttachURL   string `json:"attach_url"`
 	ExpiresAt   string `json:"expires_at"`
+}
+
+type Shell struct {
+	ID             string  `json:"id"`
+	Name           string  `json:"name"`
+	UserEmail      string  `json:"user_email,omitempty"`
+	MachineName    string  `json:"machine_name"`
+	HostID         string  `json:"host_id,omitempty"`
+	State          string  `json:"state"`
+	CWD            string  `json:"cwd,omitempty"`
+	LastAttachedAt *string `json:"last_attached_at,omitempty"`
+	LastError      string  `json:"last_error,omitempty"`
+	CreatedAt      string  `json:"created_at"`
+	UpdatedAt      string  `json:"updated_at"`
 }
 
 type GitRepoStatus struct {
@@ -126,20 +146,15 @@ type SessionMetadata struct {
 	LastError   string  `json:"last_error,omitempty"`
 }
 
-type session struct {
-	id          string
-	tokenHash   string
-	userEmail   string
-	machineName string
-	hostID      string
-	tmuxSession string
-	cols        int
-	rows        int
-	createdAt   time.Time
-	expiresAt   time.Time
-	status      string
-	attachedAt  *time.Time
-	lastError   string
+type attachment struct {
+	shellID    string
+	tokenHash  string
+	hostID     string
+	cols       int
+	rows       int
+	expiresAt  time.Time
+	createdAt  time.Time
+	attachedAt *time.Time
 }
 
 type controlMessage struct {
@@ -164,116 +179,121 @@ const (
 	gitCommandConcurrency = 2
 )
 
-func New(cfg config.Config, machines machineManager) *Manager {
+func New(cfg config.Config, machines machineManager, stores ...*database.Store) *Manager {
 	localHostID := strings.TrimSpace(cfg.HostID)
 	if localHostID == "" {
 		localHostID = "local-host"
 	}
+	var store *database.Store
+	if len(stores) > 0 {
+		store = stores[0]
+	}
 	return &Manager{
 		cfg:             cfg,
+		store:           store,
 		machines:        machines,
 		sshClientBinary: firstNonEmpty(strings.TrimSpace(cfg.SSHClientBinary), "ssh"),
 		guestSSHKeyPath: strings.TrimSpace(cfg.GuestSSHKeyPath),
 		localHostID:     localHostID,
 		guestReadyWait:  20 * time.Second,
 		guestReadyPoll:  1500 * time.Millisecond,
-		sessions:        map[string]*session{},
+		attachments:     map[string]*attachment{},
 		gitCommandGates: map[string]chan struct{}{},
+		execJobs:        map[string]*execJob{},
 	}
 }
 
-func (m *Manager) CreateSession(ctx context.Context, userEmail, machineName string, cols, rows int) (SessionInit, error) {
-	m.pruneExpiredSessions()
+func (m *Manager) CreateShell(ctx context.Context, userEmail, machineName, name string) (Shell, error) {
+	if m.store == nil {
+		return Shell{}, fmt.Errorf("shell store is not configured")
+	}
 	machine, err := m.machines.GetMachine(ctx, machineName, userEmail)
 	if err != nil {
-		return SessionInit{}, err
+		return Shell{}, err
 	}
 	if !strings.EqualFold(machine.State, "RUNNING") {
-		return SessionInit{}, fmt.Errorf("machine %q is %s", machineName, strings.ToLower(strings.TrimSpace(machine.State)))
+		return Shell{}, fmt.Errorf("machine %q is %s", machineName, strings.ToLower(strings.TrimSpace(machine.State)))
 	}
-
 	hostID := strings.TrimSpace(machine.HostID)
 	if hostID == "" {
 		hostID = m.localHostID
 	}
 	if hostID != m.localHostID {
-		return SessionInit{}, fmt.Errorf("browser terminal gateway for host %q is not available", hostID)
+		return Shell{}, fmt.Errorf("browser terminal gateway for host %q is not available", hostID)
 	}
 	if machine.Runtime == nil {
-		return SessionInit{}, fmt.Errorf("machine %q is not available", machineName)
+		return Shell{}, fmt.Errorf("machine %q is not available", machineName)
 	}
-
+	user, err := m.store.GetUserByEmail(ctx, userEmail)
+	if err != nil {
+		return Shell{}, err
+	}
 	id, err := randomHex(16)
 	if err != nil {
-		return SessionInit{}, err
+		return Shell{}, err
 	}
-	token, err := randomHex(32)
-	if err != nil {
-		return SessionInit{}, err
+	if strings.TrimSpace(name) == "" {
+		name = machine.Name + " shell"
 	}
-	expiresAt := time.Now().UTC().Add(m.cfg.TerminalSessionTTL)
-	if expiresAt.IsZero() || m.cfg.TerminalSessionTTL <= 0 {
-		expiresAt = time.Now().UTC().Add(5 * time.Minute)
-	}
-
-	if cols <= 0 {
-		cols = 120
-	}
-	if rows <= 0 {
-		rows = 40
-	}
-
-	now := time.Now().UTC()
-	m.mu.Lock()
-	m.sessions[id] = &session{
-		id:          id,
-		tokenHash:   hashToken(token),
-		userEmail:   userEmail,
-		machineName: machine.Name,
-		hostID:      hostID,
-		tmuxSession: "fascinate-" + id,
-		cols:        cols,
-		rows:        rows,
-		createdAt:   now,
-		expiresAt:   expiresAt,
-		status:      "CREATED",
-	}
-	m.totalCreated++
-	init := SessionInit{
+	record, err := m.store.CreateShell(ctx, database.CreateShellParams{
 		ID:          id,
-		HostID:      hostID,
-		MachineName: machine.Name,
-		AttachURL:   fmt.Sprintf("/v1/terminal/sessions/%s/stream?token=%s", id, token),
-		ExpiresAt:   expiresAt.Format(time.RFC3339),
+		UserID:      user.ID,
+		MachineID:   machine.ID,
+		HostID:      stringPointer(hostID),
+		Name:        name,
+		TmuxSession: "fascinate-" + id,
+		State:       "READY",
+	})
+	if err != nil {
+		return Shell{}, err
 	}
+	m.mu.Lock()
+	m.totalCreated++
 	m.mu.Unlock()
-
-	return init, nil
+	m.recordShellEventBestEffort(record, "shell.created", map[string]any{
+		"shell_id":     record.ID,
+		"shell_name":   record.Name,
+		"machine_id":   record.MachineID,
+		"machine_name": record.MachineName,
+		"host_id":      recordHostID(record),
+		"shell_state":  record.State,
+		"tmux_session": record.TmuxSession,
+	})
+	return shellFromRecord(record), nil
 }
 
-func (m *Manager) ReattachSession(ctx context.Context, userEmail, sessionID string, cols, rows int) (SessionInit, error) {
-	m.pruneExpiredSessions()
-	machineName, err := m.sessionMachineName(sessionID, userEmail)
+func (m *Manager) ListShells(ctx context.Context, userEmail string) ([]Shell, error) {
+	if m.store == nil {
+		return nil, fmt.Errorf("shell store is not configured")
+	}
+	records, err := m.store.ListShells(ctx, userEmail)
 	if err != nil {
-		return SessionInit{}, err
+		return nil, err
 	}
-	machine, err := m.machines.GetMachine(ctx, machineName, userEmail)
-	if err != nil {
-		return SessionInit{}, err
+	out := make([]Shell, 0, len(records))
+	for _, record := range records {
+		out = append(out, shellFromRecord(record))
 	}
-	if !strings.EqualFold(machine.State, "RUNNING") {
-		return SessionInit{}, fmt.Errorf("machine %q is %s", machine.Name, strings.ToLower(strings.TrimSpace(machine.State)))
-	}
+	return out, nil
+}
 
-	hostID := strings.TrimSpace(machine.HostID)
-	if hostID == "" {
-		hostID = m.localHostID
+func (m *Manager) GetShell(ctx context.Context, userEmail, shellID string) (Shell, error) {
+	record, err := m.loadShell(ctx, shellID, userEmail)
+	if err != nil {
+		return Shell{}, err
 	}
-	if hostID != m.localHostID {
-		return SessionInit{}, fmt.Errorf("browser terminal gateway for host %q is not available", hostID)
+	return shellFromRecord(record), nil
+}
+
+func (m *Manager) CreateAttachment(ctx context.Context, userEmail, shellID string, cols, rows int) (SessionInit, error) {
+	m.pruneExpiredAttachments()
+	record, err := m.loadShell(ctx, shellID, userEmail)
+	if err != nil {
+		return SessionInit{}, err
 	}
-	if machine.Runtime == nil {
-		return SessionInit{}, fmt.Errorf("machine %q is not available", machine.Name)
+	machine, err := m.resolveShellMachine(ctx, record)
+	if err != nil {
+		return SessionInit{}, err
 	}
 	if cols <= 0 {
 		cols = 120
@@ -281,86 +301,111 @@ func (m *Manager) ReattachSession(ctx context.Context, userEmail, sessionID stri
 	if rows <= 0 {
 		rows = 40
 	}
-
 	token, err := randomHex(32)
 	if err != nil {
 		return SessionInit{}, err
 	}
 	expiresAt := m.nextExpiry()
-
+	tokenHash := hashToken(token)
 	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	sess, ok := m.sessions[strings.TrimSpace(sessionID)]
-	if !ok || sess.userEmail != userEmail {
-		return SessionInit{}, ErrTerminalSessionNotFound
+	m.attachments[tokenHash] = &attachment{
+		shellID:   record.ID,
+		tokenHash: tokenHash,
+		hostID:    firstNonEmpty(strings.TrimSpace(recordHostID(record)), m.localHostID),
+		cols:      cols,
+		rows:      rows,
+		expiresAt: expiresAt,
+		createdAt: time.Now().UTC(),
 	}
-	sess.tokenHash = hashToken(token)
-	sess.hostID = hostID
-	sess.cols = cols
-	sess.rows = rows
-	sess.expiresAt = expiresAt
-	sess.status = "READY"
-	sess.lastError = ""
-
+	m.mu.Unlock()
+	if m.store != nil {
+		_ = m.store.TouchShellAttached(ctx, record.ID)
+		_ = m.store.UpdateShellState(ctx, record.ID, "READY", nil)
+	}
+	m.recordShellEventBestEffort(record, "shell.attached", map[string]any{
+		"shell_id":     record.ID,
+		"machine_id":   record.MachineID,
+		"machine_name": record.MachineName,
+		"host_id":      firstNonEmpty(strings.TrimSpace(recordHostID(record)), machine.HostID, m.localHostID),
+	})
 	return SessionInit{
-		ID:          sess.id,
-		HostID:      hostID,
+		ID:          record.ID,
+		HostID:      firstNonEmpty(strings.TrimSpace(recordHostID(record)), machine.HostID, m.localHostID),
 		MachineName: machine.Name,
-		AttachURL:   fmt.Sprintf("/v1/terminal/sessions/%s/stream?token=%s", sess.id, token),
+		AttachURL:   fmt.Sprintf("/v1/terminal/sessions/%s/stream?token=%s", record.ID, token),
 		ExpiresAt:   expiresAt.Format(time.RFC3339),
 	}, nil
 }
 
-func (m *Manager) CloseSession(ctx context.Context, userEmail, sessionID string) error {
-	sess, err := m.removeSession(sessionID, userEmail, "CLOSED", nil)
+func (m *Manager) CreateSession(ctx context.Context, userEmail, machineName string, cols, rows int) (SessionInit, error) {
+	shell, err := m.CreateShell(ctx, userEmail, machineName, "")
 	if err != nil {
-		if errors.Is(err, ErrTerminalSessionNotFound) || errors.Is(err, ErrTerminalSessionExpired) {
+		return SessionInit{}, err
+	}
+	return m.CreateAttachment(ctx, userEmail, shell.ID, cols, rows)
+}
+
+func (m *Manager) ReattachSession(ctx context.Context, userEmail, sessionID string, cols, rows int) (SessionInit, error) {
+	return m.CreateAttachment(ctx, userEmail, sessionID, cols, rows)
+}
+
+func (m *Manager) DeleteShell(ctx context.Context, userEmail, shellID string) error {
+	record, err := m.loadShell(ctx, shellID, userEmail)
+	if err != nil {
+		if errors.Is(err, ErrTerminalSessionNotFound) {
 			return nil
 		}
 		return err
 	}
-	_ = m.destroyRemoteSession(ctx, sess)
+	if err := m.store.MarkShellDeleted(ctx, record.ID); err != nil && !errors.Is(err, database.ErrNotFound) {
+		return err
+	}
+	m.dropShellAttachments(record.ID)
+	m.totalDisconnects++
+	_ = m.destroyRemoteShell(ctx, record)
+	m.recordShellEventBestEffort(record, "shell.deleted", map[string]any{
+		"shell_id":     record.ID,
+		"machine_id":   record.MachineID,
+		"machine_name": record.MachineName,
+		"host_id":      recordHostID(record),
+	})
 	return nil
 }
 
-func (m *Manager) CloseMachineSessions(_ context.Context, userEmail, machineName string) error {
-	m.pruneExpiredSessions()
+func (m *Manager) CloseSession(ctx context.Context, userEmail, sessionID string) error {
+	return m.DeleteShell(ctx, userEmail, sessionID)
+}
 
+func (m *Manager) CloseMachineSessions(ctx context.Context, userEmail, machineName string) error {
+	if m.store == nil {
+		return nil
+	}
 	ownerEmail := strings.TrimSpace(userEmail)
 	targetMachine := strings.TrimSpace(machineName)
 	if ownerEmail == "" || targetMachine == "" {
 		return nil
 	}
-
-	sessions := make([]session, 0)
-
-	m.mu.Lock()
-	for id, sess := range m.sessions {
-		if !strings.EqualFold(strings.TrimSpace(sess.userEmail), ownerEmail) || strings.TrimSpace(sess.machineName) != targetMachine {
+	shells, err := m.store.ListShells(ctx, ownerEmail)
+	if err != nil {
+		return err
+	}
+	for _, shell := range shells {
+		if strings.TrimSpace(shell.MachineName) != targetMachine {
 			continue
 		}
-		sessions = append(sessions, cloneSession(sess))
-		delete(m.sessions, id)
-		m.totalDisconnects++
+		if err := m.DeleteShell(ctx, ownerEmail, shell.ID); err != nil {
+			return err
+		}
 	}
-	m.mu.Unlock()
-
-	for _, sess := range sessions {
-		destroyCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		_ = m.destroyRemoteSession(destroyCtx, sess)
-		cancel()
-	}
-
 	return nil
 }
 
 func (m *Manager) GetGitStatus(ctx context.Context, userEmail, sessionID, cwd string) (GitRepoStatus, error) {
-	sess, err := m.loadSession(sessionID, userEmail)
+	record, err := m.loadShell(ctx, sessionID, userEmail)
 	if err != nil {
 		return GitRepoStatus{}, err
 	}
-	machine, err := m.resolveSessionMachine(ctx, sess)
+	machine, err := m.resolveShellMachine(ctx, record)
 	if err != nil {
 		return GitRepoStatus{}, err
 	}
@@ -417,23 +462,23 @@ func (m *Manager) GetGitStatus(ctx context.Context, userEmail, sessionID, cwd st
 		return GitRepoStatus{}, err
 	}
 	if strings.TrimSpace(output) == gitNotRepoSentinel {
-		m.touchSession(sess.id)
+		m.touchShell(record.ID)
 		return GitRepoStatus{State: gitRepoStatusNotRepo}, nil
 	}
 	status, err := parseGitRepoStatusOutput(output)
 	if err != nil {
 		return GitRepoStatus{}, err
 	}
-	m.touchSession(sess.id)
+	m.touchShell(record.ID)
 	return status, nil
 }
 
 func (m *Manager) GetGitDiffBatch(ctx context.Context, userEmail, sessionID string, req GitDiffBatchRequest) (GitDiffBatchResponse, error) {
-	sess, err := m.loadSession(sessionID, userEmail)
+	record, err := m.loadShell(ctx, sessionID, userEmail)
 	if err != nil {
 		return GitDiffBatchResponse{}, err
 	}
-	machine, err := m.resolveSessionMachine(ctx, sess)
+	machine, err := m.resolveShellMachine(ctx, record)
 	if err != nil {
 		return GitDiffBatchResponse{}, err
 	}
@@ -471,8 +516,80 @@ func (m *Manager) GetGitDiffBatch(ctx context.Context, userEmail, sessionID stri
 		return GitDiffBatchResponse{}, fmt.Errorf("git diff batch returned %d result(s) for %d file(s)", len(response.Diffs), len(req.Files))
 	}
 
-	m.touchSession(sess.id)
+	m.touchShell(record.ID)
 	return response, nil
+}
+
+func (m *Manager) SendInput(ctx context.Context, userEmail, shellID, input string) error {
+	record, err := m.loadShell(ctx, shellID, userEmail)
+	if err != nil {
+		return err
+	}
+	machine, err := m.resolveShellMachine(ctx, record)
+	if err != nil {
+		return err
+	}
+	if err := m.ensureRemoteShell(ctx, machine, record.TmuxSession); err != nil {
+		return err
+	}
+	encodedInput := base64.StdEncoding.EncodeToString([]byte(input))
+	command := strings.Join([]string{
+		fmt.Sprintf("export FASCINATE_SHELL_INPUT=%s", shellLiteral(encodedInput)),
+		fmt.Sprintf("export FASCINATE_TMUX_SESSION=%s", shellLiteral(record.TmuxSession)),
+		`python3 - <<'PY'`,
+		`import base64`,
+		`import os`,
+		`import subprocess`,
+		`session = os.environ["FASCINATE_TMUX_SESSION"]`,
+		`payload = base64.b64decode(os.environ["FASCINATE_SHELL_INPUT"]).decode("utf-8", errors="replace")`,
+		`parts = payload.split("\n")`,
+		`for index, part in enumerate(parts):`,
+		`    if part:`,
+		`        subprocess.run(["tmux", "send-keys", "-t", session, "-l", part], check=True)`,
+		`    if index < len(parts) - 1:`,
+		`        subprocess.run(["tmux", "send-keys", "-t", session, "Enter"], check=True)`,
+		`PY`,
+	}, "\n")
+	if _, err := m.runGuestCommand(ctx, machine, command); err != nil {
+		return err
+	}
+	m.touchShell(record.ID)
+	return nil
+}
+
+func (m *Manager) ReadLines(ctx context.Context, userEmail, shellID string, limit int) ([]string, error) {
+	record, err := m.loadShell(ctx, shellID, userEmail)
+	if err != nil {
+		return nil, err
+	}
+	machine, err := m.resolveShellMachine(ctx, record)
+	if err != nil {
+		return nil, err
+	}
+	if err := m.ensureRemoteShell(ctx, machine, record.TmuxSession); err != nil {
+		return nil, err
+	}
+	if limit <= 0 {
+		limit = 100
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+	output, err := m.runGuestCommand(ctx, machine, fmt.Sprintf(
+		"tmux capture-pane -p -J -S -%d -t %s",
+		limit,
+		shellLiteral(record.TmuxSession),
+	))
+	if err != nil {
+		return nil, err
+	}
+	output = strings.ReplaceAll(output, "\r\n", "\n")
+	output = strings.TrimRight(output, "\n")
+	if output == "" {
+		return nil, nil
+	}
+	m.touchShell(record.ID)
+	return strings.Split(output, "\n"), nil
 }
 
 func (m *Manager) StreamSession(w http.ResponseWriter, r *http.Request, id string) error {
@@ -481,7 +598,7 @@ func (m *Manager) StreamSession(w http.ResponseWriter, r *http.Request, id strin
 		return fmt.Errorf("token is required")
 	}
 
-	sess, err := m.startSession(id, token)
+	record, attach, err := m.startAttachment(id, token)
 	if err != nil {
 		return err
 	}
@@ -496,23 +613,23 @@ func (m *Manager) StreamSession(w http.ResponseWriter, r *http.Request, id strin
 
 	ctx := r.Context()
 
-	machine, err := m.resolveSessionMachine(ctx, sess)
+	machine, err := m.resolveShellMachine(ctx, record)
 	if err != nil {
 		_ = m.writeControl(conn, ctx, controlMessage{Type: "error", Error: err.Error()})
 		_ = conn.Close(websocket.StatusInternalError, err.Error())
-		m.markAttachFailed(sess.id, err)
+		m.markAttachFailed(record.ID, err)
 		return nil
 	}
 
-	ptmx, cmd, err := m.startGuestShell(ctx, sess, machine)
+	ptmx, cmd, err := m.startGuestShell(ctx, record, attach, machine)
 	if err != nil {
 		_ = m.writeControl(conn, ctx, controlMessage{Type: "error", Error: err.Error()})
 		_ = conn.Close(websocket.StatusInternalError, err.Error())
-		m.markAttachFailed(sess.id, err)
+		m.markAttachFailed(record.ID, err)
 		return nil
 	}
 	defer ptmx.Close()
-	m.markConnected(sess.id)
+	m.markConnected(record.ID)
 
 	ptyDone := make(chan error, 1)
 	wsDone := make(chan error, 1)
@@ -545,7 +662,7 @@ func (m *Manager) StreamSession(w http.ResponseWriter, r *http.Request, id strin
 				wsDone <- err
 				return
 			}
-			m.touchSession(sess.id)
+			m.touchShell(record.ID)
 			switch msgType {
 			case websocket.MessageBinary:
 				if _, err := ptmx.Write(payload); err != nil {
@@ -553,7 +670,7 @@ func (m *Manager) StreamSession(w http.ResponseWriter, r *http.Request, id strin
 					return
 				}
 			case websocket.MessageText:
-				if err := m.handleControlMessage(ctx, conn, sess.id, ptmx, payload); err != nil {
+				if err := m.handleControlMessage(ctx, conn, record.ID, ptmx, payload); err != nil {
 					wsDone <- err
 					return
 				}
@@ -596,38 +713,60 @@ func (m *Manager) StreamSession(w http.ResponseWriter, r *http.Request, id strin
 	_ = conn.Close(status, message)
 
 	if exitErr != nil && !isExpectedSessionEndError(exitErr) {
-		m.markAttachFailed(sess.id, exitErr)
+		m.markAttachFailed(record.ID, exitErr)
 		return nil
 	}
-	m.markDetached(sess.id)
+	m.markDetached(record.ID)
 	return nil
 }
 
 func (m *Manager) Diagnostics() Diagnostics {
-	m.pruneExpiredSessions()
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.pruneExpiredAttachments()
 
+	attachments := map[string]attachment{}
+	m.mu.Lock()
 	out := Diagnostics{
 		TotalCreated:        m.totalCreated,
 		TotalAttachFailures: m.totalAttachFailures,
 		TotalDisconnects:    m.totalDisconnects,
 	}
-	for _, sess := range m.sessions {
+	for _, attach := range m.attachments {
+		attachments[attach.shellID] = *attach
+	}
+	m.mu.Unlock()
+
+	if m.store == nil {
+		return out
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	records, err := m.store.ListShells(ctx, "")
+	if err != nil {
+		return out
+	}
+	for _, record := range records {
 		out.ActiveSessions++
 		item := SessionMetadata{
-			ID:          sess.id,
-			UserEmail:   sess.userEmail,
-			MachineName: sess.machineName,
-			HostID:      sess.hostID,
-			Status:      sess.status,
-			CreatedAt:   sess.createdAt.Format(time.RFC3339),
-			ExpiresAt:   sess.expiresAt.Format(time.RFC3339),
-			LastError:   sess.lastError,
+			ID:          record.ID,
+			UserEmail:   record.UserEmail,
+			MachineName: record.MachineName,
+			HostID:      recordHostID(record),
+			Status:      record.State,
+			CreatedAt:   record.CreatedAt,
+			ExpiresAt:   record.UpdatedAt,
+			LastError:   firstNonEmpty(derefString(record.LastError), ""),
 		}
-		if sess.attachedAt != nil {
-			value := sess.attachedAt.Format(time.RFC3339)
+		if record.LastAttachedAt != nil {
+			value := strings.TrimSpace(*record.LastAttachedAt)
 			item.AttachedAt = &value
+		}
+		if attach, ok := attachments[record.ID]; ok {
+			value := attach.expiresAt.Format(time.RFC3339)
+			item.ExpiresAt = value
+			if attach.attachedAt != nil {
+				attachedAt := attach.attachedAt.Format(time.RFC3339)
+				item.AttachedAt = &attachedAt
+			}
 		}
 		out.Sessions = append(out.Sessions, item)
 	}
@@ -646,7 +785,7 @@ func (m *Manager) handleControlMessage(ctx context.Context, conn *websocket.Conn
 			Rows: uint16(max(1, message.Rows)),
 		})
 	case "ping":
-		m.touchSession(sessionID)
+		m.touchShell(sessionID)
 		return m.writeControl(conn, ctx, controlMessage{Type: "pong", SentAt: message.SentAt})
 	default:
 		return nil
@@ -671,32 +810,25 @@ func (m *Manager) nextExpiry() time.Time {
 	return time.Now().UTC().Add(ttl)
 }
 
-func (m *Manager) sessionMachineName(sessionID, userEmail string) (string, error) {
-	sess, err := m.loadSession(sessionID, userEmail)
+func (m *Manager) loadShell(ctx context.Context, shellID, userEmail string) (database.ShellRecord, error) {
+	if m.store == nil {
+		return database.ShellRecord{}, fmt.Errorf("shell store is not configured")
+	}
+	record, err := m.store.GetShellByID(ctx, strings.TrimSpace(shellID))
 	if err != nil {
-		return "", err
+		if errors.Is(err, database.ErrNotFound) {
+			return database.ShellRecord{}, ErrTerminalSessionNotFound
+		}
+		return database.ShellRecord{}, err
 	}
-	return sess.machineName, nil
+	if !strings.EqualFold(strings.TrimSpace(record.UserEmail), strings.TrimSpace(userEmail)) {
+		return database.ShellRecord{}, ErrTerminalSessionNotFound
+	}
+	return record, nil
 }
 
-func (m *Manager) loadSession(sessionID, userEmail string) (session, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	sess, ok := m.sessions[strings.TrimSpace(sessionID)]
-	if !ok || sess.userEmail != strings.TrimSpace(userEmail) {
-		return session{}, ErrTerminalSessionNotFound
-	}
-	if time.Now().UTC().After(sess.expiresAt) {
-		delete(m.sessions, sess.id)
-		m.totalAttachFailures++
-		return session{}, ErrTerminalSessionExpired
-	}
-	return cloneSession(sess), nil
-}
-
-func (m *Manager) resolveSessionMachine(ctx context.Context, sess session) (controlplane.Machine, error) {
-	machine, err := m.machines.GetMachine(ctx, sess.machineName, sess.userEmail)
+func (m *Manager) resolveShellMachine(ctx context.Context, record database.ShellRecord) (controlplane.Machine, error) {
+	machine, err := m.machines.GetMachine(ctx, record.MachineName, record.UserEmail)
 	if err != nil {
 		return controlplane.Machine{}, err
 	}
@@ -716,121 +848,121 @@ func (m *Manager) resolveSessionMachine(ctx context.Context, sess session) (cont
 	return machine, nil
 }
 
-func (m *Manager) removeSession(sessionID, userEmail, status string, err error) (session, error) {
+func (m *Manager) dropShellAttachments(shellID string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-
-	sess, ok := m.sessions[strings.TrimSpace(sessionID)]
-	if !ok || sess.userEmail != strings.TrimSpace(userEmail) {
-		return session{}, ErrTerminalSessionNotFound
+	for key, attach := range m.attachments {
+		if attach.shellID == shellID {
+			delete(m.attachments, key)
+		}
 	}
-	delete(m.sessions, sess.id)
-	sess.status = status
-	if err != nil {
-		sess.lastError = err.Error()
-		m.totalAttachFailures++
-	}
-	m.totalDisconnects++
-	return cloneSession(sess), nil
 }
 
-func (m *Manager) pruneExpiredSessions() {
+func (m *Manager) pruneExpiredAttachments() {
 	now := time.Now().UTC()
-	expired := make([]session, 0)
 
 	m.mu.Lock()
-	for id, sess := range m.sessions {
-		if now.After(sess.expiresAt) {
-			expired = append(expired, cloneSession(sess))
-			delete(m.sessions, id)
+	for key, attach := range m.attachments {
+		if now.After(attach.expiresAt) {
+			delete(m.attachments, key)
 			m.totalDisconnects++
 		}
 	}
 	m.mu.Unlock()
-
-	for _, sess := range expired {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		_ = m.destroyRemoteSession(ctx, sess)
-		cancel()
-	}
 }
 
-func (m *Manager) startSession(id, token string) (session, error) {
-	m.pruneExpiredSessions()
+func (m *Manager) startAttachment(id, token string) (database.ShellRecord, attachment, error) {
+	if m.store == nil {
+		return database.ShellRecord{}, attachment{}, fmt.Errorf("shell store is not configured")
+	}
+	m.pruneExpiredAttachments()
+	record, err := m.store.GetShellByID(context.Background(), strings.TrimSpace(id))
+	if err != nil {
+		if errors.Is(err, database.ErrNotFound) {
+			return database.ShellRecord{}, attachment{}, ErrTerminalSessionNotFound
+		}
+		return database.ShellRecord{}, attachment{}, err
+	}
+	tokenHash := hashToken(token)
 	m.mu.Lock()
 	defer m.mu.Unlock()
-
-	sess, ok := m.sessions[strings.TrimSpace(id)]
+	attach, ok := m.attachments[tokenHash]
 	if !ok {
-		return session{}, ErrTerminalSessionNotFound
+		return database.ShellRecord{}, attachment{}, ErrTerminalSessionNotFound
 	}
-	if time.Now().UTC().After(sess.expiresAt) {
-		delete(m.sessions, sess.id)
+	if attach.shellID != record.ID {
 		m.totalAttachFailures++
-		return session{}, ErrTerminalSessionExpired
+		return database.ShellRecord{}, attachment{}, fmt.Errorf("terminal session token is invalid")
 	}
-	if sess.tokenHash != hashToken(token) {
+	if time.Now().UTC().After(attach.expiresAt) {
+		delete(m.attachments, tokenHash)
 		m.totalAttachFailures++
-		return session{}, fmt.Errorf("terminal session token is invalid")
+		return database.ShellRecord{}, attachment{}, ErrTerminalSessionExpired
 	}
 	now := time.Now().UTC()
-	sess.status = "ATTACHING"
-	sess.attachedAt = &now
-	sess.expiresAt = m.nextExpiry()
-	return cloneSession(sess), nil
+	delete(m.attachments, tokenHash)
+	copy := *attach
+	copy.attachedAt = &now
+	return record, copy, nil
 }
 
 func (m *Manager) markConnected(id string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	sess, ok := m.sessions[id]
-	if !ok {
+	if m.store == nil {
 		return
 	}
-	sess.status = "CONNECTED"
-	sess.lastError = ""
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_ = m.store.UpdateShellState(ctx, id, "READY", nil)
 }
 
 func (m *Manager) markDetached(id string) {
+	m.touchShell(id)
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	sess, ok := m.sessions[id]
-	if !ok {
-		return
-	}
-	sess.status = "DETACHED"
-	sess.lastError = ""
-	sess.expiresAt = m.nextExpiry()
 	m.totalDisconnects++
+	m.mu.Unlock()
 }
 
 func (m *Manager) markAttachFailed(id string, err error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	sess, ok := m.sessions[id]
-	if !ok {
-		return
-	}
-	sess.status = "ERROR"
+	var errText *string
 	if err != nil {
-		sess.lastError = err.Error()
+		value := err.Error()
+		errText = &value
 	}
-	sess.expiresAt = m.nextExpiry()
+	if m.store != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		_ = m.store.UpdateShellState(ctx, id, "ERROR", errText)
+		record, loadErr := m.store.GetShellByID(ctx, id)
+		if loadErr == nil {
+			payload := map[string]any{
+				"shell_id":     record.ID,
+				"machine_id":   record.MachineID,
+				"machine_name": record.MachineName,
+				"host_id":      recordHostID(record),
+			}
+			if errText != nil {
+				payload["error"] = *errText
+			}
+			m.recordShellEventBestEffort(record, "shell.attach.failed", payload)
+		}
+		cancel()
+	}
+	m.mu.Lock()
 	m.totalAttachFailures++
 	m.totalDisconnects++
+	m.mu.Unlock()
 }
 
-func (m *Manager) touchSession(id string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	sess, ok := m.sessions[id]
-	if !ok {
+func (m *Manager) touchShell(id string) {
+	if m.store == nil {
 		return
 	}
-	sess.expiresAt = m.nextExpiry()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_ = m.store.TouchShellAttached(ctx, id)
+	_ = m.store.UpdateShellState(ctx, id, "READY", nil)
 }
 
-func (m *Manager) startGuestShell(ctx context.Context, sess session, machine controlplane.Machine) (*os.File, *exec.Cmd, error) {
+func (m *Manager) startGuestShell(ctx context.Context, record database.ShellRecord, attach attachment, machine controlplane.Machine) (*os.File, *exec.Cmd, error) {
 	if machine.Runtime == nil {
 		return nil, nil, fmt.Errorf("machine %q is not available", machine.Name)
 	}
@@ -845,12 +977,12 @@ func (m *Manager) startGuestShell(ctx context.Context, sess session, machine con
 	}
 
 	term := "xterm-256color"
-	remoteCommand := guestSSHRemoteCommand(term, persistentGuestShellCommand(sess.tmuxSession, guestShellCommand()))
+	remoteCommand := guestSSHRemoteCommand(term, persistentGuestShellCommand(record.TmuxSession, guestShellCommand()))
 	args := append(m.guestSSHArgs(guestUser, targetHost, targetPort), "-tt", remoteCommand)
 	cmd := exec.Command(m.sshClientBinary, args...)
 	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{
-		Cols: uint16(max(1, sess.cols)),
-		Rows: uint16(max(1, sess.rows)),
+		Cols: uint16(max(1, attach.cols)),
+		Rows: uint16(max(1, attach.rows)),
 	})
 	if err != nil {
 		return nil, nil, err
@@ -858,11 +990,11 @@ func (m *Manager) startGuestShell(ctx context.Context, sess session, machine con
 	return ptmx, cmd, nil
 }
 
-func (m *Manager) destroyRemoteSession(ctx context.Context, sess session) error {
-	if strings.TrimSpace(sess.machineName) == "" || strings.TrimSpace(sess.userEmail) == "" || strings.TrimSpace(sess.tmuxSession) == "" {
+func (m *Manager) destroyRemoteShell(ctx context.Context, record database.ShellRecord) error {
+	if strings.TrimSpace(record.MachineName) == "" || strings.TrimSpace(record.UserEmail) == "" || strings.TrimSpace(record.TmuxSession) == "" {
 		return nil
 	}
-	machine, err := m.machines.GetMachine(ctx, sess.machineName, sess.userEmail)
+	machine, err := m.machines.GetMachine(ctx, record.MachineName, record.UserEmail)
 	if err != nil || machine.Runtime == nil {
 		return nil
 	}
@@ -874,12 +1006,36 @@ func (m *Manager) destroyRemoteSession(ctx context.Context, sess session) error 
 	guestUser := guestUserForMachine(machine)
 	command := fmt.Sprintf(
 		"if command -v tmux >/dev/null 2>&1; then tmux kill-session -t %s 2>/dev/null || true; fi",
-		shellLiteral(strings.TrimSpace(sess.tmuxSession)),
+		shellLiteral(strings.TrimSpace(record.TmuxSession)),
 	)
 	args := append(m.guestSSHArgs(guestUser, targetHost, targetPort), guestSSHRemoteCommand("xterm-256color", command))
 	cmd := exec.CommandContext(ctx, m.sshClientBinary, args...)
 	_, err = cmd.CombinedOutput()
 	return err
+}
+
+func (m *Manager) ensureRemoteShell(ctx context.Context, machine controlplane.Machine, tmuxSession string) error {
+	_, err := m.runGuestCommand(ctx, machine, persistentGuestShellSetupCommand(tmuxSession, guestShellCommand()))
+	return err
+}
+
+func (m *Manager) recordShellEventBestEffort(record database.ShellRecord, kind string, payload map[string]any) {
+	if m == nil || m.store == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return
+	}
+	_, _ = m.store.CreateEvent(ctx, database.CreateEventParams{
+		ID:          uuid.NewString(),
+		ActorUserID: &record.UserID,
+		MachineID:   &record.MachineID,
+		Kind:        kind,
+		PayloadJSON: string(encoded),
+	})
 }
 
 func (m *Manager) waitForGuestAccess(ctx context.Context, machine controlplane.Machine, targetHost string, targetPort int, guestUser string) error {
@@ -1055,6 +1211,18 @@ func guestShellCommand() string {
 }
 
 func persistentGuestShellCommand(tmuxSession, shellCommand string) string {
+	setup := persistentGuestShellSetupCommand(tmuxSession, shellCommand)
+	return strings.Join([]string{
+		setup,
+		`cwd=$(tmux display-message -p -t "$session" '#{pane_current_path}' 2>/dev/null || true)`,
+		`if [ -n "$cwd" ]; then`,
+		`  printf '\033]1337;FascinateCwd=%s\a' "$cwd"`,
+		"fi",
+		`exec tmux attach-session -t "$session"`,
+	}, "\n")
+}
+
+func persistentGuestShellSetupCommand(tmuxSession, shellCommand string) string {
 	startCommand := fmt.Sprintf(
 		"env TERM=${TERM:-xterm-256color} SHELL=/bin/bash sh -lc %s",
 		shellLiteral(shellCommand),
@@ -1073,11 +1241,6 @@ func persistentGuestShellCommand(tmuxSession, shellCommand string) string {
 		`tmux set-option -t "$session" mouse off >/dev/null 2>&1 || true`,
 		`tmux bind-key -n PageUp if-shell -F '#{pane_in_mode}' 'send-keys -X scroll-up' 'run-shell "tmux copy-mode -e -t #{pane_id}; tmux send-keys -X -t #{pane_id} scroll-up"' >/dev/null 2>&1 || true`,
 		`tmux bind-key -n PageDown if-shell -F '#{pane_in_mode}' 'send-keys -X scroll-down' >/dev/null 2>&1 || true`,
-		`cwd=$(tmux display-message -p -t "$session" '#{pane_current_path}' 2>/dev/null || true)`,
-		`if [ -n "$cwd" ]; then`,
-		`  printf '\033]1337;FascinateCwd=%s\a' "$cwd"`,
-		"fi",
-		`exec tmux attach-session -t "$session"`,
 	}, "\n")
 }
 
@@ -1444,10 +1607,43 @@ func max(a, b int) int {
 	return b
 }
 
-func cloneSession(sess *session) session {
-	if sess == nil {
-		return session{}
+func shellFromRecord(record database.ShellRecord) Shell {
+	out := Shell{
+		ID:             record.ID,
+		Name:           record.Name,
+		UserEmail:      record.UserEmail,
+		MachineName:    record.MachineName,
+		HostID:         recordHostID(record),
+		State:          record.State,
+		CWD:            record.CWD,
+		LastAttachedAt: record.LastAttachedAt,
+		CreatedAt:      record.CreatedAt,
+		UpdatedAt:      record.UpdatedAt,
 	}
-	out := *sess
+	if record.LastError != nil {
+		out.LastError = strings.TrimSpace(*record.LastError)
+	}
 	return out
+}
+
+func recordHostID(record database.ShellRecord) string {
+	if record.HostID == nil {
+		return ""
+	}
+	return strings.TrimSpace(*record.HostID)
+}
+
+func stringPointer(value string) *string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	return &value
+}
+
+func derefString(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return strings.TrimSpace(*value)
 }

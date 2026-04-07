@@ -11,6 +11,7 @@ import (
 	"syscall"
 
 	"fascinate/internal/app"
+	"fascinate/internal/cli"
 	"fascinate/internal/config"
 	"fascinate/internal/netnsforward"
 	"fascinate/internal/runtime/cloudhypervisor"
@@ -18,6 +19,33 @@ import (
 
 func main() {
 	log.SetFlags(0)
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	command := "serve"
+	if len(os.Args) > 1 {
+		command = os.Args[1]
+	}
+
+	if !requiresServerConfig(command) {
+		switch command {
+		case "version":
+			fmt.Println("fascinate dev")
+			return
+		default:
+			if err := cli.Run(ctx, os.Args[1:]); err != nil {
+				if exitErr, ok := err.(interface{ ExitCode() int }); ok {
+					if message := strings.TrimSpace(err.Error()); message != "" {
+						fmt.Fprintln(os.Stderr, message)
+					}
+					os.Exit(exitErr.ExitCode())
+				}
+				log.Fatal(err)
+			}
+			return
+		}
+	}
 
 	envFile := os.Getenv("FASCINATE_ENV_FILE")
 	if strings.TrimSpace(envFile) == "" {
@@ -27,14 +55,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
-
 	cfg := config.Load()
-	command := "serve"
-	if len(os.Args) > 1 {
-		command = os.Args[1]
-	}
 
 	switch command {
 	case "serve":
@@ -49,14 +70,21 @@ func main() {
 		if err := runRuntimeMachines(ctx, cfg); err != nil {
 			log.Fatal(err)
 		}
-	case "version":
-		fmt.Println("fascinate dev")
 	case "netns-forward":
 		if err := runNetNSForward(os.Args[2:]); err != nil {
 			log.Fatal(err)
 		}
 	default:
 		log.Fatalf("unknown command %q", command)
+	}
+}
+
+func requiresServerConfig(command string) bool {
+	switch strings.TrimSpace(command) {
+	case "", "serve", "migrate", "runtime-machines", "netns-forward":
+		return true
+	default:
+		return false
 	}
 }
 

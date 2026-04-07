@@ -22,11 +22,15 @@ type browserAuthService interface {
 	VerifyCode(context.Context, string, string, string, string) (browserauth.Session, error)
 	Authenticate(context.Context, string) (database.User, database.WebSessionRecord, error)
 	Logout(context.Context, string) error
+	VerifyCodeForAPIToken(context.Context, string, string, string, string, string) (browserauth.APITokenSession, error)
+	AuthenticateAPIToken(context.Context, string) (database.User, database.APITokenRecord, error)
+	LogoutAPIToken(context.Context, string) error
 }
 
 type sessionContext struct {
-	User   database.User
-	Record database.WebSessionRecord
+	User     database.User
+	Record   database.WebSessionRecord
+	APIToken *database.APITokenRecord
 }
 
 func readSessionFromRequest(ctx context.Context, r *http.Request, cfg config.Config, auth browserAuthService) (*sessionContext, error) {
@@ -47,10 +51,43 @@ func readSessionFromRequest(ctx context.Context, r *http.Request, cfg config.Con
 	return &sessionContext{User: user, Record: record}, nil
 }
 
+func readBearerTokenFromRequest(ctx context.Context, r *http.Request, auth browserAuthService) (*sessionContext, error) {
+	if auth == nil {
+		return nil, database.ErrNotFound
+	}
+	value := strings.TrimSpace(r.Header.Get("Authorization"))
+	if value == "" {
+		return nil, database.ErrNotFound
+	}
+	if len(value) < len("Bearer ")+1 || !strings.EqualFold(value[:len("Bearer ")], "Bearer ") {
+		return nil, errAuthenticationRequired
+	}
+	rawToken := strings.TrimSpace(value[len("Bearer "):])
+	user, record, err := auth.AuthenticateAPIToken(ctx, rawToken)
+	if err != nil {
+		return nil, err
+	}
+	return &sessionContext{
+		User:     user,
+		APIToken: &record,
+	}, nil
+}
+
+func readAuthenticatedUser(ctx context.Context, r *http.Request, cfg config.Config, auth browserAuthService) (*sessionContext, error) {
+	session, err := readBearerTokenFromRequest(ctx, r, auth)
+	if err == nil {
+		return session, nil
+	}
+	if err != nil && !errors.Is(err, database.ErrNotFound) {
+		return nil, err
+	}
+	return readSessionFromRequest(ctx, r, cfg, auth)
+}
+
 func ownerEmailForRequest(ctx context.Context, r *http.Request, cfg config.Config, auth browserAuthService, explicit string) (string, error) {
 	explicit = normalizeEmail(explicit)
 	if explicit != "" {
-		session, err := readSessionFromRequest(ctx, r, cfg, auth)
+		session, err := readAuthenticatedUser(ctx, r, cfg, auth)
 		if err == nil {
 			if !session.User.IsAdmin && normalizeEmail(session.User.Email) != explicit {
 				return "", errOwnerEmailMismatch
@@ -62,7 +99,7 @@ func ownerEmailForRequest(ctx context.Context, r *http.Request, cfg config.Confi
 		}
 		return explicit, nil
 	}
-	session, err := readSessionFromRequest(ctx, r, cfg, auth)
+	session, err := readAuthenticatedUser(ctx, r, cfg, auth)
 	if err != nil {
 		if errors.Is(err, database.ErrNotFound) {
 			return "", errAuthenticationRequired
@@ -76,6 +113,17 @@ func requireBrowserSession(ctx context.Context, r *http.Request, cfg config.Conf
 	session, err := readSessionFromRequest(ctx, r, cfg, auth)
 	if err != nil {
 		if errors.Is(err, database.ErrNotFound) {
+			return nil, errAuthenticationRequired
+		}
+		return nil, err
+	}
+	return session, nil
+}
+
+func requireAPIToken(ctx context.Context, r *http.Request, auth browserAuthService) (*sessionContext, error) {
+	session, err := readBearerTokenFromRequest(ctx, r, auth)
+	if err != nil {
+		if errors.Is(err, database.ErrNotFound) || errors.Is(err, errAuthenticationRequired) {
 			return nil, errAuthenticationRequired
 		}
 		return nil, err

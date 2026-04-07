@@ -2,14 +2,13 @@ import { useEffect, useEffectEvent, useLayoutEffect, useMemo, useRef, useState }
 import { Terminal } from "xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebglAddon } from "@xterm/addon-webgl";
-import { attachTerminalSession, createTerminalSession, HttpError, toWebSocketURL } from "./api";
+import { attachShell, HttpError, toWebSocketURL } from "./api";
 import { getMockTerminalPresentation, isMockUIEnabled } from "./mock-control-plane";
 
 type Props = {
+  shellId: string;
   machineName: string;
   title: string;
-  sessionId?: string;
-  onSessionId: (sessionId: string) => void;
   onCwdChange?: (cwd: string) => void;
   onConnectionStateChange?: (state: TerminalConnectionState) => void;
 };
@@ -22,7 +21,7 @@ type TerminalStats = {
   status: "connecting" | "ready" | "error";
   phase: ConnectionPhase;
   error: string | null;
-  retryAction: "reuse" | "new" | null;
+  retryAction: "reuse" | null;
 };
 
 const cwdSequencePrefix = "\u001b]1337;FascinateCwd=";
@@ -49,10 +48,9 @@ type MockPresentation = {
 };
 
 export function TerminalView({
+  shellId,
   machineName,
   title,
-  sessionId,
-  onSessionId,
   onCwdChange,
   onConnectionStateChange,
 }: Props) {
@@ -67,7 +65,7 @@ export function TerminalView({
   const selectionListenerRef = useRef<{ dispose(): void } | null>(null);
   const webglAddonRef = useRef<WebglAddon | null>(null);
   const webglContextLossRef = useRef<{ dispose(): void } | null>(null);
-  const sessionIdRef = useRef(sessionId ?? "");
+  const shellIdRef = useRef(shellId);
   const selectionTextRef = useRef("");
   const decoderRef = useRef<TextDecoder | null>(null);
   const pendingMetadataRef = useRef("");
@@ -82,16 +80,13 @@ export function TerminalView({
   const [connectionAttempt, setConnectionAttempt] = useState(0);
   const [stats, setStats] = useState<TerminalStats>({
     status: "connecting",
-    phase: sessionId ? "reconnecting" : "connecting",
+    phase: "reconnecting",
     error: null,
     retryAction: null,
   });
   const [clipboardNotice, setClipboardNotice] = useState<ClipboardNotice | null>(null);
 
   const label = useMemo(() => `${title} (${machineName})`, [machineName, title]);
-  const persistSessionId = useEffectEvent((value: string) => {
-    onSessionId(value);
-  });
   const persistCwd = useEffectEvent((value: string) => {
     onCwdChange?.(value);
   });
@@ -132,26 +127,21 @@ export function TerminalView({
       });
     }
   });
-  const retryConnection = useEffectEvent((mode: "reuse" | "new") => {
+  const retryConnection = useEffectEvent(() => {
     if (reconnectTimerRef.current !== null) {
       window.clearTimeout(reconnectTimerRef.current);
       reconnectTimerRef.current = null;
     }
-    if (mode === "new") {
-      sessionIdRef.current = "";
-      persistCwd("");
-      automaticReconnectAttemptsRef.current = 0;
-    }
     setStats({
       status: "connecting",
-      phase: mode === "reuse" && sessionIdRef.current !== "" ? "reconnecting" : "connecting",
+      phase: "reconnecting",
       error: null,
       retryAction: null,
     });
     setConnectionAttempt((current) => current + 1);
   });
   const scheduleAutomaticReconnect = useEffectEvent(() => {
-    if (sessionIdRef.current === "") {
+    if (shellIdRef.current === "") {
       return;
     }
     if (automaticReconnectAttemptsRef.current >= automaticReconnectDelaysMs.length) {
@@ -174,21 +164,19 @@ export function TerminalView({
     });
     reconnectTimerRef.current = window.setTimeout(() => {
       reconnectTimerRef.current = null;
-      retryConnection("reuse");
+      retryConnection();
     }, delay);
   });
   const retryReconnectOnInteraction = useEffectEvent(() => {
-    if (stats.status !== "error" || stats.retryAction !== "reuse" || sessionIdRef.current === "") {
+    if (stats.status !== "error" || stats.retryAction !== "reuse" || shellIdRef.current === "") {
       return;
     }
-    retryConnection("reuse");
+    retryConnection();
   });
 
   useEffect(() => {
-    if (sessionId) {
-      sessionIdRef.current = sessionId;
-    }
-  }, [sessionId]);
+    shellIdRef.current = shellId;
+  }, [shellId]);
 
   useEffect(() => {
     reportConnectionState(deriveConnectionState(stats));
@@ -343,25 +331,20 @@ export function TerminalView({
     }
 
     let cancelled = false;
-    const existingSessionId = sessionIdRef.current;
+    const existingShellID = shellIdRef.current;
 
     const start = async () => {
       try {
         setStats({
           status: "connecting",
-          phase: existingSessionId !== "" ? "reconnecting" : "connecting",
+          phase: "reconnecting",
           error: null,
           retryAction: null,
         });
-        const init =
-          existingSessionId !== ""
-            ? await attachTerminalSession(existingSessionId, 120, 40)
-            : await createTerminalSession(machineName, 120, 40);
+        const init = await attachShell(existingShellID, 120, 40);
         if (cancelled) {
           return;
         }
-        sessionIdRef.current = init.id;
-        persistSessionId(init.id);
         const presentation = getMockTerminalPresentation(init.id, machineName);
         persistCwd(presentation.cwd);
         setMockPresentation({
@@ -372,7 +355,7 @@ export function TerminalView({
         automaticReconnectAttemptsRef.current = 0;
         setStats({
           status: "ready",
-          phase: existingSessionId !== "" ? "reconnecting" : "connecting",
+          phase: "reconnecting",
           error: null,
           retryAction: null,
         });
@@ -380,10 +363,10 @@ export function TerminalView({
         if (cancelled) {
           return;
         }
-        const failure = describeTerminalConnectionError(error, existingSessionId !== "");
+        const failure = describeTerminalConnectionError(error);
         setStats({
           status: "error",
-          phase: sessionIdRef.current !== "" ? "reconnecting" : "connecting",
+          phase: "reconnecting",
           error: failure.message,
           retryAction: failure.retryAction,
         });
@@ -395,7 +378,7 @@ export function TerminalView({
     return () => {
       cancelled = true;
     };
-  }, [connectionAttempt, machineName, mockUIEnabled, persistCwd, persistSessionId]);
+  }, [connectionAttempt, machineName, mockUIEnabled, persistCwd, shellId]);
 
   useEffect(() => {
     if (mockUIEnabled) {
@@ -455,7 +438,7 @@ export function TerminalView({
     let disposed = false;
 
     const start = async () => {
-      const existingSessionId = sessionIdRef.current;
+      const existingShellID = shellIdRef.current;
       try {
         const cols = terminalRef.current?.cols ?? 120;
         const rows = terminalRef.current?.rows ?? 40;
@@ -463,20 +446,14 @@ export function TerminalView({
         let sawSocketError = false;
         setStats({
           status: "connecting",
-          phase: existingSessionId !== "" ? "reconnecting" : "connecting",
+          phase: "reconnecting",
           error: null,
           retryAction: null,
         });
-        const init =
-          existingSessionId !== ""
-            ? await attachTerminalSession(existingSessionId, cols, rows)
-            : await createTerminalSession(machineName, cols, rows);
+        const init = await attachShell(existingShellID, cols, rows);
         if (disposed) {
           return;
         }
-
-        sessionIdRef.current = init.id;
-        persistSessionId(init.id);
 
         const socket = new WebSocket(toWebSocketURL(init.attach_url));
         ignoreSocketCloseRef.current = false;
@@ -561,7 +538,7 @@ export function TerminalView({
           if (!socketOpened) {
             setStats({
               status: "error",
-              phase: existingSessionId !== "" ? "reconnecting" : "connecting",
+              phase: "reconnecting",
               error: sawSocketError ? "websocket connection failed" : "The shell connection closed before it was ready.",
               retryAction: "reuse",
             });
@@ -574,10 +551,10 @@ export function TerminalView({
           sawSocketError = true;
         });
       } catch (error) {
-        const failure = describeTerminalConnectionError(error, sessionIdRef.current !== "");
+        const failure = describeTerminalConnectionError(error);
         setStats({
           status: "error",
-          phase: sessionIdRef.current !== "" ? "reconnecting" : "connecting",
+          phase: "reconnecting",
           error: failure.message,
           retryAction: failure.retryAction,
         });
@@ -608,7 +585,7 @@ export function TerminalView({
       socketRef.current?.close();
       socketRef.current = null;
     };
-  }, [connectionAttempt, label, machineName, mockUIEnabled]);
+  }, [connectionAttempt, label, machineName, mockUIEnabled, shellId]);
 
   const overlay = getTerminalOverlay(stats, hasConnectedRef.current);
 
@@ -641,7 +618,7 @@ export function TerminalView({
               <button
                 type="button"
                 className="terminal-overlay-action"
-                onClick={() => retryConnection(overlay.action)}
+                onClick={() => retryConnection()}
               >
                 {overlay.actionLabel}
               </button>
@@ -667,20 +644,11 @@ function getTerminalOverlay(stats: TerminalStats, hasConnected: boolean) {
       tone: "connecting" as const,
     };
   }
-  if (stats.retryAction === "new") {
-    return {
-      title: "Shell ended",
-      description: stats.error ?? "The previous shell can no longer be restored.",
-      action: "new" as const,
-      actionLabel: "Start new shell",
-      tone: "error" as const,
-    };
-  }
   return {
     title: "Connection failed",
     description: stats.error ?? "The shell could not be opened.",
-    action: stats.retryAction ?? "reuse",
-    actionLabel: "Retry",
+    action: stats.retryAction,
+    actionLabel: stats.retryAction ? "Retry" : "",
     tone: "error" as const,
   };
 }
@@ -695,15 +663,15 @@ function deriveConnectionState(stats: TerminalStats): TerminalConnectionState {
   return stats.phase === "reconnecting" ? "reconnecting" : "connecting";
 }
 
-function describeTerminalConnectionError(error: unknown, reattaching: boolean) {
-  if (reattaching && error instanceof HttpError && (error.status === 400 || error.status === 404)) {
+function describeTerminalConnectionError(error: unknown) {
+  if (error instanceof HttpError && (error.status === 400 || error.status === 404)) {
     return {
-      message: "The previous shell can no longer be restored.",
-      retryAction: "new" as const,
+      message: "This shared shell is no longer available.",
+      retryAction: null,
     };
   }
   return {
-    message: error instanceof Error ? error.message : "failed to create terminal session",
+    message: error instanceof Error ? error.message : "failed to attach to shell",
     retryAction: "reuse" as const,
   };
 }

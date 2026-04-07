@@ -7,6 +7,8 @@ import type {
   GitRepoStatus,
   Machine,
   MachineEnv,
+  OwnerEvent,
+  Shell,
   Snapshot,
   TerminalSession,
   User,
@@ -16,9 +18,13 @@ import type {
 
 type MockTerminalRecord = {
   id: string;
+  name: string;
   machineName: string;
   cwd: string;
   lines: string[];
+  createdAt: string;
+  updatedAt: string;
+  lastAttachedAt?: string;
 };
 
 type MockRepoRecord = {
@@ -84,7 +90,7 @@ const mockWorkspaceWindows: WorkspaceWindow[] = [
     id: "window-m1",
     machineName: "m-1",
     title: "m-1 shell",
-    sessionId: "mock-session-m1",
+    shellId: "mock-session-m1",
     x: 0,
     y: 0,
     width: 796,
@@ -95,7 +101,7 @@ const mockWorkspaceWindows: WorkspaceWindow[] = [
     id: "window-cool-space",
     machineName: "cool-space",
     title: "cool-space shell",
-    sessionId: "mock-session-cool-space",
+    shellId: "mock-session-cool-space",
     x: 796,
     y: 0,
     width: 796,
@@ -171,11 +177,13 @@ const metadataServicePatch = [
 ].join("\n");
 
 function createInitialMockState(): MockState {
+  const seededAt = "2026-04-01T00:00:00Z";
   const terminals = new Map<string, MockTerminalRecord>([
     [
       "mock-session-m1",
       {
         id: "mock-session-m1",
+        name: "m-1 shell",
         machineName: "m-1",
         cwd: "/home/ubuntu/aisi",
         lines: [
@@ -189,12 +197,16 @@ function createInitialMockState(): MockState {
           "",
           "ubuntu@m-1:~/aisi$ ",
         ],
+        createdAt: seededAt,
+        updatedAt: seededAt,
+        lastAttachedAt: seededAt,
       },
     ],
     [
       "mock-session-cool-space",
       {
         id: "mock-session-cool-space",
+        name: "cool-space shell",
         machineName: "cool-space",
         cwd: "/home/ubuntu/project-alpha",
         lines: [
@@ -206,6 +218,9 @@ function createInitialMockState(): MockState {
           "",
           "ubuntu@cool-space:~/project-alpha$ ",
         ],
+        createdAt: seededAt,
+        updatedAt: seededAt,
+        lastAttachedAt: seededAt,
       },
     ],
   ]);
@@ -229,7 +244,7 @@ function createInitialMockState(): MockState {
       { key: "APP_THEME", value: "dark" },
     ],
     workspace: {
-      version: 3,
+      version: 4,
       windows: clone(mockWorkspaceWindows),
       viewport: { x: 120, y: 96, scale: 1 },
     },
@@ -464,28 +479,46 @@ export async function saveMockDefaultWorkspace(layout: WorkspaceLayout) {
   return { name: "default", layout: clone(layout) };
 }
 
-export async function createMockTerminalSession(machineName: string, _cols: number, _rows: number): Promise<TerminalSession> {
+export async function listMockShells(): Promise<Shell[]> {
+  return Array.from(state.terminals.values())
+    .map((terminal) => shellResponse(terminal))
+    .sort((left, right) => left.created_at.localeCompare(right.created_at) || left.id.localeCompare(right.id));
+}
+
+export async function createMockShell(machineName: string, name?: string): Promise<Shell> {
   const id = `mock-session-${state.terminalCounter++}`;
   const cwd = defaultCwdForMachine(machineName);
-  state.terminals.set(id, {
+  const now = new Date().toISOString();
+  const record: MockTerminalRecord = {
     id,
+    name: name?.trim() || `${machineName} shell`,
     machineName,
     cwd,
     lines: mockLinesForMachine(machineName, cwd),
-  });
-  return terminalSessionResponse(id, machineName);
+    createdAt: now,
+    updatedAt: now,
+  };
+  state.terminals.set(id, record);
+  return shellResponse(record);
 }
 
-export async function attachMockTerminalSession(sessionId: string, _cols: number, _rows: number): Promise<TerminalSession> {
+export async function attachMockShell(sessionId: string, _cols: number, _rows: number): Promise<TerminalSession> {
   const session = state.terminals.get(sessionId);
   if (session) {
+    session.lastAttachedAt = new Date().toISOString();
+    session.updatedAt = session.lastAttachedAt;
     return terminalSessionResponse(session.id, session.machineName);
   }
-  return createMockTerminalSession("m-1", 120, 40);
+  const shell = await createMockShell("m-1");
+  return terminalSessionResponse(shell.id, shell.machine_name);
 }
 
-export async function deleteMockTerminalSession(sessionId: string) {
+export async function deleteMockShell(sessionId: string) {
   state.terminals.delete(sessionId);
+  state.workspace = {
+    ...state.workspace,
+    windows: state.workspace.windows.filter((window) => window.shellId !== sessionId),
+  };
 }
 
 export function getMockTerminalPresentation(sessionId: string, machineName: string) {
@@ -548,6 +581,24 @@ function terminalSessionResponse(id: string, machineName: string): TerminalSessi
     attach_url: `/v1/terminal/sessions/${id}/stream?token=mock-token`,
     expires_at: futureTimestamp(),
   };
+}
+
+function shellResponse(record: MockTerminalRecord): Shell {
+  return {
+    id: record.id,
+    name: record.name,
+    machine_name: record.machineName,
+    host_id: "mock-host",
+    state: "READY",
+    cwd: record.cwd,
+    last_attached_at: record.lastAttachedAt,
+    created_at: record.createdAt,
+    updated_at: record.updatedAt,
+  };
+}
+
+export function subscribeMockEvents(_onEvent: (event: OwnerEvent) => void) {
+  return () => {};
 }
 
 function futureTimestamp() {

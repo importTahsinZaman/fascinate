@@ -14,25 +14,29 @@ import { ArrowClockwise, Camera, Eye, EyeSlash, GitFork, Trash, WarningCircle, X
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   forkMachine,
+  createShell,
   createMachine,
   createSnapshot,
   deleteEnvVar,
   deleteMachine,
+  deleteShell,
   deleteSnapshot,
-  deleteTerminalSession,
   getDefaultWorkspace,
   getSession,
   getTerminalGitStatus,
   listEnvVars,
   listMachines,
+  listShells,
   listSnapshots,
   logout,
   requestLoginCode,
   saveDefaultWorkspace,
   setEnvVar,
+  subscribeToEventStream,
   verifyLogin,
   type EnvVarCatalog,
   type Machine,
+  type Shell,
   type Snapshot,
   type WorkspaceWindow,
 } from "./api";
@@ -202,10 +206,12 @@ function CommandCenter() {
   const [closingShellIDs, setClosingShellIDs] = useState<string[]>([]);
 
   const hydrate = useWorkspaceStore((state) => state.hydrate);
-  const openTerminal = useWorkspaceStore((state) => state.openTerminal);
+  const openShellWindow = useWorkspaceStore((state) => state.openShellWindow);
   const windows = useWorkspaceStore((state) => state.windows);
   const windowCwds = useWorkspaceStore((state) => state.windowCwds);
   const closeWindow = useWorkspaceStore((state) => state.closeWindow);
+  const closeWindowsForShell = useWorkspaceStore((state) => state.closeWindowsForShell);
+  const pruneMissingShells = useWorkspaceStore((state) => state.pruneMissingShells);
   const removeWindowsForMachine = useWorkspaceStore((state) => state.removeWindowsForMachine);
   const restoreRemovedWindows = useWorkspaceStore((state) => state.restoreRemovedWindows);
   const focusWindow = useWorkspaceStore((state) => state.focusWindow);
@@ -217,12 +223,14 @@ function CommandCenter() {
   const machinesQuery = useQuery({
     queryKey: ["machines"],
     queryFn: listMachines,
-    refetchInterval: 5_000,
   });
   const snapshotsQuery = useQuery({
     queryKey: ["snapshots"],
     queryFn: listSnapshots,
-    refetchInterval: 5_000,
+  });
+  const shellsQuery = useQuery({
+    queryKey: ["shells"],
+    queryFn: listShells,
   });
   const envVarsQuery = useQuery({ queryKey: ["env-vars"], queryFn: listEnvVars });
   const workspaceQuery = useQuery({ queryKey: ["workspace"], queryFn: getDefaultWorkspace });
@@ -232,6 +240,32 @@ function CommandCenter() {
       startTransition(() => hydrate(workspaceQuery.data));
     }
   }, [hydrate, workspaceQuery.data]);
+
+  useEffect(() => {
+    if (!shellsQuery.data) {
+      return;
+    }
+    startTransition(() => pruneMissingShells(shellsQuery.data.map((shell) => shell.id)));
+  }, [pruneMissingShells, shellsQuery.data]);
+
+  useEffect(() => {
+    const unsubscribe = subscribeToEventStream((event) => {
+      if (event.kind.startsWith("machine.")) {
+        void queryClient.invalidateQueries({ queryKey: ["machines"] });
+      }
+      if (event.kind.startsWith("snapshot.")) {
+        void queryClient.invalidateQueries({ queryKey: ["snapshots"] });
+      }
+      if (event.kind.startsWith("shell.")) {
+        const shellID = typeof event.payload?.shell_id === "string" ? event.payload.shell_id : "";
+        if (event.kind === "shell.deleted" && shellID) {
+          startTransition(() => closeWindowsForShell(shellID));
+        }
+        void queryClient.invalidateQueries({ queryKey: ["shells"] });
+      }
+    });
+    return unsubscribe;
+  }, [closeWindowsForShell, queryClient]);
 
   useEffect(() => {
     if (!modal) {
@@ -358,6 +392,7 @@ function CommandCenter() {
   });
 
   const machineList = machinesQuery.data ?? [];
+  const shellList = shellsQuery.data ?? [];
   const machineColorStyles = useMemo(
     () => getMachineColorStyles([...machineList.map((machine) => machine.name), ...windows.map((window) => window.machineName)]),
     [machineList, windows],
@@ -374,25 +409,46 @@ function CommandCenter() {
   const envCatalog = envVarsQuery.data ?? emptyEnvVarCatalog;
   const envList = envCatalog.envVars;
   const builtinEnvList = envCatalog.builtinEnvVars;
-  const windowsByMachine = useMemo(() => {
-    const grouped = new Map<string, WorkspaceWindow[]>();
+  const windowByShellID = useMemo(() => {
+    const items = new Map<string, WorkspaceWindow>();
     for (const window of windows) {
-      const items = grouped.get(window.machineName) ?? [];
-      items.push(window);
-      grouped.set(window.machineName, items);
+      if (!window.shellId) {
+        continue;
+      }
+      items.set(window.shellId, window);
     }
-    return grouped;
+    return items;
   }, [windows]);
-  const shellOrdinalByWindowID = useMemo(() => {
-    const ordinals = new Map<string, number>();
+  const shellCountByMachine = useMemo(() => {
     const counts = new Map<string, number>();
-    for (const window of windows) {
-      const nextOrdinal = (counts.get(window.machineName) ?? 0) + 1;
-      counts.set(window.machineName, nextOrdinal);
-      ordinals.set(window.id, nextOrdinal);
+    for (const shell of shellList) {
+      counts.set(shell.machine_name, (counts.get(shell.machine_name) ?? 0) + 1);
     }
-    return ordinals;
-  }, [windows]);
+    return counts;
+  }, [shellList]);
+  const orderedSidebarShells = useMemo(() => {
+    const shellsByID = new Map(shellList.map((shell) => [shell.id, shell] as const));
+    const ordered: Array<{ shell: Shell; window: WorkspaceWindow | null }> = [];
+    const seenShellIDs = new Set<string>();
+    for (const window of windows) {
+      if (!window.shellId) {
+        continue;
+      }
+      const shell = shellsByID.get(window.shellId);
+      if (!shell) {
+        continue;
+      }
+      ordered.push({ shell, window });
+      seenShellIDs.add(shell.id);
+    }
+    for (const shell of shellList) {
+      if (seenShellIDs.has(shell.id)) {
+        continue;
+      }
+      ordered.push({ shell, window: null });
+    }
+    return ordered;
+  }, [shellList, windows]);
   const sidebarShellNodeRefs = useRef(new Map<string, HTMLDivElement>());
   const sidebarShellDragStateRef = useRef<{
     pointerId: number;
@@ -414,29 +470,63 @@ function CommandCenter() {
     );
   };
 
-  const openMachineShell = (machineName: string) => {
-    const shellCount = windowsByMachine.get(machineName)?.length ?? 0;
-    const nextShellNumber = shellCount + 1;
-    const windowID = openTerminal(
-      machineName,
-      nextShellNumber === 1 ? `${machineName} shell` : `${machineName} shell ${nextShellNumber}`,
-    );
+  const openOrFocusShellWindow = (shell: Shell) => {
+    const existingWindow = windowByShellID.get(shell.id);
+    if (existingWindow) {
+      focusWindow(existingWindow.id);
+      requestViewportFocus(existingWindow.id);
+      return;
+    }
+    const windowID = openShellWindow({
+      shellId: shell.id,
+      machineName: shell.machine_name,
+      title: shell.name,
+    });
     focusWindow(windowID);
     requestViewportFocus(windowID);
   };
 
-  const closeShellWindow = async (window: WorkspaceWindow) => {
+  const createShellMutation = useMutation({
+    mutationFn: ({ machineName, name }: { machineName: string; name?: string }) => createShell(machineName, name),
+    onSuccess: (shell) => {
+      queryClient.setQueryData<Shell[]>(["shells"], (current) => {
+        const next = current ? [...current.filter((item) => item.id !== shell.id), shell] : [shell];
+        next.sort((left, right) => left.created_at.localeCompare(right.created_at) || left.id.localeCompare(right.id));
+        return next;
+      });
+      openOrFocusShellWindow(shell);
+      void queryClient.invalidateQueries({ queryKey: ["shells"] });
+    },
+  });
+
+  const openMachineShell = (machineName: string) => {
+    const nextShellNumber = (shellCountByMachine.get(machineName) ?? 0) + 1;
+    const shellName = nextShellNumber === 1 ? `${machineName} shell` : `${machineName} shell ${nextShellNumber}`;
+    createShellMutation.mutate({ machineName, name: shellName });
+  };
+
+  const closeShellResource = async (shellID: string) => {
     setShellCloseError(null);
-    if (window.sessionId) {
-      setClosingShellIDs((current) => (current.includes(window.id) ? current : [...current, window.id]));
-      try {
-        await deleteTerminalSession(window.sessionId);
-      } catch (error) {
-        setShellCloseError(error);
-        return;
-      } finally {
-        setClosingShellIDs((current) => current.filter((id) => id !== window.id));
-      }
+    setClosingShellIDs((current) => (current.includes(shellID) ? current : [...current, shellID]));
+    try {
+      await deleteShell(shellID);
+      startTransition(() => closeWindowsForShell(shellID));
+      queryClient.setQueryData<Shell[]>(["shells"], (current) =>
+        current ? current.filter((shell) => shell.id !== shellID) : current,
+      );
+    } catch (error) {
+      setShellCloseError(error);
+      return;
+    } finally {
+      setClosingShellIDs((current) => current.filter((id) => id !== shellID));
+    }
+    void queryClient.invalidateQueries({ queryKey: ["shells"] });
+  };
+
+  const closeShellWindow = async (window: WorkspaceWindow) => {
+    if (window.shellId) {
+      await closeShellResource(window.shellId);
+      return;
     }
     closeWindow(window.id);
   };
@@ -886,48 +976,66 @@ function CommandCenter() {
             <h2>Shells</h2>
           </div>
           <div className="sidebar-shell-list">
-            {windows.length === 0 ? (
+            {orderedSidebarShells.length === 0 ? (
               <div className="sidebar-shells-empty">
                 <strong>No shells open</strong>
-                <p className="muted">Open a shell from a machine below to start working.</p>
+                <p className="muted">Create a shell from a machine below or from the CLI to start working.</p>
               </div>
             ) : (
-              windows.map((window) => {
-                const shellLabel = formatShellListLabel(
-                  windowCwds[window.id],
-                  shellOrdinalByWindowID.get(window.id) ?? 1,
-                );
+              orderedSidebarShells.map(({ shell, window }) => {
+                const shellLabel = formatShellListLabel(window ? windowCwds[window.id] : shell.cwd, shell.name);
+                const isOpen = Boolean(window);
+                const rowID = window?.id ?? shell.id;
                 return (
                   <div
-                    key={window.id}
+                    key={shell.id}
                     className="sidebar-shell-row"
-                    data-window-id={window.id}
-                    style={machineColorStyles[window.machineName] ?? getMachineColorStyle(window.machineName)}
-                    data-active={frontmostWindowID === window.id ? "true" : "false"}
-                    data-dragging={draggingSidebarShellID === window.id ? "true" : "false"}
+                    data-window-id={window?.id ?? undefined}
+                    style={machineColorStyles[shell.machine_name] ?? getMachineColorStyle(shell.machine_name)}
+                    data-active={window && frontmostWindowID === window.id ? "true" : "false"}
+                    data-dragging={isOpen && draggingSidebarShellID === rowID ? "true" : "false"}
                     ref={(node) => {
-                      if (node) {
-                        sidebarShellNodeRefs.current.set(window.id, node);
+                      if (!isOpen) {
                         return;
                       }
-                      sidebarShellNodeRefs.current.delete(window.id);
+                      if (node) {
+                        sidebarShellNodeRefs.current.set(rowID, node);
+                        return;
+                      }
+                      sidebarShellNodeRefs.current.delete(rowID);
                     }}
                   >
                     <button
                       type="button"
                       className="sidebar-shell-focus"
                       aria-label={shellLabel}
-                      title={`${shellLabel} · ${window.machineName}`}
-                      onClick={() => focusShellWindow(window.id)}
-                      onPointerDown={(event) => startSidebarShellDrag(event, window.id)}
-                      onPointerMove={(event) => continueSidebarShellDrag(event, window.id)}
-                      onPointerUp={(event) => finishSidebarShellDrag(event, window.id)}
-                      onPointerCancel={(event) => finishSidebarShellDrag(event, window.id)}
+                      title={`${shellLabel} · ${shell.machine_name}`}
+                      onClick={() => openOrFocusShellWindow(shell)}
+                      onPointerDown={(event) => {
+                        if (window) {
+                          startSidebarShellDrag(event, window.id);
+                        }
+                      }}
+                      onPointerMove={(event) => {
+                        if (window) {
+                          continueSidebarShellDrag(event, window.id);
+                        }
+                      }}
+                      onPointerUp={(event) => {
+                        if (window) {
+                          finishSidebarShellDrag(event, window.id);
+                        }
+                      }}
+                      onPointerCancel={(event) => {
+                        if (window) {
+                          finishSidebarShellDrag(event, window.id);
+                        }
+                      }}
                     >
                       <span className="sidebar-shell-cwd">{shellLabel}</span>
                       <span className="sidebar-shell-machine" aria-hidden="true">
                         <span className="machine-color-dot sidebar-shell-machine-dot" />
-                        <span className="sidebar-shell-machine-name">{window.machineName}</span>
+                        <span className="sidebar-shell-machine-name">{shell.machine_name}</span>
                       </span>
                     </button>
                     <button
@@ -936,9 +1044,9 @@ function CommandCenter() {
                       aria-label={`Delete ${shellLabel}`}
                       title={`Delete ${shellLabel}`}
                       onClick={() => {
-                        void closeShellWindow(window);
+                        void closeShellResource(shell.id);
                       }}
-                      disabled={closingShellIDs.includes(window.id)}
+                      disabled={closingShellIDs.includes(shell.id)}
                     >
                       <X className="icon-svg" weight="regular" />
                     </button>
@@ -1054,7 +1162,7 @@ function CommandCenter() {
               })}
             </div>
           )}
-          <StatusError mutationError={deleteMachineMutation.error} />
+          <StatusError mutationError={createShellMutation.error ?? deleteMachineMutation.error} />
         </section>
 
         <section className="control-sidebar-footer">
@@ -1173,7 +1281,6 @@ function WorkspaceRail({
   const viewportFocusRequest = useWorkspaceStore((state) => state.viewportFocusRequest);
   const clearViewportFocusRequest = useWorkspaceStore((state) => state.clearViewportFocusRequest);
   const moveWindowToIndex = useWorkspaceStore((state) => state.moveWindowToIndex);
-  const setWindowSession = useWorkspaceStore((state) => state.setWindowSession);
   const setWindowCwd = useWorkspaceStore((state) => state.setWindowCwd);
   const openGitDiffSidebar = useWorkspaceStore((state) => state.openGitDiffSidebar);
   const gitDiffSidebarWindowID = useWorkspaceStore((state) => state.gitDiffSidebar.windowID);
@@ -1338,7 +1445,7 @@ function WorkspaceRail({
                 onClose={() => {
                   void onCloseShell(window);
                 }}
-                isClosing={closingShellIDs.includes(window.id)}
+                isClosing={Boolean(window.shellId && closingShellIDs.includes(window.shellId))}
                 onFocus={() => focusWindow(window.id)}
                 onHeaderPointerDown={(event) => startWindowHeaderDrag(event, window.id)}
                 onHeaderPointerMove={(event) => continueWindowHeaderDrag(event, window.id)}
@@ -1354,26 +1461,29 @@ function WorkspaceRail({
                 cwd={windowCwds[window.id]}
                 connectionState={windowConnectionStates[window.id]}
               >
-                <Suspense fallback={<div className="terminal-loading">Opening terminal…</div>}>
-                  <TerminalView
-                    machineName={window.machineName}
-                    title={window.title}
-                    sessionId={window.sessionId}
-                    onSessionId={(sessionId) => setWindowSession(window.id, sessionId)}
-                    onCwdChange={(cwd) => setWindowCwd(window.id, cwd)}
-                    onConnectionStateChange={(connectionState) => {
-                      setWindowConnectionStates((current) => {
-                        if (current[window.id] === connectionState) {
-                          return current;
-                        }
-                        return {
-                          ...current,
-                          [window.id]: connectionState,
-                        };
-                      });
-                    }}
-                  />
-                </Suspense>
+                {window.shellId ? (
+                  <Suspense fallback={<div className="terminal-loading">Opening terminal…</div>}>
+                    <TerminalView
+                      shellId={window.shellId}
+                      machineName={window.machineName}
+                      title={window.title}
+                      onCwdChange={(cwd) => setWindowCwd(window.id, cwd)}
+                      onConnectionStateChange={(connectionState) => {
+                        setWindowConnectionStates((current) => {
+                          if (current[window.id] === connectionState) {
+                            return current;
+                          }
+                          return {
+                            ...current,
+                            [window.id]: connectionState,
+                          };
+                        });
+                      }}
+                    />
+                  </Suspense>
+                ) : (
+                  <div className="terminal-loading">Shell metadata is unavailable.</div>
+                )}
               </WindowFrame>
             </div>
           ))}
@@ -1390,10 +1500,10 @@ function formatCwdDisplay(cwd: string | undefined) {
   return cwd.replace(/^\/home\/ubuntu(?=\/|$)/, "~");
 }
 
-function formatShellListLabel(cwd: string | undefined, index: number) {
+function formatShellListLabel(cwd: string | undefined, fallback: string) {
   const displayCwd = formatCwdDisplay(cwd);
   if (!displayCwd) {
-    return `Shell ${index}`;
+    return fallback;
   }
   return displayCwd;
 }
@@ -1471,7 +1581,7 @@ function WindowFrame({
         <div className="window-header-actions window-header-actions-end">
           <WindowGitDiffButton
             title={layoutWindow.title}
-            sessionId={layoutWindow.sessionId}
+            shellId={layoutWindow.shellId}
             cwd={cwd}
             isFrontmost={isFrontmost}
             isActive={isGitDiffActive}
@@ -1517,25 +1627,25 @@ function WindowShellConnectionIndicator({ connectionState }: { connectionState?:
 
 function WindowGitDiffButton({
   title,
-  sessionId,
+  shellId,
   cwd,
   isFrontmost,
   isActive,
   onOpen,
 }: {
   title: string;
-  sessionId?: string;
+  shellId?: string;
   cwd?: string;
   isFrontmost: boolean;
   isActive: boolean;
   onOpen: () => void;
 }) {
   const statusQuery = useQuery({
-    queryKey: ["terminal-git-status", sessionId, cwd],
-    queryFn: () => getTerminalGitStatus(sessionId ?? "", cwd ?? ""),
-    enabled: Boolean(sessionId && cwd),
+    queryKey: ["terminal-git-status", shellId, cwd],
+    queryFn: () => getTerminalGitStatus(shellId ?? "", cwd ?? ""),
+    enabled: Boolean(shellId && cwd),
     staleTime: 15_000,
-    refetchInterval: sessionId && cwd && (isFrontmost || isActive) ? windowGitStatusPollIntervalMs : false,
+    refetchInterval: shellId && cwd && (isFrontmost || isActive) ? windowGitStatusPollIntervalMs : false,
     refetchOnWindowFocus: false,
     retry: false,
   });

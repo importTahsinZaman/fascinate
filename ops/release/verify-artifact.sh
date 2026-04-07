@@ -16,7 +16,7 @@ cleanup() {
 
 usage() {
   cat <<'EOF'
-usage: verify-artifact.sh [--expect-type full|web] <artifact-dir-or-tar.gz>
+usage: verify-artifact.sh [--expect-type cli|full|web] <artifact-dir-or-tar.gz>
 EOF
 }
 
@@ -95,6 +95,14 @@ verify_required_paths() {
         "ops/release/lib.sh"
         "ops/release/verify-artifact.sh"
         "payload/web/dist/index.html"
+      )
+      ;;
+    cli)
+      required_paths=(
+        "manifest.json"
+        "ops/release/lib.sh"
+        "ops/release/verify-artifact.sh"
+        "payload/bin/fascinate"
       )
       ;;
     *)

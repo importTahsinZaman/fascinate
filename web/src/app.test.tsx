@@ -71,6 +71,16 @@ const builtinEnvVarsResponse = [
 ];
 
 function createAuthenticatedFetchMock(override?: AppFetchOverride) {
+  let shellCounter = 1;
+  let shells: Array<{
+    id: string;
+    name: string;
+    machine_name: string;
+    state: string;
+    created_at: string;
+    updated_at: string;
+  }> = [];
+
   return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const path = String(input);
     const overridden = override?.(path, init);
@@ -100,6 +110,27 @@ function createAuthenticatedFetchMock(override?: AppFetchOverride) {
     if (path === "/v1/env-vars") {
       return jsonResponse({ env_vars: [], builtin_env_vars: builtinEnvVarsResponse });
     }
+    if (path === "/v1/shells") {
+      if (init?.method === "POST") {
+        const body = JSON.parse(String(init.body)) as { machine_name: string; name?: string };
+        const shell = {
+          id: `shell-${shellCounter++}`,
+          name: body.name ?? `${body.machine_name} shell`,
+          machine_name: body.machine_name,
+          state: "READY",
+          created_at: "2026-03-22T00:00:00Z",
+          updated_at: "2026-03-22T00:00:00Z",
+        };
+        shells = [...shells, shell];
+        return jsonResponse(shell, 201);
+      }
+      return jsonResponse({ shells });
+    }
+    if (path.startsWith("/v1/shells/") && init?.method === "DELETE") {
+      const shellID = decodeURIComponent(path.replace("/v1/shells/", ""));
+      shells = shells.filter((shell) => shell.id !== shellID);
+      return new Response(null, { status: 204 });
+    }
     if (path === "/v1/workspaces/default") {
       if (init?.method === "PUT") {
         const body = JSON.parse(String(init.body)) as { layout: unknown };
@@ -111,10 +142,14 @@ function createAuthenticatedFetchMock(override?: AppFetchOverride) {
   });
 }
 
-async function seedShellSession(windowIndex: number, sessionId: string, cwd: string) {
-  const windowId = useWorkspaceStore.getState().windows[windowIndex].id;
+async function seedShellSession(windowIndex: number, _shellId: string, cwd: string) {
+  let windowId = "";
+  await waitFor(() => {
+    const window = useWorkspaceStore.getState().windows[windowIndex];
+    expect(window).toBeDefined();
+    windowId = window!.id;
+  });
   await act(async () => {
-    useWorkspaceStore.getState().setWindowSession(windowId, sessionId);
     useWorkspaceStore.getState().setWindowCwd(windowId, cwd);
   });
 }
@@ -193,25 +228,7 @@ describe("App", () => {
   });
 
   it("renders the sidebar workspace, modals, and opens terminal windows", async () => {
-    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const path = String(input);
-      if (path === "/v1/auth/session") {
-        return jsonResponse({ user: { id: "user-1", email: "dev@example.com", is_admin: false } });
-      }
-      if (path === "/v1/machines") {
-        return jsonResponse({
-          machines: [
-            {
-              id: "machine-1",
-              name: "m-1",
-              state: "RUNNING",
-              primary_port: 3000,
-              created_at: "2026-03-22T00:00:00Z",
-              updated_at: "2026-03-22T00:00:00Z",
-            },
-          ],
-        });
-      }
+    const fetchMock = createAuthenticatedFetchMock((path, init) => {
       if (path === "/v1/snapshots") {
         return jsonResponse({
           snapshots: [
@@ -239,7 +256,7 @@ describe("App", () => {
         }
         return jsonResponse({ name: "default", layout: { version: 2, windows: [], viewport: { x: 120, y: 96, scale: 1 } } });
       }
-      throw new Error(`unexpected request ${path}`);
+      return undefined;
     });
     vi.stubGlobal("fetch", fetchMock);
 
@@ -289,7 +306,7 @@ describe("App", () => {
     fireEvent.click(screen.getByRole("button", { name: "New shell" }));
 
     expect(await screen.findByTestId("terminal-m-1")).toBeTruthy();
-    expect(await screen.findByRole("button", { name: "Shell 1" })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "m-1 shell" })).toBeTruthy();
 
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(
@@ -404,7 +421,7 @@ describe("App", () => {
     fireEvent.click(await screen.findByRole("button", { name: "New shell" }));
     expect(await screen.findByTestId("terminal-m-1")).toBeTruthy();
 
-    fireEvent.click(await screen.findByRole("button", { name: "Shell 1" }));
+    fireEvent.click(await screen.findByRole("button", { name: "m-1 shell" }));
 
     await waitFor(() => {
       expect(HTMLElement.prototype.scrollIntoView).toHaveBeenCalled();
@@ -488,31 +505,7 @@ describe("App", () => {
   });
 
   it("keeps a shell visible when backend close fails", async () => {
-    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const path = String(input);
-      if (path === "/v1/auth/session") {
-        return jsonResponse({ user: { id: "user-1", email: "dev@example.com", is_admin: false } });
-      }
-      if (path === "/v1/machines") {
-        return jsonResponse({
-          machines: [
-            {
-              id: "machine-1",
-              name: "m-1",
-              state: "RUNNING",
-              primary_port: 3000,
-              created_at: "2026-03-22T00:00:00Z",
-              updated_at: "2026-03-22T00:00:00Z",
-            },
-          ],
-        });
-      }
-      if (path === "/v1/snapshots") {
-        return jsonResponse({ snapshots: [] });
-      }
-      if (path === "/v1/env-vars") {
-        return jsonResponse({ env_vars: [], builtin_env_vars: builtinEnvVarsResponse });
-      }
+    const fetchMock = createAuthenticatedFetchMock((path, init) => {
       if (path === "/v1/workspaces/default") {
         if (init?.method === "PUT") {
           const body = JSON.parse(String(init.body)) as { layout: unknown };
@@ -520,10 +513,10 @@ describe("App", () => {
         }
         return jsonResponse({ name: "default", layout: { version: 2, windows: [], viewport: { x: 120, y: 96, scale: 1 } } });
       }
-      if (path === "/v1/terminal/sessions/term-1") {
+      if (path === "/v1/shells/shell-1") {
         return jsonResponse({ error: "close failed" }, 500);
       }
-      throw new Error(`unexpected request ${path}`);
+      return undefined;
     });
     vi.stubGlobal("fetch", fetchMock);
 
@@ -532,16 +525,11 @@ describe("App", () => {
     fireEvent.click(await screen.findByRole("button", { name: "New shell" }));
     expect(await screen.findByTestId("terminal-m-1")).toBeTruthy();
 
-    const windowId = useWorkspaceStore.getState().windows[0].id;
-    await act(async () => {
-      useWorkspaceStore.getState().setWindowSession(windowId, "term-1");
-    });
-
-    fireEvent.click(screen.getByRole("button", { name: "Delete Shell 1" }));
+    fireEvent.click(screen.getByRole("button", { name: "Delete m-1 shell" }));
 
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(
-        "/v1/terminal/sessions/term-1",
+        "/v1/shells/shell-1",
         expect.objectContaining({ method: "DELETE" }),
       );
     });
@@ -585,7 +573,9 @@ describe("App", () => {
     fireEvent.click(await screen.findByRole("button", { name: "New shell" }));
     fireEvent.click(await screen.findByRole("button", { name: "New shell" }));
 
-    expect(await screen.findAllByTestId("terminal-m-1")).toHaveLength(2);
+    await waitFor(() => {
+      expect(screen.getAllByTestId("terminal-m-1")).toHaveLength(2);
+    });
 
     fireEvent.click(screen.getByRole("button", { name: "Delete m-1" }));
 
@@ -630,7 +620,9 @@ describe("App", () => {
     fireEvent.click(await screen.findByRole("button", { name: "New shell" }));
     fireEvent.click(await screen.findByRole("button", { name: "New shell" }));
 
-    expect(await screen.findAllByTestId("terminal-m-1")).toHaveLength(2);
+    await waitFor(() => {
+      expect(screen.getAllByTestId("terminal-m-1")).toHaveLength(2);
+    });
 
     fireEvent.click(screen.getByRole("button", { name: "Delete m-1" }));
 
@@ -648,31 +640,7 @@ describe("App", () => {
   });
 
   it("keeps sidebar shell order stable when focusing a sibling shell", async () => {
-    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const path = String(input);
-      if (path === "/v1/auth/session") {
-        return jsonResponse({ user: { id: "user-1", email: "dev@example.com", is_admin: false } });
-      }
-      if (path === "/v1/machines") {
-        return jsonResponse({
-          machines: [
-            {
-              id: "machine-1",
-              name: "m-1",
-              state: "RUNNING",
-              primary_port: 3000,
-              created_at: "2026-03-22T00:00:00Z",
-              updated_at: "2026-03-22T00:00:00Z",
-            },
-          ],
-        });
-      }
-      if (path === "/v1/snapshots") {
-        return jsonResponse({ snapshots: [] });
-      }
-      if (path === "/v1/env-vars") {
-        return jsonResponse({ env_vars: [], builtin_env_vars: builtinEnvVarsResponse });
-      }
+    const fetchMock = createAuthenticatedFetchMock((path, init) => {
       if (path === "/v1/workspaces/default") {
         if (init?.method === "PUT") {
           const body = JSON.parse(String(init.body)) as { layout: unknown };
@@ -680,7 +648,7 @@ describe("App", () => {
         }
         return jsonResponse({ name: "default", layout: { version: 2, windows: [], viewport: { x: 120, y: 96, scale: 1 } } });
       }
-      throw new Error(`unexpected request ${path}`);
+      return undefined;
     });
     vi.stubGlobal("fetch", fetchMock);
 
@@ -689,17 +657,19 @@ describe("App", () => {
     fireEvent.click(await screen.findByRole("button", { name: "New shell" }));
     fireEvent.click(await screen.findByRole("button", { name: "New shell" }));
 
-    expect(await screen.findAllByTestId("terminal-m-1")).toHaveLength(2);
+    await waitFor(() => {
+      expect(screen.getAllByTestId("terminal-m-1")).toHaveLength(2);
+    });
 
-    expect(getSidebarShellLabels()).toEqual(["Shell 1 m-1", "Shell 2 m-1"]);
+    expect(getSidebarShellLabels()).toEqual(["m-1 shell m-1", "m-1 shell 2 m-1"]);
 
-    fireEvent.click(screen.getByRole("button", { name: "Shell 1" }));
+    fireEvent.click(screen.getByRole("button", { name: "m-1 shell" }));
 
     await waitFor(() => {
       expect(HTMLElement.prototype.scrollIntoView).toHaveBeenCalled();
     });
 
-    expect(getSidebarShellLabels()).toEqual(["Shell 1 m-1", "Shell 2 m-1"]);
+    expect(getSidebarShellLabels()).toEqual(["m-1 shell m-1", "m-1 shell 2 m-1"]);
   });
 
   it("streams unified file diffs inline and keeps wheel scroll inside the panel", async () => {
@@ -709,7 +679,7 @@ describe("App", () => {
       value: { writeText },
     });
     const fetchMock = createAuthenticatedFetchMock((path, init) => {
-      if (path === "/v1/terminal/sessions/term-1/git/status") {
+      if (path === "/v1/terminal/sessions/shell-1/git/status") {
         expect(JSON.parse(String(init?.body))).toEqual({ cwd: "/home/ubuntu/repo" });
         return jsonResponse({
           state: "ready",
@@ -724,7 +694,7 @@ describe("App", () => {
           ],
         });
       }
-      if (path === "/v1/terminal/sessions/term-1/git/diffs") {
+      if (path === "/v1/terminal/sessions/shell-1/git/diffs") {
         const body = JSON.parse(String(init?.body)) as { files: Array<{ path: string }> };
         expect(body).toMatchObject({
           cwd: "/home/ubuntu/repo",
@@ -833,7 +803,7 @@ line 20
     expect((await screen.findAllByText("web/src/store.ts")).length).toBeGreaterThan(0);
     await waitFor(() => {
       const diffRequests = fetchMock.mock.calls
-        .filter(([path]) => path === "/v1/terminal/sessions/term-1/git/diffs")
+        .filter(([path]) => path === "/v1/terminal/sessions/shell-1/git/diffs")
         .flatMap(([, init]) =>
           JSON.parse(String((init as RequestInit | undefined)?.body)).files.map((file: { path: string }) => file.path),
         );
@@ -875,7 +845,7 @@ line 20
 
   it("renders split collapsed controls for large unchanged regions", async () => {
     const fetchMock = createAuthenticatedFetchMock((path) => {
-      if (path === "/v1/terminal/sessions/term-1/git/status") {
+      if (path === "/v1/terminal/sessions/shell-1/git/status") {
         return jsonResponse({
           state: "ready",
           repo_root: "/home/ubuntu/repo",
@@ -885,7 +855,7 @@ line 20
           files: [{ path: "web/src/app.tsx", kind: "modified", index_status: "M", worktree_status: "M" }],
         });
       }
-      if (path === "/v1/terminal/sessions/term-1/git/diffs") {
+      if (path === "/v1/terminal/sessions/shell-1/git/diffs") {
         return jsonResponse({
           diffs: [{
             state: "ready",
@@ -950,7 +920,7 @@ line 1
 
   it("rebinds the git diff sidebar to another shell window", async () => {
     const fetchMock = createAuthenticatedFetchMock((path) => {
-      if (path === "/v1/terminal/sessions/term-1/git/status") {
+      if (path === "/v1/terminal/sessions/shell-1/git/status") {
         return jsonResponse({
           state: "ready",
           repo_root: "/home/ubuntu/repo-one",
@@ -960,7 +930,7 @@ line 1
           files: [{ path: "web/src/app.tsx", kind: "modified" }],
         });
       }
-      if (path === "/v1/terminal/sessions/term-1/git/diffs") {
+      if (path === "/v1/terminal/sessions/shell-1/git/diffs") {
         return jsonResponse({
           diffs: [{
             state: "ready",
@@ -975,7 +945,7 @@ line 1
           }],
         });
       }
-      if (path === "/v1/terminal/sessions/term-2/git/status") {
+      if (path === "/v1/terminal/sessions/shell-2/git/status") {
         return jsonResponse({
           state: "ready",
           repo_root: "/home/ubuntu/repo-two",
@@ -985,7 +955,7 @@ line 1
           files: [{ path: "web/src/store.ts", kind: "modified" }],
         });
       }
-      if (path === "/v1/terminal/sessions/term-2/git/diffs") {
+      if (path === "/v1/terminal/sessions/shell-2/git/diffs") {
         return jsonResponse({
           diffs: [{
             state: "ready",
@@ -1027,7 +997,7 @@ line 1
     expect((await screen.findAllByText("web/src/store.ts")).length).toBeGreaterThan(0);
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(
-        "/v1/terminal/sessions/term-2/git/status",
+        "/v1/terminal/sessions/shell-2/git/status",
         expect.objectContaining({ method: "POST" }),
       );
     });
@@ -1035,7 +1005,7 @@ line 1
 
   it("hides the shell-header git diff chip outside git repositories", async () => {
     const fetchMock = createAuthenticatedFetchMock((path) => {
-      if (path === "/v1/terminal/sessions/term-1/git/status") {
+      if (path === "/v1/terminal/sessions/shell-1/git/status") {
         return jsonResponse({ state: "not_repo" });
       }
       return undefined;
@@ -1049,7 +1019,7 @@ line 1
 
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(
-        "/v1/terminal/sessions/term-1/git/status",
+        "/v1/terminal/sessions/shell-1/git/status",
         expect.objectContaining({ method: "POST" }),
       );
     });
@@ -1058,7 +1028,7 @@ line 1
 
   it("shows the shell-header git diff chip for clean repositories", async () => {
     const fetchMock = createAuthenticatedFetchMock((path) => {
-      if (path === "/v1/terminal/sessions/term-1/git/status") {
+      if (path === "/v1/terminal/sessions/shell-1/git/status") {
         return jsonResponse({
           state: "ready",
           repo_root: "/home/ubuntu/repo",
@@ -1093,7 +1063,7 @@ line 1
 
   it("closes the git diff sidebar on repeat toggle press and Escape", async () => {
     const fetchMock = createAuthenticatedFetchMock((path) => {
-      if (path === "/v1/terminal/sessions/term-1/git/status") {
+      if (path === "/v1/terminal/sessions/shell-1/git/status") {
         return jsonResponse({
           state: "ready",
           repo_root: "/home/ubuntu/repo",
@@ -1141,7 +1111,7 @@ line 1
 
   it("shows an explicit fallback when a file diff cannot be rendered inline", async () => {
     const fetchMock = createAuthenticatedFetchMock((path) => {
-      if (path === "/v1/terminal/sessions/term-1/git/status") {
+      if (path === "/v1/terminal/sessions/shell-1/git/status") {
         return jsonResponse({
           state: "ready",
           repo_root: "/home/ubuntu/repo",
@@ -1151,7 +1121,7 @@ line 1
           files: [{ path: "web/src/app.tsx", kind: "modified" }],
         });
       }
-      if (path === "/v1/terminal/sessions/term-1/git/diffs") {
+      if (path === "/v1/terminal/sessions/shell-1/git/diffs") {
         return jsonResponse({
           diffs: [{
             state: "too_large",

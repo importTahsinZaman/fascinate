@@ -85,7 +85,7 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 	hostCancel()
 	emailClient := email.NewResendClient(cfg.ResendBaseURL, cfg.ResendAPIKey, cfg.EmailFrom)
 	browserAuth := browserauth.New(cfg, store, emailClient)
-	terminalGateway := browserterm.New(cfg, controlPlane)
+	terminalGateway := browserterm.New(cfg, controlPlane, store)
 	readiness := newStartupReadiness()
 	handler := httpapi.New(cfg, store, runtimeClient, controlPlane, browserAuth, terminalGateway, readiness)
 

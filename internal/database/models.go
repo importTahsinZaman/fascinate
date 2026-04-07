@@ -204,6 +204,20 @@ type WebSessionRecord struct {
 	CreatedAt  string  `json:"created_at"`
 }
 
+type APITokenRecord struct {
+	ID         string  `json:"id"`
+	UserID     string  `json:"user_id"`
+	UserEmail  string  `json:"user_email"`
+	Name       string  `json:"name"`
+	TokenHash  string  `json:"token_hash"`
+	ExpiresAt  string  `json:"expires_at"`
+	LastUsedAt string  `json:"last_used_at"`
+	UserAgent  *string `json:"user_agent,omitempty"`
+	IPAddress  *string `json:"ip_address,omitempty"`
+	RevokedAt  *string `json:"revoked_at,omitempty"`
+	CreatedAt  string  `json:"created_at"`
+}
+
 type CreateWebSessionParams struct {
 	ID        string
 	UserID    string
@@ -211,6 +225,91 @@ type CreateWebSessionParams struct {
 	ExpiresAt string
 	UserAgent string
 	IPAddress string
+}
+
+type CreateAPITokenParams struct {
+	ID        string
+	UserID    string
+	Name      string
+	TokenHash string
+	ExpiresAt string
+	UserAgent string
+	IPAddress string
+}
+
+type ShellRecord struct {
+	ID             string  `json:"id"`
+	UserID         string  `json:"user_id"`
+	UserEmail      string  `json:"user_email"`
+	MachineID      string  `json:"machine_id"`
+	MachineName    string  `json:"machine_name"`
+	HostID         *string `json:"host_id,omitempty"`
+	Name           string  `json:"name"`
+	TmuxSession    string  `json:"tmux_session"`
+	State          string  `json:"state"`
+	CWD            string  `json:"cwd,omitempty"`
+	LastError      *string `json:"last_error,omitempty"`
+	LastAttachedAt *string `json:"last_attached_at,omitempty"`
+	CreatedAt      string  `json:"created_at"`
+	UpdatedAt      string  `json:"updated_at"`
+	DeletedAt      *string `json:"deleted_at,omitempty"`
+}
+
+type CreateShellParams struct {
+	ID          string
+	UserID      string
+	MachineID   string
+	HostID      *string
+	Name        string
+	TmuxSession string
+	State       string
+	CWD         string
+}
+
+type ExecRecord struct {
+	ID                      string  `json:"id"`
+	UserID                  string  `json:"user_id"`
+	UserEmail               string  `json:"user_email"`
+	MachineID               string  `json:"machine_id"`
+	MachineName             string  `json:"machine_name"`
+	HostID                  *string `json:"host_id,omitempty"`
+	CommandText             string  `json:"command_text"`
+	CWD                     string  `json:"cwd,omitempty"`
+	State                   string  `json:"state"`
+	RequestedTimeoutSeconds int     `json:"requested_timeout_seconds,omitempty"`
+	ExitCode                *int    `json:"exit_code,omitempty"`
+	FailureClass            *string `json:"failure_class,omitempty"`
+	StdoutText              string  `json:"stdout_text,omitempty"`
+	StderrText              string  `json:"stderr_text,omitempty"`
+	StdoutTruncated         bool    `json:"stdout_truncated,omitempty"`
+	StderrTruncated         bool    `json:"stderr_truncated,omitempty"`
+	StartedAt               *string `json:"started_at,omitempty"`
+	CompletedAt             *string `json:"completed_at,omitempty"`
+	CancelRequestedAt       *string `json:"cancel_requested_at,omitempty"`
+	CreatedAt               string  `json:"created_at"`
+	UpdatedAt               string  `json:"updated_at"`
+}
+
+type CreateExecParams struct {
+	ID                      string
+	UserID                  string
+	MachineID               string
+	HostID                  *string
+	CommandText             string
+	CWD                     string
+	State                   string
+	RequestedTimeoutSeconds int
+}
+
+type FinishExecParams struct {
+	ID              string
+	State           string
+	ExitCode        *int
+	FailureClass    *string
+	StdoutText      string
+	StderrText      string
+	StdoutTruncated bool
+	StderrTruncated bool
 }
 
 type WorkspaceLayoutRecord struct {

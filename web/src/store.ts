@@ -24,14 +24,16 @@ type WorkspaceState = {
   gitDiffSidebar: GitDiffSidebarState;
   hydrated: boolean;
   hydrate: (layout: WorkspaceLayout) => void;
-  openTerminal: (machineName: string, title?: string) => string;
-  setWindowSession: (id: string, sessionId: string) => void;
+  openShellWindow: (shell: { shellId: string; machineName: string; title: string }) => string;
+  setWindowShell: (id: string, shellId: string, title?: string) => void;
   setWindowCwd: (id: string, cwd: string) => void;
   openGitDiffSidebar: (windowID: string) => void;
   closeGitDiffSidebar: () => void;
   selectGitDiffSidebarFile: (path: string, previousPath?: string) => void;
   clearGitDiffSidebarFile: () => void;
   removeWindowsForMachine: (machineName: string) => RemovedMachineWindowsSnapshot | null;
+  closeWindowsForShell: (shellId: string) => void;
+  pruneMissingShells: (shellIDs: string[]) => void;
   restoreRemovedWindows: (snapshot: RemovedMachineWindowsSnapshot) => void;
   closeWindow: (id: string) => void;
   focusWindow: (id: string) => void;
@@ -83,7 +85,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
           id: item.id,
           machineName: item.machineName,
           title: item.title,
-          sessionId: item.sessionId,
+          shellId: item.shellId ?? item.sessionId,
           x: item.x,
           y: item.y,
           width: defaultWindowSize.width,
@@ -101,7 +103,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         hydrated: true,
       };
     }),
-  openTerminal: (machineName, title) => {
+  openShellWindow: ({ shellId, machineName, title }) => {
     const windowID = crypto.randomUUID();
     set((state) => {
       const nextZ = state.windows.reduce((max, item) => Math.max(max, item.z), 0) + 1;
@@ -109,6 +111,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         id: windowID,
         machineName,
         title: title ?? `${machineName} shell`,
+        shellId,
         x: 0,
         y: 0,
         width: defaultWindowSize.width,
@@ -121,13 +124,14 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     });
     return windowID;
   },
-  setWindowSession: (id, sessionId) =>
+  setWindowShell: (id, shellId, title) =>
     set((state) => ({
       windows: state.windows.map((item) =>
         item.id === id
           ? {
               ...item,
-              sessionId,
+              shellId,
+              title: title ?? item.title,
             }
           : item,
       ),
@@ -240,6 +244,59 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     });
     return snapshot;
   },
+  closeWindowsForShell: (shellId) =>
+    set((state) => {
+      const removedWindowIDs = new Set(
+        state.windows.filter((window) => window.shellId === shellId).map((window) => window.id),
+      );
+      if (removedWindowIDs.size === 0) {
+        return state;
+      }
+      const windowCwds = { ...state.windowCwds };
+      for (const windowID of removedWindowIDs) {
+        delete windowCwds[windowID];
+      }
+      return {
+        windows: normalizeOrderedWindows(state.windows.filter((window) => !removedWindowIDs.has(window.id))),
+        windowCwds,
+        viewportFocusRequest:
+          state.viewportFocusRequest && removedWindowIDs.has(state.viewportFocusRequest.windowID)
+            ? null
+            : state.viewportFocusRequest,
+        gitDiffSidebar:
+          state.gitDiffSidebar.windowID && removedWindowIDs.has(state.gitDiffSidebar.windowID)
+            ? defaultGitDiffSidebarState
+            : state.gitDiffSidebar,
+      };
+    }),
+  pruneMissingShells: (shellIDs) =>
+    set((state) => {
+      const validShellIDs = new Set(shellIDs);
+      const removedWindowIDs = new Set(
+        state.windows
+          .filter((window) => !window.shellId || !validShellIDs.has(window.shellId))
+          .map((window) => window.id),
+      );
+      if (removedWindowIDs.size === 0) {
+        return state;
+      }
+      const windowCwds = { ...state.windowCwds };
+      for (const windowID of removedWindowIDs) {
+        delete windowCwds[windowID];
+      }
+      return {
+        windows: normalizeOrderedWindows(state.windows.filter((window) => !removedWindowIDs.has(window.id))),
+        windowCwds,
+        viewportFocusRequest:
+          state.viewportFocusRequest && removedWindowIDs.has(state.viewportFocusRequest.windowID)
+            ? null
+            : state.viewportFocusRequest,
+        gitDiffSidebar:
+          state.gitDiffSidebar.windowID && removedWindowIDs.has(state.gitDiffSidebar.windowID)
+            ? defaultGitDiffSidebarState
+            : state.gitDiffSidebar,
+      };
+    }),
   restoreRemovedWindows: (snapshot) =>
     set((state) => {
       const restoredWindows = snapshot.windows.filter(
@@ -315,7 +372,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       viewport: normalizeViewport(viewport),
     }),
   serialize: () => ({
-    version: 3,
+    version: 4,
     windows: get().windows,
     viewport: get().viewport,
   }),

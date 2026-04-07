@@ -89,3 +89,61 @@ func TestBrowserLoginLifecycle(t *testing.T) {
 		t.Fatalf("expected ErrNotFound after logout, got %v", err)
 	}
 }
+
+func TestAPITokenLoginLifecycle(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, err := database.Open(ctx, filepath.Join(t.TempDir(), "fascinate.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	if err := store.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	sender := &fakeEmailSender{enabled: true}
+	service := New(config.Config{
+		SignupCodeTTL: 15 * time.Minute,
+		APITokenTTL:   7 * 24 * time.Hour,
+		AdminEmails:   []string{"admin@example.com"},
+	}, store, sender)
+
+	if err := service.RequestCode(ctx, " Admin@Example.com "); err != nil {
+		t.Fatal(err)
+	}
+
+	tokenSession, err := service.VerifyCodeForAPIToken(ctx, "admin@example.com", sender.code, "macbook", "Go test", "127.0.0.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tokenSession.User.Email != "admin@example.com" {
+		t.Fatalf("unexpected user email %q", tokenSession.User.Email)
+	}
+	if tokenSession.Record.Name != "macbook" {
+		t.Fatalf("unexpected token name %q", tokenSession.Record.Name)
+	}
+	if tokenSession.RawToken == "" {
+		t.Fatalf("expected API token")
+	}
+
+	user, record, err := service.AuthenticateAPIToken(ctx, tokenSession.RawToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if user.Email != tokenSession.User.Email {
+		t.Fatalf("unexpected authenticated user %q", user.Email)
+	}
+	if record.ID != tokenSession.Record.ID {
+		t.Fatalf("unexpected token record %+v", record)
+	}
+
+	if err := service.LogoutAPIToken(ctx, tokenSession.RawToken); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := service.AuthenticateAPIToken(ctx, tokenSession.RawToken); err != database.ErrNotFound {
+		t.Fatalf("expected ErrNotFound after token logout, got %v", err)
+	}
+}

@@ -58,6 +58,7 @@ type Config struct {
 	SignupCodeTTL           time.Duration
 	WebSessionTTL           time.Duration
 	WebSessionCookieName    string
+	APITokenTTL             time.Duration
 	TerminalSessionTTL      time.Duration
 }
 
@@ -158,6 +159,7 @@ func Load() Config {
 		SignupCodeTTL:           getenvDuration("FASCINATE_SIGNUP_CODE_TTL", 15*time.Minute),
 		WebSessionTTL:           getenvDuration("FASCINATE_WEB_SESSION_TTL", 30*24*time.Hour),
 		WebSessionCookieName:    getenv("FASCINATE_WEB_SESSION_COOKIE_NAME", "fascinate_session"),
+		APITokenTTL:             getenvDuration("FASCINATE_API_TOKEN_TTL", 90*24*time.Hour),
 		TerminalSessionTTL:      getenvDuration("FASCINATE_TERMINAL_SESSION_TTL", 5*time.Minute),
 	}
 }

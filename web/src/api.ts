@@ -1,12 +1,12 @@
 import {
-  attachMockTerminalSession,
+  attachMockShell,
+  createMockShell,
   createMockMachine,
   createMockSnapshot,
-  createMockTerminalSession,
   deleteMockEnvVar,
   deleteMockMachine,
+  deleteMockShell,
   deleteMockSnapshot,
-  deleteMockTerminalSession,
   forkMockMachine,
   getMockDefaultWorkspace,
   getMockMachineEnv,
@@ -14,6 +14,7 @@ import {
   getMockTerminalGitDiffBatch,
   getMockTerminalGitStatus,
   isMockUIEnabled,
+  listMockShells,
   listMockEnvVars,
   listMockMachines,
   listMockSnapshots,
@@ -21,6 +22,7 @@ import {
   requestMockLoginCode,
   saveMockDefaultWorkspace,
   setMockEnvVar,
+  subscribeMockEvents,
   verifyMockLogin,
 } from "./mock-control-plane";
 
@@ -74,11 +76,33 @@ export type MachineEnv = {
 };
 
 export type TerminalSession = {
- id: string;
- machine_name: string;
- host_id: string;
- attach_url: string;
- expires_at: string;
+  id: string;
+  machine_name: string;
+  host_id: string;
+  attach_url: string;
+  expires_at: string;
+};
+
+export type Shell = {
+  id: string;
+  name: string;
+  user_email?: string;
+  machine_name: string;
+  host_id?: string;
+  state: string;
+  cwd?: string;
+  last_attached_at?: string;
+  last_error?: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type OwnerEvent = {
+  id: string;
+  kind: string;
+  machine_id?: string;
+  payload?: Record<string, unknown>;
+  created_at: string;
 };
 
 export type GitChangedFile = {
@@ -138,6 +162,7 @@ export type WorkspaceWindow = {
   id: string;
   machineName: string;
   title: string;
+  shellId?: string;
   sessionId?: string;
   x: number;
   y: number;
@@ -349,53 +374,89 @@ export async function saveDefaultWorkspace(layout: WorkspaceLayout) {
   });
 }
 
-export async function createTerminalSession(machineName: string, cols: number, rows: number) {
+export async function listShells() {
   if (isMockUIEnabled()) {
-    return createMockTerminalSession(machineName, cols, rows);
+    return listMockShells();
   }
-  return request<TerminalSession>("/v1/terminal/sessions", {
+  const body = await request<{ shells: Shell[] }>("/v1/shells");
+  return body.shells;
+}
+
+export async function createShell(machineName: string, name?: string) {
+  if (isMockUIEnabled()) {
+    return createMockShell(machineName, name);
+  }
+  return request<Shell>("/v1/shells", {
     method: "POST",
-    body: JSON.stringify({ machine_name: machineName, cols, rows }),
+    body: JSON.stringify({ machine_name: machineName, name }),
   });
 }
 
-export async function attachTerminalSession(sessionId: string, cols: number, rows: number) {
+export async function attachShell(shellId: string, cols: number, rows: number) {
   if (isMockUIEnabled()) {
-    return attachMockTerminalSession(sessionId, cols, rows);
+    return attachMockShell(shellId, cols, rows);
   }
-  return request<TerminalSession>("/v1/terminal/sessions/" + encodeURIComponent(sessionId) + "/attach", {
+  return request<TerminalSession>("/v1/shells/" + encodeURIComponent(shellId) + "/attach", {
     method: "POST",
     body: JSON.stringify({ cols, rows }),
   });
 }
 
-export async function deleteTerminalSession(sessionId: string) {
+export async function deleteShell(shellId: string) {
   if (isMockUIEnabled()) {
-    return deleteMockTerminalSession(sessionId);
+    return deleteMockShell(shellId);
   }
-  return request<void>("/v1/terminal/sessions/" + encodeURIComponent(sessionId), {
+  return request<void>("/v1/shells/" + encodeURIComponent(shellId), {
     method: "DELETE",
   });
 }
 
-export async function getTerminalGitStatus(sessionId: string, cwd: string) {
+export async function getTerminalGitStatus(shellId: string, cwd: string) {
   if (isMockUIEnabled()) {
-    return getMockTerminalGitStatus(sessionId, cwd);
+    return getMockTerminalGitStatus(shellId, cwd);
   }
-  return request<GitRepoStatus>("/v1/terminal/sessions/" + encodeURIComponent(sessionId) + "/git/status", {
+  return request<GitRepoStatus>("/v1/terminal/sessions/" + encodeURIComponent(shellId) + "/git/status", {
     method: "POST",
     body: JSON.stringify({ cwd }),
   });
 }
 
-export async function getTerminalGitDiffBatch(sessionId: string, diffRequest: GitDiffBatchRequest) {
+export async function getTerminalGitDiffBatch(shellId: string, diffRequest: GitDiffBatchRequest) {
   if (isMockUIEnabled()) {
-    return getMockTerminalGitDiffBatch(sessionId, diffRequest);
+    return getMockTerminalGitDiffBatch(shellId, diffRequest);
   }
-  return request<{ diffs: GitFileDiff[] }>("/v1/terminal/sessions/" + encodeURIComponent(sessionId) + "/git/diffs", {
+  return request<{ diffs: GitFileDiff[] }>("/v1/terminal/sessions/" + encodeURIComponent(shellId) + "/git/diffs", {
     method: "POST",
     body: JSON.stringify(diffRequest),
   });
+}
+
+export function subscribeToEventStream(
+  onEvent: (event: OwnerEvent) => void,
+  onError?: (error: Event | unknown) => void,
+) {
+  if (isMockUIEnabled()) {
+    return subscribeMockEvents(onEvent);
+  }
+  if (typeof EventSource === "undefined") {
+    return () => {};
+  }
+
+  const source = new EventSource("/v1/events/stream", { withCredentials: true });
+  source.onmessage = (message) => {
+    try {
+      onEvent(JSON.parse(message.data) as OwnerEvent);
+    } catch (error) {
+      onError?.(error);
+    }
+  };
+  source.onerror = (error) => {
+    onError?.(error);
+  };
+
+  return () => {
+    source.close();
+  };
 }
 
 export function toWebSocketURL(path: string) {

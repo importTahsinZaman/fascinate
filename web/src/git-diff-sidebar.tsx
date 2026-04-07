@@ -54,13 +54,13 @@ export function GitDiffSidebar() {
     () => windows.find((window) => window.id === gitDiffSidebar.windowID) ?? null,
     [gitDiffSidebar.windowID, windows],
   );
-  const sessionId = activeWindow?.sessionId ?? "";
+  const shellId = activeWindow?.shellId ?? "";
   const cwd = activeWindow ? windowCwds[activeWindow.id] ?? "" : "";
 
   const statusQuery = useQuery({
-    queryKey: ["terminal-git-status", sessionId, cwd],
-    queryFn: () => getTerminalGitStatus(sessionId, cwd),
-    enabled: Boolean(gitDiffSidebar.windowID && sessionId && cwd),
+    queryKey: ["terminal-git-status", shellId, cwd],
+    queryFn: () => getTerminalGitStatus(shellId, cwd),
+    enabled: Boolean(gitDiffSidebar.windowID && shellId && cwd),
     refetchInterval: gitDiffSidebar.windowID ? statusPollIntervalMs : false,
     refetchOnWindowFocus: false,
     retry: false,
@@ -76,7 +76,7 @@ export function GitDiffSidebar() {
 
   useEffect(() => {
     setVisibleFileCount(initialDiffPageSize);
-  }, [gitDiffSidebar.windowID, sessionId, cwd, statusQuery.data?.repo_root, deferredFiles.length]);
+  }, [gitDiffSidebar.windowID, shellId, cwd, statusQuery.data?.repo_root, deferredFiles.length]);
 
   const visibleFiles = useMemo(
     () => deferredFiles.slice(0, visibleFileCount),
@@ -92,14 +92,14 @@ export function GitDiffSidebar() {
       return {
         queryKey: [
           "terminal-git-diff-batch",
-          sessionId,
+          shellId,
           cwd,
           statusQuery.data?.repo_root ?? "",
           batchIndex,
           batchFiles.map((file) => gitDiffFileKey(file.path, file.previous_path)).join("|"),
         ],
         queryFn: () =>
-          getTerminalGitDiffBatch(sessionId, {
+          getTerminalGitDiffBatch(shellId, {
             cwd,
             repo_root: statusQuery.data?.repo_root ?? "",
             files: batchFiles.map((file) => ({
@@ -110,7 +110,7 @@ export function GitDiffSidebar() {
               worktree_status: file.worktree_status,
             })),
           }),
-        enabled: Boolean(sessionId && cwd && statusQuery.data?.repo_root && batchFiles.length > 0),
+        enabled: Boolean(shellId && cwd && statusQuery.data?.repo_root && batchFiles.length > 0),
         refetchOnWindowFocus: false,
         retry: false,
         staleTime: 15_000,
@@ -224,7 +224,7 @@ export function GitDiffSidebar() {
             className="git-diff-sidebar-action"
             type="button"
             onClick={() => void statusQuery.refetch()}
-            disabled={!sessionId || !cwd || statusQuery.isFetching}
+            disabled={!shellId || !cwd || statusQuery.isFetching}
             aria-label={statusQuery.isFetching ? "Refreshing diff" : "Refresh diff"}
             title={statusQuery.isFetching ? "Refreshing diff" : "Refresh diff"}
           >
@@ -246,10 +246,10 @@ export function GitDiffSidebar() {
       </header>
 
       <div className="git-diff-sidebar-body">
-        {!sessionId ? (
+        {!shellId ? (
           <SidebarStateCard
-            title="Waiting for shell session"
-            description="The shell window has not established a browser terminal session yet."
+            title="Waiting for shell metadata"
+            description="The shell window does not have a shared shell identifier yet."
           />
         ) : !cwd ? (
           <SidebarStateCard

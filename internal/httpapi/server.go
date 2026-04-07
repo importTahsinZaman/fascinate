@@ -55,6 +55,19 @@ type terminalManager interface {
 	ReattachSession(context.Context, string, string, int, int) (browserterm.SessionInit, error)
 	CloseSession(context.Context, string, string) error
 	CloseMachineSessions(context.Context, string, string) error
+	ListShells(context.Context, string) ([]browserterm.Shell, error)
+	GetShell(context.Context, string, string) (browserterm.Shell, error)
+	CreateShell(context.Context, string, string, string) (browserterm.Shell, error)
+	DeleteShell(context.Context, string, string) error
+	CreateAttachment(context.Context, string, string, int, int) (browserterm.SessionInit, error)
+	SendInput(context.Context, string, string, string) error
+	ReadLines(context.Context, string, string, int) ([]string, error)
+	CreateExec(context.Context, string, string, browserterm.ExecRequest) (browserterm.Exec, error)
+	GetExec(context.Context, string, string) (browserterm.Exec, error)
+	ListExecs(context.Context, string, int) ([]browserterm.Exec, error)
+	CancelExec(context.Context, string, string) error
+	StreamExec(http.ResponseWriter, *http.Request, string, string) error
+	ExecDiagnostics(context.Context, string, int) (browserterm.ExecDiagnostics, error)
 	GetGitStatus(context.Context, string, string, string) (browserterm.GitRepoStatus, error)
 	GetGitDiffBatch(context.Context, string, string, browserterm.GitDiffBatchRequest) (browserterm.GitDiffBatchResponse, error)
 	StreamSession(http.ResponseWriter, *http.Request, string) error
@@ -220,6 +233,117 @@ func New(cfg config.Config, store *database.Store, runtime runtimeChecker, machi
 		})
 	})
 
+	mux.HandleFunc("/v1/events/stream", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeMethodNotAllowed(w, http.MethodGet)
+			return
+		}
+		streamOwnerEvents(w, r, store, cfg, auth)
+	})
+
+	mux.HandleFunc("/v1/cli/auth/request-code", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeMethodNotAllowed(w, http.MethodPost)
+			return
+		}
+		if auth == nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "CLI auth is not configured"})
+			return
+		}
+		var body struct {
+			Email string `json:"email"`
+		}
+		if err := decodeJSON(r, &body); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+		defer cancel()
+		if err := auth.RequestCode(ctx, body.Email); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusAccepted, map[string]string{"status": "verification code sent"})
+	})
+
+	mux.HandleFunc("/v1/cli/auth/verify", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeMethodNotAllowed(w, http.MethodPost)
+			return
+		}
+		if auth == nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "CLI auth is not configured"})
+			return
+		}
+		var body struct {
+			Email     string `json:"email"`
+			Code      string `json:"code"`
+			TokenName string `json:"token_name"`
+		}
+		if err := decodeJSON(r, &body); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+		defer cancel()
+		tokenSession, err := auth.VerifyCodeForAPIToken(ctx, body.Email, body.Code, body.TokenName, r.UserAgent(), requestIPAddress(r))
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"user":       tokenSession.User,
+			"token":      tokenSession.RawToken,
+			"token_id":   tokenSession.Record.ID,
+			"token_name": tokenSession.Record.Name,
+			"expires_at": tokenSession.ExpiresAt.Format(time.RFC3339),
+		})
+	})
+
+	mux.HandleFunc("/v1/cli/auth/session", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeMethodNotAllowed(w, http.MethodGet)
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+		defer cancel()
+		session, err := requireAPIToken(ctx, r, auth)
+		if err != nil {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"user": session.User,
+			"token": map[string]any{
+				"id":           session.APIToken.ID,
+				"name":         session.APIToken.Name,
+				"expires_at":   session.APIToken.ExpiresAt,
+				"created_at":   session.APIToken.CreatedAt,
+				"last_used_at": session.APIToken.LastUsedAt,
+			},
+		})
+	})
+
+	mux.HandleFunc("/v1/cli/auth/logout", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeMethodNotAllowed(w, http.MethodPost)
+			return
+		}
+		if auth == nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "CLI auth is not configured"})
+			return
+		}
+		header := strings.TrimSpace(r.Header.Get("Authorization"))
+		if len(header) >= len("Bearer ")+1 && strings.EqualFold(header[:len("Bearer ")], "Bearer ") {
+			rawToken := strings.TrimSpace(header[len("Bearer "):])
+			if err := auth.LogoutAPIToken(r.Context(), rawToken); err != nil {
+				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
+				return
+			}
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+
 	mux.HandleFunc("/v1/auth/logout", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			writeMethodNotAllowed(w, http.MethodPost)
@@ -290,6 +414,277 @@ func New(cfg config.Config, store *database.Store, runtime runtimeChecker, machi
 		default:
 			writeMethodNotAllowed(w, http.MethodGet, http.MethodPut)
 		}
+	})
+
+	mux.HandleFunc("/v1/shells", func(w http.ResponseWriter, r *http.Request) {
+		if terminals == nil {
+			http.NotFound(w, r)
+			return
+		}
+		switch r.Method {
+		case http.MethodGet:
+			ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+			defer cancel()
+			ownerEmail, err := ownerEmailForRequest(ctx, r, cfg, auth, r.URL.Query().Get("owner_email"))
+			if err != nil {
+				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
+				return
+			}
+			shells, err := terminals.ListShells(ctx, ownerEmail)
+			if err != nil {
+				writeServiceError(w, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"shells": shells})
+		case http.MethodPost:
+			ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+			defer cancel()
+			var body struct {
+				MachineName string `json:"machine_name"`
+				Name        string `json:"name"`
+				OwnerEmail  string `json:"owner_email"`
+			}
+			if err := decodeJSON(r, &body); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
+			ownerEmail, err := ownerEmailForRequest(ctx, r, cfg, auth, body.OwnerEmail)
+			if err != nil {
+				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
+				return
+			}
+			shell, err := terminals.CreateShell(ctx, ownerEmail, body.MachineName, body.Name)
+			if err != nil {
+				writeServiceError(w, err)
+				return
+			}
+			writeJSON(w, http.StatusCreated, shell)
+		default:
+			writeMethodNotAllowed(w, http.MethodGet, http.MethodPost)
+		}
+	})
+
+	mux.HandleFunc("/v1/shells/", func(w http.ResponseWriter, r *http.Request) {
+		if terminals == nil {
+			http.NotFound(w, r)
+			return
+		}
+		path := strings.Trim(strings.TrimPrefix(r.URL.Path, "/v1/shells/"), "/")
+		if path == "" {
+			http.NotFound(w, r)
+			return
+		}
+		parts := strings.Split(path, "/")
+		ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+		defer cancel()
+		ownerEmail, err := ownerEmailForRequest(ctx, r, cfg, auth, r.URL.Query().Get("owner_email"))
+		if err != nil {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
+			return
+		}
+		if len(parts) == 1 {
+			switch r.Method {
+			case http.MethodGet:
+				shell, err := terminals.GetShell(ctx, ownerEmail, parts[0])
+				if err != nil {
+					writeServiceError(w, err)
+					return
+				}
+				writeJSON(w, http.StatusOK, shell)
+			case http.MethodDelete:
+				if err := terminals.DeleteShell(ctx, ownerEmail, parts[0]); err != nil {
+					writeServiceError(w, err)
+					return
+				}
+				w.WriteHeader(http.StatusNoContent)
+			default:
+				writeMethodNotAllowed(w, http.MethodGet, http.MethodDelete)
+			}
+			return
+		}
+		if len(parts) == 2 && parts[1] == "attach" {
+			if r.Method != http.MethodPost {
+				writeMethodNotAllowed(w, http.MethodPost)
+				return
+			}
+			var body struct {
+				Cols int `json:"cols"`
+				Rows int `json:"rows"`
+			}
+			if err := decodeJSON(r, &body); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
+			init, err := terminals.CreateAttachment(ctx, ownerEmail, parts[0], body.Cols, body.Rows)
+			if err != nil {
+				writeServiceError(w, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, init)
+			return
+		}
+		if len(parts) == 2 && parts[1] == "input" {
+			if r.Method != http.MethodPost {
+				writeMethodNotAllowed(w, http.MethodPost)
+				return
+			}
+			var body struct {
+				Input string `json:"input"`
+			}
+			if err := decodeJSON(r, &body); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
+			if err := terminals.SendInput(ctx, ownerEmail, parts[0], body.Input); err != nil {
+				writeServiceError(w, err)
+				return
+			}
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
+		if len(parts) == 2 && parts[1] == "lines" {
+			if r.Method != http.MethodGet {
+				writeMethodNotAllowed(w, http.MethodGet)
+				return
+			}
+			limit, err := strconv.Atoi(strings.TrimSpace(r.URL.Query().Get("limit")))
+			if err != nil && strings.TrimSpace(r.URL.Query().Get("limit")) != "" {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "limit must be an integer"})
+				return
+			}
+			lines, err := terminals.ReadLines(ctx, ownerEmail, parts[0], limit)
+			if err != nil {
+				writeServiceError(w, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"lines": lines})
+			return
+		}
+		http.NotFound(w, r)
+	})
+
+	mux.HandleFunc("/v1/execs", func(w http.ResponseWriter, r *http.Request) {
+		if terminals == nil {
+			http.NotFound(w, r)
+			return
+		}
+		switch r.Method {
+		case http.MethodGet:
+			ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+			defer cancel()
+			ownerEmail, err := ownerEmailForRequest(ctx, r, cfg, auth, r.URL.Query().Get("owner_email"))
+			if err != nil {
+				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
+				return
+			}
+			limit := 25
+			if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+				value, err := strconv.Atoi(raw)
+				if err != nil || value <= 0 {
+					writeJSON(w, http.StatusBadRequest, map[string]string{"error": "limit must be a positive integer"})
+					return
+				}
+				limit = value
+			}
+			execs, err := terminals.ListExecs(ctx, ownerEmail, limit)
+			if err != nil {
+				writeServiceError(w, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"execs": execs})
+		case http.MethodPost:
+			ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+			defer cancel()
+			var body struct {
+				MachineName    string `json:"machine_name"`
+				CommandText    string `json:"command_text"`
+				CWD            string `json:"cwd"`
+				TimeoutSeconds int    `json:"timeout_seconds"`
+				OwnerEmail     string `json:"owner_email"`
+			}
+			if err := decodeJSON(r, &body); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
+			ownerEmail, err := ownerEmailForRequest(ctx, r, cfg, auth, body.OwnerEmail)
+			if err != nil {
+				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
+				return
+			}
+			timeout := time.Duration(body.TimeoutSeconds) * time.Second
+			execResult, err := terminals.CreateExec(ctx, ownerEmail, body.MachineName, browserterm.ExecRequest{
+				CommandText: body.CommandText,
+				CWD:         body.CWD,
+				Timeout:     timeout,
+			})
+			if err != nil {
+				writeServiceError(w, err)
+				return
+			}
+			writeJSON(w, http.StatusAccepted, map[string]any{
+				"exec":       execResult,
+				"stream_url": "/v1/execs/" + url.PathEscape(execResult.ID) + "/stream",
+				"cancel_url": "/v1/execs/" + url.PathEscape(execResult.ID) + "/cancel",
+			})
+		default:
+			writeMethodNotAllowed(w, http.MethodGet, http.MethodPost)
+		}
+	})
+
+	mux.HandleFunc("/v1/execs/", func(w http.ResponseWriter, r *http.Request) {
+		if terminals == nil {
+			http.NotFound(w, r)
+			return
+		}
+		path := strings.Trim(strings.TrimPrefix(r.URL.Path, "/v1/execs/"), "/")
+		if path == "" {
+			http.NotFound(w, r)
+			return
+		}
+		parts := strings.Split(path, "/")
+		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+		defer cancel()
+		ownerEmail, err := ownerEmailForRequest(ctx, r, cfg, auth, r.URL.Query().Get("owner_email"))
+		if err != nil {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
+			return
+		}
+		if len(parts) == 1 {
+			if r.Method != http.MethodGet {
+				writeMethodNotAllowed(w, http.MethodGet)
+				return
+			}
+			execResult, err := terminals.GetExec(ctx, ownerEmail, parts[0])
+			if err != nil {
+				writeServiceError(w, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, execResult)
+			return
+		}
+		if len(parts) == 2 && parts[1] == "cancel" {
+			if r.Method != http.MethodPost {
+				writeMethodNotAllowed(w, http.MethodPost)
+				return
+			}
+			if err := terminals.CancelExec(ctx, ownerEmail, parts[0]); err != nil {
+				writeServiceError(w, err)
+				return
+			}
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
+		if len(parts) == 2 && parts[1] == "stream" {
+			if r.Method != http.MethodGet {
+				writeMethodNotAllowed(w, http.MethodGet)
+				return
+			}
+			if err := terminals.StreamExec(w, r, ownerEmail, parts[0]); err != nil {
+				writeServiceError(w, err)
+			}
+			return
+		}
+		http.NotFound(w, r)
 	})
 
 	mux.HandleFunc("/v1/terminal/sessions", func(w http.ResponseWriter, r *http.Request) {
@@ -797,7 +1192,12 @@ func New(cfg config.Config, store *database.Store, runtime runtimeChecker, machi
 			writeServiceError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"events": events})
+		stream, err := store.EventStreamDiagnostics(ctx)
+		if err != nil {
+			writeServiceError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"events": events, "stream": stream})
 	})
 
 	mux.HandleFunc("/v1/diagnostics/hosts", func(w http.ResponseWriter, r *http.Request) {
@@ -945,6 +1345,41 @@ func New(cfg config.Config, store *database.Store, runtime runtimeChecker, machi
 			return
 		}
 		writeJSON(w, http.StatusOK, terminals.Diagnostics())
+	})
+
+	mux.HandleFunc("/v1/diagnostics/execs", func(w http.ResponseWriter, r *http.Request) {
+		if terminals == nil {
+			http.NotFound(w, r)
+			return
+		}
+		if r.Method != http.MethodGet {
+			writeMethodNotAllowed(w, http.MethodGet)
+			return
+		}
+
+		ownerEmail, err := ownerEmailForRequest(r.Context(), r, cfg, auth, strings.TrimSpace(r.URL.Query().Get("owner_email")))
+		if err != nil {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
+			return
+		}
+		limit := 25
+		if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+			value, err := strconv.Atoi(raw)
+			if err != nil || value <= 0 {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "limit must be a positive integer"})
+				return
+			}
+			limit = value
+		}
+
+		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+		defer cancel()
+		diag, err := terminals.ExecDiagnostics(ctx, ownerEmail, limit)
+		if err != nil {
+			writeServiceError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, diag)
 	})
 
 	mux.Handle("/", newWebUIHandler(cfg))

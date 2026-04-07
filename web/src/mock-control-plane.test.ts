@@ -1,10 +1,11 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import {
-  createMockTerminalSession,
+  createMockShell,
   getMockDefaultWorkspace,
   getMockTerminalGitDiffBatch,
   getMockTerminalGitStatus,
   getMockTerminalPresentation,
+  listMockShells,
   resetMockControlPlaneState,
 } from "./mock-control-plane";
 
@@ -16,15 +17,19 @@ describe("mock control plane", () => {
   it("returns seeded workspace and terminal presentation data", async () => {
     const workspace = await getMockDefaultWorkspace();
     expect(workspace.windows).toHaveLength(2);
+    expect(workspace.windows[0]?.shellId).toBe("mock-session-m1");
+
+    const shells = await listMockShells();
+    expect(shells).toHaveLength(2);
 
     const presentation = getMockTerminalPresentation("mock-session-m1", "m-1");
     expect(presentation.cwd).toBe("/home/ubuntu/aisi");
     expect(presentation.lines.join("\n")).toContain("feature/metadata-guardrails");
   });
 
-  it("creates mock terminal sessions with machine-specific cwd defaults", async () => {
-    const session = await createMockTerminalSession("cool-space", 120, 40);
-    const presentation = getMockTerminalPresentation(session.id, "cool-space");
+  it("creates mock shells with machine-specific cwd defaults", async () => {
+    const shell = await createMockShell("cool-space");
+    const presentation = getMockTerminalPresentation(shell.id, "cool-space");
     expect(presentation.cwd).toBe("/home/ubuntu/project-alpha");
     expect(presentation.lines.join("\n")).toContain("pnpm dev");
   });

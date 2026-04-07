@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   consumeWheelHistorySequence,
@@ -8,8 +8,10 @@ import {
 } from "./terminal";
 
 const {
+  attachShell,
   attachTerminalSession,
   createTerminalSession,
+  shellAttachmentIDs,
   terminalInstances,
   MockTerminal,
   MockFitAddon,
@@ -24,7 +26,9 @@ const {
     }
   }
 
-  const attachTerminalSession = vi.fn(async (sessionId: string) => ({
+  const shellAttachmentIDs = new Map<string, string>();
+
+  const attachTerminalSession = vi.fn(async (sessionId: string, _cols?: number, _rows?: number) => ({
     id: sessionId,
     machine_name: "m-1",
     host_id: "fascinate-01",
@@ -32,13 +36,28 @@ const {
     expires_at: "2026-03-22T00:00:00Z",
   }));
 
-  const createTerminalSession = vi.fn(async () => ({
-    id: "term-1",
-    machine_name: "m-1",
-    host_id: "fascinate-01",
-    attach_url: "/v1/terminal/sessions/term-1/stream?token=token-1",
-    expires_at: "2026-03-22T00:00:00Z",
-  }));
+  const createTerminalSession = vi.fn(async (shellId: string, _cols?: number, _rows?: number) => {
+    const attachmentID = shellId.startsWith("term-") ? shellId : "term-1";
+    shellAttachmentIDs.set(shellId, attachmentID);
+    return {
+      id: attachmentID,
+      machine_name: "m-1",
+      host_id: "fascinate-01",
+      attach_url: `/v1/terminal/sessions/${attachmentID}/stream?token=token-1`,
+      expires_at: "2026-03-22T00:00:00Z",
+    };
+  });
+
+  const attachShell = vi.fn(async (shellId: string, cols: number, rows: number) => {
+    if (shellId.startsWith("term-")) {
+      return attachTerminalSession(shellId, cols, rows);
+    }
+    const existingAttachmentID = shellAttachmentIDs.get(shellId);
+    if (!existingAttachmentID) {
+      return createTerminalSession(shellId, cols, rows);
+    }
+    return attachTerminalSession(existingAttachmentID, cols, rows);
+  });
 
   class MockTerminal {
     cols = 120;
@@ -166,8 +185,10 @@ const {
   }
 
   return {
+    attachShell,
     attachTerminalSession,
     createTerminalSession,
+    shellAttachmentIDs,
     terminalInstances,
     MockTerminal,
     MockFitAddon,
@@ -179,11 +200,31 @@ const {
 });
 
 vi.mock("./api", () => ({
-  attachTerminalSession,
-  createTerminalSession,
+  attachShell,
   HttpError,
   toWebSocketURL: (path: string) => `ws://example.test${path}`,
 }));
+
+function renderTerminal(
+  props: Partial<{
+    shellId: string;
+    machineName: string;
+    title: string;
+    onCwdChange: (cwd: string) => void;
+    onConnectionStateChange: (state: "connecting" | "ready" | "reconnecting" | "error") => void;
+  }> = {},
+) {
+  return render(
+    <TerminalView
+      shellId="m-1"
+      machineName="m-1"
+      title="m-1 shell"
+      onCwdChange={props.onCwdChange}
+      onConnectionStateChange={props.onConnectionStateChange}
+      {...props}
+    />,
+  );
+}
 
 vi.mock("xterm", () => ({
   Terminal: vi.fn(() => {
@@ -218,10 +259,12 @@ describe("TerminalView", () => {
       value: true,
     });
     terminalInstances.length = 0;
+    shellAttachmentIDs.clear();
     MockWebSocket.instances.length = 0;
     MockWebglAddon.instances.length = 0;
+    attachShell.mockReset();
     attachTerminalSession.mockReset();
-    attachTerminalSession.mockImplementation(async (sessionId: string) => ({
+    attachTerminalSession.mockImplementation(async (sessionId: string, _cols?: number, _rows?: number) => ({
       id: sessionId,
       machine_name: "m-1",
       host_id: "fascinate-01",
@@ -229,28 +272,41 @@ describe("TerminalView", () => {
       expires_at: "2026-03-22T00:00:00Z",
     }));
     createTerminalSession.mockReset();
-    createTerminalSession.mockImplementation(async () => ({
-      id: "term-1",
-      machine_name: "m-1",
-      host_id: "fascinate-01",
-      attach_url: "/v1/terminal/sessions/term-1/stream?token=token-1",
-      expires_at: "2026-03-22T00:00:00Z",
-    }));
+    createTerminalSession.mockImplementation(async (shellId: string, _cols?: number, _rows?: number) => {
+      const attachmentID = shellId.startsWith("term-") ? shellId : "term-1";
+      shellAttachmentIDs.set(shellId, attachmentID);
+      return {
+        id: attachmentID,
+        machine_name: "m-1",
+        host_id: "fascinate-01",
+        attach_url: `/v1/terminal/sessions/${attachmentID}/stream?token=token-1`,
+        expires_at: "2026-03-22T00:00:00Z",
+      };
+    });
+    attachShell.mockImplementation(async (shellId: string, cols: number, rows: number) => {
+      if (shellId.startsWith("term-")) {
+        return attachTerminalSession(shellId, cols, rows);
+      }
+      const existingAttachmentID = shellAttachmentIDs.get(shellId);
+      if (!existingAttachmentID) {
+        return createTerminalSession(shellId, cols, rows);
+      }
+      return attachTerminalSession(existingAttachmentID, cols, rows);
+    });
   });
 
   afterEach(() => {
+    cleanup();
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });
 
   it("falls back when the WebGL renderer loses context", async () => {
-    const onSessionId = vi.fn();
-    render(<TerminalView machineName="m-1" title="m-1 shell" onSessionId={onSessionId} />);
+    renderTerminal();
 
     await waitFor(() => {
       expect(createTerminalSession).toHaveBeenCalledWith("m-1", 120, 40);
     });
-    expect(onSessionId).toHaveBeenCalledWith("term-1");
 
     await act(async () => {
       MockWebSocket.instances[0].emit("open");
@@ -268,54 +324,29 @@ describe("TerminalView", () => {
   });
 
   it("reattaches to an existing terminal session", async () => {
-    const onSessionId = vi.fn();
-
-    render(
-      <TerminalView machineName="m-1" title="m-1 shell" sessionId="term-existing" onSessionId={onSessionId} />,
-    );
+    renderTerminal({ shellId: "term-existing" });
 
     await waitFor(() => {
       expect(attachTerminalSession).toHaveBeenCalledWith("term-existing", 120, 40);
     });
     expect(createTerminalSession).not.toHaveBeenCalled();
-    expect(onSessionId).toHaveBeenCalledWith("term-existing");
     expect(screen.getByText("Reconnecting…")).toBeTruthy();
   });
 
-  it("asks the user to start a new shell when the saved session can no longer be reattached", async () => {
+  it("surfaces a missing shared shell without offering to create a new one", async () => {
     attachTerminalSession.mockRejectedValueOnce(new HttpError(404, "not found"));
-    const onSessionId = vi.fn();
+    renderTerminal({ shellId: "term-stale" });
 
-    render(
-      <TerminalView machineName="m-1" title="m-1 shell" sessionId="term-stale" onSessionId={onSessionId} />,
-    );
-
-    expect(await screen.findByText("Shell ended")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Start new shell" })).toBeTruthy();
+    expect(await screen.findByText("Connection failed")).toBeTruthy();
+    expect(screen.getByText("This shared shell is no longer available.")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
     expect(createTerminalSession).not.toHaveBeenCalled();
-
-    await act(async () => {
-      screen.getByRole("button", { name: "Start new shell" }).click();
-    });
-
-    await waitFor(() => {
-      expect(createTerminalSession).toHaveBeenCalledWith("m-1", 120, 40);
-    });
-    expect(onSessionId).toHaveBeenCalledWith("term-1");
   });
 
   it("updates cwd metadata from the terminal stream", async () => {
-    const onSessionId = vi.fn();
     const onCwdChange = vi.fn();
 
-    render(
-      <TerminalView
-        machineName="m-1"
-        title="m-1 shell"
-        onSessionId={onSessionId}
-        onCwdChange={onCwdChange}
-      />,
-    );
+    renderTerminal({ onCwdChange });
 
     await waitFor(() => {
       expect(createTerminalSession).toHaveBeenCalledWith("m-1", 120, 40);
@@ -342,7 +373,7 @@ describe("TerminalView", () => {
   });
 
   it("suppresses wheel input when the terminal has no scrollback", async () => {
-    render(<TerminalView machineName="m-1" title="m-1 shell" onSessionId={vi.fn()} />);
+    renderTerminal();
 
     await waitFor(() => {
       expect(createTerminalSession).toHaveBeenCalledWith("m-1", 120, 40);
@@ -360,7 +391,7 @@ describe("TerminalView", () => {
   });
 
   it("accumulates small wheel deltas before scrolling tmux history", async () => {
-    render(<TerminalView machineName="m-1" title="m-1 shell" onSessionId={vi.fn()} />);
+    renderTerminal();
 
     await waitFor(() => {
       expect(createTerminalSession).toHaveBeenCalledWith("m-1", 120, 40);
@@ -391,7 +422,7 @@ describe("TerminalView", () => {
   });
 
   it("normalizes line-mode wheel deltas before scrolling tmux history", async () => {
-    render(<TerminalView machineName="m-1" title="m-1 shell" onSessionId={vi.fn()} />);
+    renderTerminal();
 
     await waitFor(() => {
       expect(createTerminalSession).toHaveBeenCalledWith("m-1", 120, 40);
@@ -413,7 +444,7 @@ describe("TerminalView", () => {
   });
 
   it("consumes subtle wheel events before xterm can turn them into prompt history", async () => {
-    render(<TerminalView machineName="m-1" title="m-1 shell" onSessionId={vi.fn()} />);
+    renderTerminal();
 
     await waitFor(() => {
       expect(createTerminalSession).toHaveBeenCalledWith("m-1", 120, 40);
@@ -440,7 +471,7 @@ describe("TerminalView", () => {
   });
 
   it("allows wheel scroll when the terminal has scrollback", async () => {
-    render(<TerminalView machineName="m-1" title="m-1 shell" onSessionId={vi.fn()} />);
+    renderTerminal();
 
     await waitFor(() => {
       expect(createTerminalSession).toHaveBeenCalledWith("m-1", 120, 40);
@@ -460,7 +491,6 @@ describe("TerminalView", () => {
   });
 
   it("copies OSC 52 clipboard writes to the local browser clipboard", async () => {
-    const onSessionId = vi.fn();
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(globalThis, "navigator", {
       configurable: true,
@@ -471,7 +501,7 @@ describe("TerminalView", () => {
       },
     });
 
-    render(<TerminalView machineName="m-1" title="m-1 shell" onSessionId={onSessionId} />);
+    renderTerminal();
 
     await waitFor(() => {
       expect(createTerminalSession).toHaveBeenCalledWith("m-1", 120, 40);
@@ -497,9 +527,7 @@ describe("TerminalView", () => {
   });
 
   it("does not override xterm's native selection copy handling", async () => {
-    const onSessionId = vi.fn();
-
-    render(<TerminalView machineName="m-1" title="m-1 shell" onSessionId={onSessionId} />);
+    renderTerminal();
 
     await waitFor(() => {
       expect(createTerminalSession).toHaveBeenCalledWith("m-1", 120, 40);
@@ -509,7 +537,7 @@ describe("TerminalView", () => {
   });
 
   it("does not mirror xterm selections into the hidden helper textarea", async () => {
-    render(<TerminalView machineName="m-1" title="m-1 shell" onSessionId={vi.fn()} />);
+    renderTerminal();
 
     await waitFor(() => {
       expect(createTerminalSession).toHaveBeenCalledWith("m-1", 120, 40);
@@ -537,7 +565,7 @@ describe("TerminalView", () => {
       },
     });
 
-    render(<TerminalView machineName="m-1" title="m-1 shell" onSessionId={vi.fn()} />);
+    renderTerminal();
 
     await waitFor(() => {
       expect(createTerminalSession).toHaveBeenCalledWith("m-1", 120, 40);
@@ -569,7 +597,6 @@ describe("TerminalView", () => {
   });
 
   it("shows a visible notice when the browser blocks clipboard access", async () => {
-    const onSessionId = vi.fn();
     const writeText = vi.fn().mockRejectedValue(new Error("blocked"));
     Object.defineProperty(globalThis, "navigator", {
       configurable: true,
@@ -584,7 +611,7 @@ describe("TerminalView", () => {
       value: true,
     });
 
-    render(<TerminalView machineName="m-1" title="m-1 shell" onSessionId={onSessionId} />);
+    renderTerminal();
 
     await waitFor(() => {
       expect(createTerminalSession).toHaveBeenCalledWith("m-1", 120, 40);
@@ -604,17 +631,9 @@ describe("TerminalView", () => {
   });
 
   it("silently reattaches when a live shell socket closes", async () => {
-    const onSessionId = vi.fn();
     const onConnectionStateChange = vi.fn();
 
-    render(
-      <TerminalView
-        machineName="m-1"
-        title="m-1 shell"
-        onSessionId={onSessionId}
-        onConnectionStateChange={onConnectionStateChange}
-      />,
-    );
+    renderTerminal({ onConnectionStateChange });
 
     await waitFor(() => {
       expect(createTerminalSession).toHaveBeenCalledTimes(1);
@@ -645,7 +664,7 @@ describe("TerminalView", () => {
   it("retries reuse when reconnecting fails and the user chooses Retry", async () => {
     attachTerminalSession.mockRejectedValueOnce(new Error("gateway down"));
 
-    render(<TerminalView machineName="m-1" title="m-1 shell" onSessionId={vi.fn()} />);
+    renderTerminal();
 
     await waitFor(() => {
       expect(createTerminalSession).toHaveBeenCalledTimes(1);

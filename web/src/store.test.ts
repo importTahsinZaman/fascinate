@@ -24,9 +24,17 @@ describe("workspace store", () => {
     });
   });
 
+  function openShell(machineName: string, shellId: string, title?: string) {
+    return useWorkspaceStore.getState().openShellWindow({
+      shellId,
+      machineName,
+      title: title ?? `${machineName} shell`,
+    });
+  }
+
   it("opens terminals as distinct ordered shells", () => {
-    useWorkspaceStore.getState().openTerminal("m-1");
-    useWorkspaceStore.getState().openTerminal("m-1");
+    openShell("m-1", "shell-1");
+    openShell("m-1", "shell-2");
 
     const { windows } = useWorkspaceStore.getState();
     expect(windows).toHaveLength(2);
@@ -56,7 +64,7 @@ describe("workspace store", () => {
     useWorkspaceStore.getState().hydrate({ version: 1, windows: [] });
 
     expect(useWorkspaceStore.getState().windows).toHaveLength(1);
-    expect(useWorkspaceStore.getState().windows[0].sessionId).toBe("term-1");
+    expect(useWorkspaceStore.getState().windows[0].shellId).toBe("term-1");
     expect(useWorkspaceStore.getState().windows[0].width).toBe(796);
     expect(useWorkspaceStore.getState().windows[0].height).toBe(900);
     expect(useWorkspaceStore.getState().viewport).toEqual({ x: 120, y: 96, scale: 1 });
@@ -99,16 +107,16 @@ describe("workspace store", () => {
   });
 
   it("stores terminal session ids on windows", () => {
-    useWorkspaceStore.getState().openTerminal("m-1");
+    openShell("m-1", "shell-0");
     const windowId = useWorkspaceStore.getState().windows[0].id;
 
-    useWorkspaceStore.getState().setWindowSession(windowId, "term-1");
+    useWorkspaceStore.getState().setWindowShell(windowId, "shell-1");
 
-    expect(useWorkspaceStore.getState().windows[0].sessionId).toBe("term-1");
+    expect(useWorkspaceStore.getState().windows[0].shellId).toBe("shell-1");
   });
 
   it("stores cwd metadata separately from persisted window layout", () => {
-    useWorkspaceStore.getState().openTerminal("m-1");
+    openShell("m-1", "shell-1");
     const windowId = useWorkspaceStore.getState().windows[0].id;
 
     useWorkspaceStore.getState().setWindowCwd(windowId, "/home/ubuntu/space-shooter");
@@ -118,7 +126,7 @@ describe("workspace store", () => {
   });
 
   it("clears cwd metadata when a window closes", () => {
-    useWorkspaceStore.getState().openTerminal("m-1");
+    openShell("m-1", "shell-1");
     const windowId = useWorkspaceStore.getState().windows[0].id;
 
     useWorkspaceStore.getState().setWindowCwd(windowId, "/home/ubuntu/space-shooter");
@@ -128,7 +136,7 @@ describe("workspace store", () => {
   });
 
   it("keeps git diff sidebar state out of persisted layouts and clears it when the shell closes", () => {
-    useWorkspaceStore.getState().openTerminal("m-1");
+    openShell("m-1", "shell-1");
     const windowId = useWorkspaceStore.getState().windows[0].id;
 
     useWorkspaceStore.getState().openGitDiffSidebar(windowId);
@@ -161,7 +169,7 @@ describe("workspace store", () => {
   });
 
   it("stores and clears viewport focus requests separately from persisted layout", () => {
-    useWorkspaceStore.getState().openTerminal("m-1");
+    openShell("m-1", "shell-1");
     const windowId = useWorkspaceStore.getState().windows[0].id;
 
     useWorkspaceStore.getState().requestViewportFocus(windowId);
@@ -175,8 +183,8 @@ describe("workspace store", () => {
   });
 
   it("moves shells to a target index without overlapping them", () => {
-    useWorkspaceStore.getState().openTerminal("m-1");
-    useWorkspaceStore.getState().openTerminal("m-2");
+    openShell("m-1", "shell-1");
+    openShell("m-2", "shell-2");
 
     const windows = useWorkspaceStore.getState().windows;
     const target = windows[1];
@@ -190,9 +198,9 @@ describe("workspace store", () => {
 
   it("removes and restores all windows for a machine without disturbing sibling shell order", () => {
     const store = useWorkspaceStore.getState();
-    store.openTerminal("m-1", "m-1 shell A");
-    store.openTerminal("m-2", "m-2 shell");
-    store.openTerminal("m-1", "m-1 shell B");
+    store.openShellWindow({ shellId: "shell-a", machineName: "m-1", title: "m-1 shell A" });
+    store.openShellWindow({ shellId: "shell-b", machineName: "m-2", title: "m-2 shell" });
+    store.openShellWindow({ shellId: "shell-c", machineName: "m-1", title: "m-1 shell B" });
 
     const [firstMachineWindow, siblingWindow, secondMachineWindow] = useWorkspaceStore.getState().windows;
 
@@ -226,5 +234,15 @@ describe("workspace store", () => {
       selectedPath: "web/src/app.tsx",
       selectedPreviousPath: undefined,
     });
+  });
+
+  it("prunes windows whose shared shells no longer exist", () => {
+    openShell("m-1", "shell-1");
+    openShell("m-2", "shell-2");
+
+    useWorkspaceStore.getState().pruneMissingShells(["shell-2"]);
+
+    expect(useWorkspaceStore.getState().windows).toHaveLength(1);
+    expect(useWorkspaceStore.getState().windows[0]?.shellId).toBe("shell-2");
   });
 });

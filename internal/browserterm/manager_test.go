@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -14,6 +16,7 @@ import (
 
 	"fascinate/internal/config"
 	"fascinate/internal/controlplane"
+	"fascinate/internal/database"
 	machineruntime "fascinate/internal/runtime"
 )
 
@@ -45,6 +48,7 @@ func TestCreateSessionReturnsAttachDetails(t *testing.T) {
 	t.Parallel()
 
 	machines := &fakeMachineManager{machine: controlplane.Machine{
+		ID:     "machine-1",
 		Name:   "m-1",
 		HostID: "local-host",
 		State:  "RUNNING",
@@ -53,7 +57,7 @@ func TestCreateSessionReturnsAttachDetails(t *testing.T) {
 			SSHPort: 2222,
 		},
 	}}
-	manager := New(config.Config{HostID: "local-host", TerminalSessionTTL: 2 * time.Minute}, machines)
+	manager := newTestManager(t, config.Config{HostID: "local-host", TerminalSessionTTL: 2 * time.Minute}, machines)
 
 	init, err := manager.CreateSession(context.Background(), "dev@example.com", "m-1", 120, 40)
 	if err != nil {
@@ -73,7 +77,8 @@ func TestCreateSessionReturnsAttachDetails(t *testing.T) {
 func TestCreateSessionRejectsRemoteHost(t *testing.T) {
 	t.Parallel()
 
-	manager := New(config.Config{HostID: "host-a"}, &fakeMachineManager{machine: controlplane.Machine{
+	manager := newTestManager(t, config.Config{HostID: "host-a"}, &fakeMachineManager{machine: controlplane.Machine{
+		ID:     "machine-1",
 		Name:   "m-1",
 		HostID: "host-b",
 		State:  "RUNNING",
@@ -93,6 +98,7 @@ func TestReattachSessionRotatesAttachToken(t *testing.T) {
 	t.Parallel()
 
 	machines := &fakeMachineManager{machine: controlplane.Machine{
+		ID:     "machine-1",
 		Name:   "m-1",
 		HostID: "local-host",
 		State:  "RUNNING",
@@ -101,7 +107,7 @@ func TestReattachSessionRotatesAttachToken(t *testing.T) {
 			SSHPort: 2222,
 		},
 	}}
-	manager := New(config.Config{HostID: "local-host", TerminalSessionTTL: 2 * time.Minute}, machines)
+	manager := newTestManager(t, config.Config{HostID: "local-host", TerminalSessionTTL: 2 * time.Minute}, machines)
 
 	init, err := manager.CreateSession(context.Background(), "dev@example.com", "m-1", 120, 40)
 	if err != nil {
@@ -125,6 +131,7 @@ func TestCloseSessionRemovesSession(t *testing.T) {
 	t.Parallel()
 
 	machines := &fakeMachineManager{machine: controlplane.Machine{
+		ID:     "machine-1",
 		Name:   "m-1",
 		HostID: "local-host",
 		State:  "RUNNING",
@@ -133,7 +140,7 @@ func TestCloseSessionRemovesSession(t *testing.T) {
 			SSHPort: 2222,
 		},
 	}}
-	manager := New(config.Config{HostID: "local-host", TerminalSessionTTL: 2 * time.Minute}, machines)
+	manager := newTestManager(t, config.Config{HostID: "local-host", TerminalSessionTTL: 2 * time.Minute}, machines)
 	manager.sshClientBinary = "true"
 
 	init, err := manager.CreateSession(context.Background(), "dev@example.com", "m-1", 120, 40)
@@ -152,7 +159,7 @@ func TestCloseSessionRemovesSession(t *testing.T) {
 func TestCloseSessionAllowsMissingSession(t *testing.T) {
 	t.Parallel()
 
-	manager := New(config.Config{HostID: "local-host", TerminalSessionTTL: 2 * time.Minute}, &fakeMachineManager{})
+	manager := newTestManager(t, config.Config{HostID: "local-host", TerminalSessionTTL: 2 * time.Minute}, &fakeMachineManager{})
 
 	if err := manager.CloseSession(context.Background(), "dev@example.com", "missing-session"); err != nil {
 		t.Fatalf("expected missing session close to succeed, got %v", err)
@@ -168,6 +175,7 @@ func TestCloseMachineSessionsRemovesAllMatchingSessions(t *testing.T) {
 	machines := &fakeMachineManager{
 		machinesByName: map[string]controlplane.Machine{
 			"m-1": {
+				ID:     "machine-1",
 				Name:   "m-1",
 				HostID: "local-host",
 				State:  "RUNNING",
@@ -177,6 +185,7 @@ func TestCloseMachineSessionsRemovesAllMatchingSessions(t *testing.T) {
 				},
 			},
 			"m-2": {
+				ID:     "machine-2",
 				Name:   "m-2",
 				HostID: "local-host",
 				State:  "RUNNING",
@@ -187,7 +196,7 @@ func TestCloseMachineSessionsRemovesAllMatchingSessions(t *testing.T) {
 			},
 		},
 	}
-	manager := New(config.Config{HostID: "local-host", TerminalSessionTTL: 2 * time.Minute}, machines)
+	manager := newTestManager(t, config.Config{HostID: "local-host", TerminalSessionTTL: 2 * time.Minute}, machines)
 	manager.sshClientBinary = "true"
 
 	if _, err := manager.CreateSession(context.Background(), "dev@example.com", "m-1", 120, 40); err != nil {
@@ -215,6 +224,36 @@ func TestCloseMachineSessionsRemovesAllMatchingSessions(t *testing.T) {
 		if sess.UserEmail == "dev@example.com" && sess.MachineName == "m-1" {
 			t.Fatalf("expected matching machine sessions to be removed, got %+v", diag)
 		}
+	}
+}
+
+func TestCreateAttachmentSurvivesManagerRestart(t *testing.T) {
+	t.Parallel()
+
+	machines := &fakeMachineManager{machine: controlplane.Machine{
+		ID:     "machine-1",
+		Name:   "m-1",
+		HostID: "local-host",
+		State:  "RUNNING",
+		Runtime: &machineruntime.Machine{
+			SSHHost: "127.0.0.1",
+			SSHPort: 2222,
+		},
+	}}
+	manager, store := newTestManagerWithStore(t, config.Config{HostID: "local-host", TerminalSessionTTL: 2 * time.Minute}, machines)
+
+	shell, err := manager.CreateShell(context.Background(), "dev@example.com", "m-1", "primary")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	restarted := New(config.Config{HostID: "local-host", TerminalSessionTTL: 2 * time.Minute}, machines, store)
+	init, err := restarted.CreateAttachment(context.Background(), "dev@example.com", shell.ID, 120, 40)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if init.ID != shell.ID || !strings.Contains(init.AttachURL, shell.ID) {
+		t.Fatalf("unexpected attachment after restart %+v", init)
 	}
 }
 
@@ -344,7 +383,7 @@ func TestGitDiffBatchShellCommandEmbedsBatchPayload(t *testing.T) {
 func TestAcquireGitCommandSlotHonorsPerMachineConcurrency(t *testing.T) {
 	t.Parallel()
 
-	manager := New(config.Config{}, &fakeMachineManager{})
+	manager := newTestManager(t, config.Config{}, &fakeMachineManager{})
 	releaseOne, err := manager.acquireGitCommandSlot(context.Background(), "m-1")
 	if err != nil {
 		t.Fatal(err)
@@ -417,6 +456,238 @@ func TestNormalizeGuestCwd(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestCreateExecCapturesOutputAndExitCode(t *testing.T) {
+	t.Parallel()
+
+	machines := &fakeMachineManager{machine: controlplane.Machine{
+		ID:     "machine-1",
+		Name:   "m-1",
+		HostID: "local-host",
+		State:  "RUNNING",
+		Runtime: &machineruntime.Machine{
+			SSHHost: "127.0.0.1",
+			SSHPort: 2222,
+		},
+	}}
+	manager, store := newTestManagerWithStore(t, config.Config{HostID: "local-host"}, machines)
+	manager.sshClientBinary = fakeSSHBinary(t)
+
+	execResult, err := manager.CreateExec(context.Background(), "dev@example.com", "m-1", ExecRequest{
+		CommandText: `printf 'hello\n'; printf 'warn\n' >&2; exit 7`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	record := waitForExecRecord(t, store, execResult.ID)
+	if record.State != execStateFailed {
+		t.Fatalf("expected failed exec state, got %+v", record)
+	}
+	if record.ExitCode == nil || *record.ExitCode != 7 {
+		t.Fatalf("expected exit code 7, got %+v", record.ExitCode)
+	}
+	if !strings.Contains(record.StdoutText, "hello") {
+		t.Fatalf("expected stdout to be captured, got %q", record.StdoutText)
+	}
+	if !strings.Contains(record.StderrText, "warn") {
+		t.Fatalf("expected stderr to be captured, got %q", record.StderrText)
+	}
+}
+
+func TestCreateExecHonorsTimeout(t *testing.T) {
+	t.Parallel()
+
+	machines := &fakeMachineManager{machine: controlplane.Machine{
+		ID:     "machine-1",
+		Name:   "m-1",
+		HostID: "local-host",
+		State:  "RUNNING",
+		Runtime: &machineruntime.Machine{
+			SSHHost: "127.0.0.1",
+			SSHPort: 2222,
+		},
+	}}
+	manager, store := newTestManagerWithStore(t, config.Config{HostID: "local-host"}, machines)
+	manager.sshClientBinary = fakeSSHBinary(t)
+
+	execResult, err := manager.CreateExec(context.Background(), "dev@example.com", "m-1", ExecRequest{
+		CommandText: `sleep 5`,
+		Timeout:     50 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	record := waitForExecRecord(t, store, execResult.ID)
+	if record.State != execStateTimedOut {
+		t.Fatalf("expected timed out exec state, got %+v", record)
+	}
+	if record.FailureClass == nil || *record.FailureClass != execFailureTimeout {
+		t.Fatalf("expected timeout failure class, got %+v", record.FailureClass)
+	}
+}
+
+func TestCancelExecMarksCommandCancelled(t *testing.T) {
+	t.Parallel()
+
+	machines := &fakeMachineManager{machine: controlplane.Machine{
+		ID:     "machine-1",
+		Name:   "m-1",
+		HostID: "local-host",
+		State:  "RUNNING",
+		Runtime: &machineruntime.Machine{
+			SSHHost: "127.0.0.1",
+			SSHPort: 2222,
+		},
+	}}
+	manager, store := newTestManagerWithStore(t, config.Config{HostID: "local-host"}, machines)
+	manager.sshClientBinary = fakeSSHBinary(t)
+
+	execResult, err := manager.CreateExec(context.Background(), "dev@example.com", "m-1", ExecRequest{
+		CommandText: `sleep 5`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.CancelExec(context.Background(), "dev@example.com", execResult.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	record := waitForExecRecord(t, store, execResult.ID)
+	if record.State != execStateCancelled {
+		t.Fatalf("expected cancelled exec state, got %+v", record)
+	}
+	if record.FailureClass == nil || *record.FailureClass != execFailureCancelled {
+		t.Fatalf("expected cancelled failure class, got %+v", record.FailureClass)
+	}
+	if record.CancelRequestedAt == nil {
+		t.Fatalf("expected cancel request timestamp, got %+v", record)
+	}
+}
+
+func newTestManager(t *testing.T, cfg config.Config, machines *fakeMachineManager) *Manager {
+	t.Helper()
+	manager, _ := newTestManagerWithStore(t, cfg, machines)
+	return manager
+}
+
+func fakeSSHBinary(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "fake-ssh.sh")
+	body := `#!/usr/bin/env bash
+set -euo pipefail
+command="${@: -1}"
+eval "${command}"
+`
+	if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func waitForExecRecord(t *testing.T, store *database.Store, execID string) database.ExecRecord {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		record, err := store.GetExecByID(context.Background(), execID)
+		if err == nil && execStateIsTerminal(record.State) {
+			return record
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for exec %s to finish", execID)
+	return database.ExecRecord{}
+}
+
+func execStateIsTerminal(state string) bool {
+	switch strings.ToUpper(strings.TrimSpace(state)) {
+	case execStateSucceeded, execStateFailed, execStateTimedOut, execStateCancelled, execStateError:
+		return true
+	default:
+		return false
+	}
+}
+
+func newTestManagerWithStore(t *testing.T, cfg config.Config, machines *fakeMachineManager) (*Manager, *database.Store) {
+	t.Helper()
+
+	store, err := database.Open(context.Background(), filepath.Join(t.TempDir(), "fascinate.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+	if err := store.Migrate(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	devUser, err := store.UpsertUser(context.Background(), "dev@example.com", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opsUser, err := store.UpsertUser(context.Background(), "ops@example.com", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedHost := func(hostID string) {
+		hostID = strings.TrimSpace(hostID)
+		if hostID == "" {
+			return
+		}
+		if _, err := store.UpsertHost(context.Background(), database.UpsertHostParams{
+			ID:               hostID,
+			Name:             hostID,
+			Region:           "local",
+			Role:             "combined",
+			Status:           "ACTIVE",
+			LabelsJSON:       "{}",
+			CapabilitiesJSON: `["shell"]`,
+			RuntimeVersion:   "test",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	seedHost(cfg.HostID)
+	seedMachine := func(machine controlplane.Machine, ownerID string) {
+		if strings.TrimSpace(machine.ID) == "" || strings.TrimSpace(machine.Name) == "" {
+			return
+		}
+		seedHost(machine.HostID)
+		if _, err := store.CreateMachine(context.Background(), database.CreateMachineParams{
+			ID:             machine.ID,
+			Name:           machine.Name,
+			OwnerUserID:    ownerID,
+			HostID:         stringPtr(machine.HostID),
+			RuntimeName:    machine.Name,
+			State:          "RUNNING",
+			CPU:            "1",
+			MemoryBytes:    1 << 30,
+			DiskBytes:      10 << 30,
+			DiskUsageBytes: 1 << 30,
+			PrimaryPort:    8080,
+		}); err != nil && !errors.Is(err, database.ErrConflict) {
+			t.Fatal(err)
+		}
+	}
+	seedMachine(machines.machine, devUser.ID)
+	for _, machine := range machines.machinesByName {
+		ownerID := devUser.ID
+		if strings.EqualFold(machine.Name, "m-2") {
+			ownerID = opsUser.ID
+		}
+		seedMachine(machine, ownerID)
+	}
+	return New(cfg, machines, store), store
+}
+
+func stringPtr(value string) *string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	return &value
 }
 
 func terminalToken(t *testing.T, attachURL string) string {

@@ -2,6 +2,12 @@
 
 `fascinate` is a browser-first command center for persistent developer machines.
 
+Fascinate now has two first-class user surfaces built on one control plane:
+- the web command center
+- the `fascinate` CLI for humans and AI agents
+
+Shared shells, machine lifecycle, snapshots, env vars, diagnostics, and agent-oriented non-interactive exec all flow through the same backend APIs and owner-scoped event stream. A shell is now a durable backend resource rather than a browser-local window, so CLI and web clients see the same shell inventory and can attach to the same live session.
+
 This repo now contains:
 - a React/Vite web app under [`web/`](/Users/tahsin/Desktop/vmcloud/web)
 - a reproducible host bootstrap path under [`ops/host/bootstrap.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/bootstrap.sh)
@@ -19,6 +25,10 @@ This repo now contains:
 - a Cloud Hypervisor runtime wrapper and health endpoints
 - browser auth with emailed verification codes and DB-backed web sessions
 - a browser terminal gateway with PTY-backed WebSocket shells
+- bearer-token CLI auth and a first-class user CLI for machine, snapshot, env-var, diagnostics, shell, and exec workflows
+- durable shared shell resources backed by persistent tmux sessions inside each VM
+- owner-scoped SSE synchronization for machine, snapshot, shell, and exec lifecycle updates
+- agent-optimized non-interactive command execution with structured stdout, stderr, exit, timeout, and cancellation outcomes
 - first-class full-VM snapshots and snapshot-backed forking
 
 ## Current Product Surface
@@ -40,22 +50,42 @@ Fascinate currently gives us:
   - persist supported tool auth across later VMs for the same user
   - serve the browser command center on the primary Fascinate origin
   - authenticate browser users through emailed verification codes and DB-backed sessions
-  - issue browser terminal sessions and stream PTY traffic over dedicated WebSockets
+  - authenticate CLI clients through durable bearer tokens minted from the same email-code identity flow
+  - persist shared shell records and stream shell attachments over dedicated WebSockets
+  - execute non-interactive machine-scoped commands without requiring a preexisting shell
+  - publish owner-scoped real-time events over SSE so CLI and web clients stay synchronized
   - inspect shell-scoped git working trees through a live shell-header git-status chip with distinct idle/open states, repeat-toggle and `Escape` dismissal, and a unified review overlay above a shell-first control sidebar, with a repo-summary header, branch-chip and animated refresh chrome, sticky stacked file cards, full-width collapsed-context bars with quiet static link chrome, compact review-grade diff chrome with consistent diff-count accents, insertion-only inline token highlights for pure add-side expansions, inline path copy affordances with visible copy feedback, a centered clean-repo empty state, scroll-ahead batched file loading that prefetches visible cards before you reach them, backend-batched per-file patch fetches with per-machine git-command throttling, lazy-loaded Shiki syntax highlighting across the major source languages, a rigid horizontally scrollable shell strip with drag-to-reorder headers instead of a zoomable free canvas, and a separate machine inventory block for machine actions and shell launch
   - bridge terminal-driven clipboard copy requests into the browser's local clipboard when supported, keep persistent tmux sessions in normal text-selection mode, translate wheel scrolling into fine-grained tmux history navigation when local xterm scrollback is empty across pixel- and line-based wheel devices, and honor `Cmd-C`/`Ctrl-C` for active terminal text selections without sending an interrupt into the shell
   - persist per-user workspace layouts for the browser terminal shell strip
 
-Current browser HTTP API:
+Current API surface:
+- `POST /v1/cli/auth/request-code`
+- `POST /v1/cli/auth/verify`
+- `GET /v1/cli/auth/session`
+- `POST /v1/cli/auth/logout`
 - `POST /v1/auth/request-code`
 - `POST /v1/auth/verify`
 - `GET /v1/auth/session`
 - `POST /v1/auth/logout`
+- `GET /v1/events/stream`
 - `GET /v1/workspaces/default`
 - `PUT /v1/workspaces/default`
+- `GET /v1/shells`
+- `POST /v1/shells`
+- `GET /v1/shells/{id}`
+- `DELETE /v1/shells/{id}`
+- `POST /v1/shells/{id}/attach`
+- `POST /v1/shells/{id}/input`
+- `GET /v1/shells/{id}/lines`
+- `GET /v1/execs`
+- `POST /v1/execs`
+- `GET /v1/execs/{id}`
+- `POST /v1/execs/{id}/cancel`
+- `GET /v1/execs/{id}/stream`
 - `POST /v1/terminal/sessions`
 - `GET /v1/terminal/sessions/{id}/stream`
 - `POST /v1/terminal/sessions/{id}/git/status`
-- `POST /v1/terminal/sessions/{id}/git/diffs`
+  - `POST /v1/terminal/sessions/{id}/git/diffs`
 - `GET /v1/machines`
 - `POST /v1/machines`
 - `GET /v1/machines/{name}`
@@ -75,6 +105,7 @@ Current browser HTTP API:
 - `GET /v1/diagnostics/machines/{name}`
 - `GET /v1/diagnostics/snapshots/{name}`
 - `GET /v1/diagnostics/terminal-sessions`
+- `GET /v1/diagnostics/execs`
 
 Deleted machine and snapshot names are released immediately, so the same name can be reused after `DELETE /v1/machines/{name}` or `DELETE /v1/snapshots/{name}` succeeds.
 Deleting a machine also closes any browser terminal sessions for that machine, removes their shell windows from the browser workspace immediately, and collapses the machine card to a right-edge spinner while the delete is in flight.
@@ -114,6 +145,33 @@ There is no user-facing stop/start control. To free active compute without keepi
 - [`internal/database/migrations/0001_init.sql`](/Users/tahsin/Desktop/vmcloud/internal/database/migrations/0001_init.sql): initial SQLite schema
 - [`internal/runtime/cloudhypervisor/runtime.go`](/Users/tahsin/Desktop/vmcloud/internal/runtime/cloudhypervisor/runtime.go): Cloud Hypervisor VM runtime
 ## Quick Start
+
+### CLI Install
+
+If the public install script is being served from the Fascinate origin, users can install the CLI with:
+
+```bash
+curl -fsSL https://fascinate.dev/install.sh | bash
+```
+
+The curl bootstrap installs only the user CLI. It resolves the latest or pinned CLI artifact from a public release index, verifies the archive checksum before installation, and installs `fascinate` into `~/.local/bin` by default.
+
+Useful CLI workflows:
+
+```bash
+fascinate login --email you@example.com
+fascinate machine list
+fascinate machine create my-machine
+fascinate shell create my-machine
+fascinate shell attach <shell-id>
+fascinate exec my-machine -- pwd
+fascinate diagnostics execs --json
+```
+
+The CLI is optimized for automation:
+- `--json` prints only structured JSON to stdout
+- `--jsonl` streams ordered exec events to stdout for agents
+- human prompts stay off stdout and destructive commands require `--yes` when stdin/stdout are not interactive
 
 ### Fresh Host
 
