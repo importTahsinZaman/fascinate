@@ -196,14 +196,14 @@ export function TerminalView({
       fontSize: 15,
       fontFamily: '"SF Mono", "SFMono-Regular", ui-monospace, Menlo, Consolas, monospace',
       theme: {
-        background: "#161616",
+        background: "#141414",
         foreground: "#f3f1eb",
         cursor: "#f3f1eb",
-        cursorAccent: "#161616",
+        cursorAccent: "#141414",
         selectionBackground: "rgba(255, 255, 255, 0.14)",
         selectionInactiveBackground: "rgba(255, 255, 255, 0.14)",
-        green: "#18E37D",
-        brightGreen: "#18E37D",
+        green: "#49B0FF",
+        brightGreen: "#49B0FF",
       },
     });
     const fitAddon = new FitAddon();
