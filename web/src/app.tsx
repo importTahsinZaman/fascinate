@@ -958,9 +958,6 @@ function CommandCenter() {
 
   return (
     <main className="command-center">
-      <div className="app-brandmark" aria-hidden="true">
-        <span>Fascinate</span>
-      </div>
       <WorkspaceAutosave enabled={workspaceQuery.isSuccess} />
       <div className="command-center-workspace">
         <WorkspaceRail
@@ -1080,6 +1077,7 @@ function CommandCenter() {
                 const normalizedMachineState = machine.state.toUpperCase();
                 const isPendingMachine = ["CREATING", "STARTING", "STOPPING", "DELETING"].includes(normalizedMachineState);
                 const isRunningMachine = normalizedMachineState === "RUNNING" || normalizedMachineState === "READY";
+                const machinePublicURL = `https://${machine.name}.fascinate.dev`;
                 return (
                   <article
                     key={machine.id}
@@ -1146,8 +1144,18 @@ function CommandCenter() {
                         )}
                       </div>
                     </div>
-                    {isRunningMachine && !isPendingMachine ? (
-                      <div className="machine-card-footer">
+                    <div className="machine-card-footer">
+                      <a
+                        className="sidebar-text-button"
+                        href={machinePublicURL}
+                        target="_blank"
+                        rel="noreferrer"
+                        aria-label={`Open app for ${machine.name}`}
+                        title={machinePublicURL}
+                      >
+                        <span className="sidebar-text-button-label">Open app</span>
+                      </a>
+                      {isRunningMachine && !isPendingMachine ? (
                         <button
                           className="sidebar-text-button"
                           type="button"
@@ -1155,8 +1163,8 @@ function CommandCenter() {
                         >
                           <span className="sidebar-text-button-label">New shell</span>
                         </button>
-                      </div>
-                    ) : null}
+                      ) : null}
+                    </div>
                   </article>
                 );
               })}
@@ -1426,7 +1434,7 @@ function WorkspaceRail({
               <p>Open a shell from the machines sidebar to place it into the horizontal workspace.</p>
             </div>
           ) : null}
-          {windows.map((window) => (
+          {windows.map((window, index) => (
             <div
               key={window.id}
               className="workspace-strip-item"
@@ -1455,6 +1463,7 @@ function WorkspaceRail({
                   focusWindow(window.id);
                   openGitDiffSidebar(window.id);
                 }}
+                isLeadingWindow={index === 0}
                 isFrontmost={window.z === frontmostWindowZ}
                 isGitDiffActive={gitDiffSidebarWindowID === window.id}
                 isDragging={draggingWindowID === window.id}
@@ -1520,6 +1529,7 @@ function WindowFrame({
   onHeaderPointerUp,
   onHeaderPointerCancel,
   onOpenGitDiff,
+  isLeadingWindow,
   isFrontmost,
   isGitDiffActive,
   isDragging,
@@ -1537,6 +1547,7 @@ function WindowFrame({
   onHeaderPointerUp: (event: ReactPointerEvent<HTMLElement>) => void;
   onHeaderPointerCancel: (event: ReactPointerEvent<HTMLElement>) => void;
   onOpenGitDiff: () => void;
+  isLeadingWindow: boolean;
   isFrontmost: boolean;
   isGitDiffActive: boolean;
   isDragging: boolean;
@@ -1561,36 +1572,39 @@ function WindowFrame({
         onPointerUp={onHeaderPointerUp}
         onPointerCancel={onHeaderPointerCancel}
       >
-        <div className="window-header-actions window-header-actions-start">
-          <button
-            className="window-header-button window-header-button-icon window-header-button-danger"
-            type="button"
-            aria-label="Close shell"
-            title="Close shell"
-            onPointerDown={(event) => event.stopPropagation()}
-            onDoubleClick={(event) => event.stopPropagation()}
-            onClick={onClose}
-            disabled={isClosing}
-          >
-            <X className="icon-svg" weight="regular" />
-          </button>
-        </div>
-        <div className="window-header-title">
-          <strong title={displayCwd}>{displayCwd}</strong>
-        </div>
-        <div className="window-header-actions window-header-actions-end">
-          <WindowGitDiffButton
-            title={layoutWindow.title}
-            shellId={layoutWindow.shellId}
-            cwd={cwd}
-            isFrontmost={isFrontmost}
-            isActive={isGitDiffActive}
-            onOpen={onOpenGitDiff}
-          />
-          <WindowShellConnectionIndicator connectionState={connectionState} />
-          <div className="window-header-machine-meta" aria-hidden="true">
-            <span className="machine-color-dot window-header-machine-dot" />
-            <span className="window-header-machine-name">{layoutWindow.machineName}</span>
+        {isLeadingWindow ? <div className="window-header-brand">Fascinate</div> : null}
+        <div className="window-header-main">
+          <div className="window-header-actions window-header-actions-start">
+            <button
+              className="window-header-button window-header-button-icon window-header-button-danger"
+              type="button"
+              aria-label="Close shell"
+              title="Close shell"
+              onPointerDown={(event) => event.stopPropagation()}
+              onDoubleClick={(event) => event.stopPropagation()}
+              onClick={onClose}
+              disabled={isClosing}
+            >
+              <X className="icon-svg" weight="regular" />
+            </button>
+          </div>
+          <div className="window-header-title">
+            <strong title={displayCwd}>{displayCwd}</strong>
+          </div>
+          <div className="window-header-actions window-header-actions-end">
+            <WindowGitDiffButton
+              title={layoutWindow.title}
+              shellId={layoutWindow.shellId}
+              cwd={cwd}
+              isFrontmost={isFrontmost}
+              isActive={isGitDiffActive}
+              onOpen={onOpenGitDiff}
+            />
+            <WindowShellConnectionIndicator connectionState={connectionState} />
+            <div className="window-header-machine-meta" aria-hidden="true">
+              <span className="machine-color-dot window-header-machine-dot" />
+              <span className="window-header-machine-name">{layoutWindow.machineName}</span>
+            </div>
           </div>
         </div>
       </header>

@@ -163,6 +163,7 @@ button:hover {
 }
 
 button:focus-visible,
+a:focus-visible,
 input:focus-visible,
 select:focus-visible,
 textarea:focus-visible {
@@ -328,21 +329,6 @@ a {
   width: 100%;
   height: 100%;
   background: var(--bg-page);
-}
-
-.app-brandmark {
-  position: fixed;
-  bottom: 18px;
-  left: 24px;
-  z-index: 70;
-  display: inline-flex;
-  align-items: center;
-  pointer-events: none;
-  color: rgba(243, 241, 235, 0.92);
-  font-size: 18px;
-  line-height: 24px;
-  letter-spacing: -0.02em;
-  font-weight: 700;
 }
 
 .command-center-workspace {
@@ -758,6 +744,7 @@ a {
 .machine-card-footer {
   display: flex;
   justify-content: flex-end;
+  gap: var(--space-2);
   padding: 0 0 10px;
 }
 
@@ -776,6 +763,7 @@ a {
   font-size: 13px;
   line-height: 18px;
   font-weight: 500;
+  text-decoration: none;
   white-space: nowrap;
 }
 
@@ -1238,12 +1226,11 @@ a {
 }
 
 .window-header {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
-  align-items: center;
-  min-height: 48px;
-  gap: var(--space-4);
-  padding: 8px 14px;
+  display: flex;
+  align-items: stretch;
+  min-height: 42px;
+  gap: 0;
+  padding: 0;
   border-bottom: 1px solid var(--border-medium);
   background: var(--bg-page);
   cursor: grab;
@@ -1253,6 +1240,31 @@ a {
 
 .window-header[data-dragging="true"] {
   cursor: grabbing;
+}
+
+.window-header-brand {
+  display: inline-flex;
+  align-items: center;
+  min-width: 132px;
+  padding: 0 16px 0 18px;
+  border-right: 1px solid var(--border-medium);
+  color: rgba(243, 241, 235, 0.94);
+  font-size: 18px;
+  line-height: 24px;
+  letter-spacing: -0.025em;
+  font-weight: 700;
+  white-space: nowrap;
+  flex: none;
+}
+
+.window-header-main {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: var(--space-4);
+  min-width: 0;
+  flex: 1 1 auto;
+  padding: 4px 12px;
 }
 
 .window-header-title {
@@ -1306,7 +1318,8 @@ a {
 .window-header-actions {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
+  min-width: 0;
 }
 
 .window-header-actions-start {
@@ -1321,8 +1334,8 @@ a {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
+  width: 24px;
+  height: 24px;
   border-radius: 999px;
   border: 1px solid transparent;
   background: rgba(255, 255, 255, 0.02);
@@ -1356,8 +1369,8 @@ a {
 }
 
 .window-header-button {
-  min-height: 34px;
-  padding: 0 14px;
+  min-height: 30px;
+  padding: 0 12px;
   border-radius: var(--radius-md);
   background: rgba(255, 255, 255, 0.02);
 }
@@ -1369,8 +1382,8 @@ a {
 }
 
 .window-header-button-icon {
-  width: 34px;
-  min-width: 34px;
+  width: 30px;
+  min-width: 30px;
   padding: 0;
 }
 
@@ -1389,7 +1402,7 @@ a {
   display: inline-flex;
   align-items: center;
   gap: 10px;
-  min-height: 32px;
+  min-height: 30px;
   padding: 0 12px;
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm);
@@ -2249,6 +2262,18 @@ a {
   .command-center {
     grid-template-columns: 1fr;
     grid-template-rows: minmax(0, 1fr) minmax(280px, 42vh);
+  }
+
+  .window-header-brand {
+    min-width: 112px;
+    padding: 0 12px 0 14px;
+    font-size: 16px;
+    line-height: 22px;
+  }
+
+  .window-header-main {
+    gap: var(--space-3);
+    padding: 4px 10px;
   }
 
   .control-sidebar {

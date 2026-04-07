@@ -267,6 +267,9 @@ describe("App", () => {
     expect(screen.getByRole("button", { name: "Env vars" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Snapshots" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Sign out" })).toBeTruthy();
+    expect((screen.getByRole("link", { name: "Open app for m-1" }) as HTMLAnchorElement).href).toBe(
+      "https://m-1.fascinate.dev/",
+    );
 
     fireEvent.click(screen.getByRole("button", { name: "New machine" }));
     expect(await screen.findByRole("dialog", { name: "Create machine" })).toBeTruthy();
@@ -307,6 +310,8 @@ describe("App", () => {
 
     expect(await screen.findByTestId("terminal-m-1")).toBeTruthy();
     expect(await screen.findByRole("button", { name: "m-1 shell" })).toBeTruthy();
+    expect(document.querySelectorAll(".window-header-brand")).toHaveLength(1);
+    expect(document.querySelector(".window-header-brand")?.textContent).toContain("Fascinate");
 
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(
@@ -406,6 +411,9 @@ describe("App", () => {
     expect(await screen.findByRole("button", { name: "Delete m-1" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Start" })).toBeNull();
     expect(screen.getByRole("button", { name: "Delete m-1" })).toBeTruthy();
+    expect((screen.getByRole("link", { name: "Open app for m-1" }) as HTMLAnchorElement).href).toBe(
+      "https://m-1.fascinate.dev/",
+    );
     expect(screen.queryByRole("button", { name: "New shell" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Stop" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Fork m-1" })).toBeNull();
