@@ -320,7 +320,7 @@ func (m *Manager) CreateMachine(ctx context.Context, req machineruntime.CreateMa
 	}
 	liveMachine, _, err := m.createMachineFromBaseImage(ctx, req, func(meta metadata) string {
 		return machineBootUserData(meta, m.baseDomain, m.guestSSHPublicKey, m.hostID, m.hostRegion)
-	}, machineReadinessCommand())
+	}, machineReadinessCommand(), true)
 	return liveMachine, err
 }
 

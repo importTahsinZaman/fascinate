@@ -105,7 +105,7 @@ func (m *Manager) BuildImage(ctx context.Context, version string) (ImageBuildRes
 
 	_, meta, err := m.createMachineFromBaseImage(ctx, req, func(meta metadata) string {
 		return imageCloudInitUserData(meta.Name, meta.GuestUser, m.guestSSHPublicKey, imageProvisioningScript(meta.GuestUser, m.imageBuildInputs, version))
-	}, machineReadinessCommand())
+	}, machineReadinessCommand(), false)
 	if err != nil {
 		return ImageBuildResult{}, err
 	}
@@ -188,7 +188,7 @@ func (m *Manager) ValidateImage(ctx context.Context, version string) (ImageBuild
 
 	_, meta, err := m.createMachineFromBaseImage(ctx, req, func(meta metadata) string {
 		return machineBootUserData(meta, m.baseDomain, m.guestSSHPublicKey, m.hostID, m.hostRegion)
-	}, machineReadinessCommand())
+	}, machineReadinessCommand(), false)
 	if err != nil {
 		return ImageBuildResult{}, err
 	}
@@ -365,7 +365,7 @@ func (m *Manager) ensureSourceImage(ctx context.Context, layout imageLayout) (st
 	return path, nil
 }
 
-func (m *Manager) createMachineFromBaseImage(ctx context.Context, req machineruntime.CreateMachineRequest, userData func(metadata) string, readinessCommand string) (machineruntime.Machine, metadata, error) {
+func (m *Manager) createMachineFromBaseImage(ctx context.Context, req machineruntime.CreateMachineRequest, userData func(metadata) string, readinessCommand string, startForwarders bool) (machineruntime.Machine, metadata, error) {
 	name := strings.TrimSpace(req.Name)
 	if name == "" {
 		return machineruntime.Machine{}, metadata{}, fmt.Errorf("machine name is required")
@@ -420,13 +420,15 @@ func (m *Manager) createMachineFromBaseImage(ctx context.Context, req machinerun
 	}
 	m.networkMu.Unlock()
 	networkLocked = false
-	if err := m.startAppForwarder(ctx, &meta); err != nil {
-		_ = m.cleanupMachine(context.Background(), meta)
-		return machineruntime.Machine{}, metadata{}, err
-	}
-	if err := m.startSSHForwarder(ctx, &meta); err != nil {
-		_ = m.cleanupMachine(context.Background(), meta)
-		return machineruntime.Machine{}, metadata{}, err
+	if startForwarders {
+		if err := m.startAppForwarder(ctx, &meta); err != nil {
+			_ = m.cleanupMachine(context.Background(), meta)
+			return machineruntime.Machine{}, metadata{}, err
+		}
+		if err := m.startSSHForwarder(ctx, &meta); err != nil {
+			_ = m.cleanupMachine(context.Background(), meta)
+			return machineruntime.Machine{}, metadata{}, err
+		}
 	}
 	if err := m.waitForGuestCommand(ctx, meta, readinessCommand); err != nil {
 		_ = m.cleanupMachine(context.Background(), meta)
