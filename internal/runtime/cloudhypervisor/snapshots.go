@@ -18,7 +18,6 @@ import (
 	"time"
 
 	machineruntime "fascinate/internal/runtime"
-	"fascinate/internal/toolauth"
 )
 
 func (m *Manager) ListSnapshots(ctx context.Context) ([]machineruntime.Snapshot, error) {
@@ -601,13 +600,5 @@ func fileSize(path string) (int64, error) {
 }
 
 func (m *Manager) refreshMachineIdentity(ctx context.Context, meta metadata) error {
-	command := strings.Join([]string{
-		"sudo hostnamectl set-hostname " + shellQuote(meta.Name) + " || true",
-		"sudo mkdir -p /etc/fascinate",
-		"sudo tee /etc/fascinate/AGENTS.md >/dev/null <<'EOF'\n" + toolauth.ClaudeMachineInstructions(meta.Name, m.baseDomain, meta.PrimaryPort) + "\nEOF",
-	}, "\n")
-	if err := m.runGuestCommand(ctx, meta, command); err != nil {
-		return err
-	}
-	return m.syncManagedEnvFiles(ctx, meta, managedEnvEntries(meta, m.baseDomain, m.hostID, m.hostRegion))
+	return m.runGuestCommand(ctx, meta, machineFinalizationScript(meta, m.baseDomain, m.hostID, m.hostRegion))
 }

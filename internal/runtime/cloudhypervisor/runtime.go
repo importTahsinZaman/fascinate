@@ -101,6 +101,8 @@ type Manager struct {
 	cloudLocalDS      string
 	stateDir          string
 	snapshotDir       string
+	imageStoreDir     string
+	sourceImageURL    string
 	baseDomain        string
 	hostID            string
 	hostRegion        string
@@ -113,6 +115,7 @@ type Manager struct {
 	guestSSHPublicKey string
 	sshClientBinary   string
 	selfBinary        string
+	imageBuildInputs  imageBuildInputs
 	waitForGuest      func(context.Context, metadata) error
 	shutdownGuest     func(context.Context, metadata) error
 	now               func() time.Time
@@ -121,10 +124,25 @@ type Manager struct {
 }
 
 func New(cfg config.Config) (*Manager, error) {
+	imageStoreDir := strings.TrimSpace(cfg.ImageStoreDir)
+	if imageStoreDir == "" {
+		switch {
+		case strings.TrimSpace(cfg.DataDir) != "":
+			imageStoreDir = filepath.Join(strings.TrimSpace(cfg.DataDir), "images")
+		case strings.TrimSpace(cfg.DefaultImage) != "":
+			imageStoreDir = filepath.Dir(filepath.Dir(strings.TrimSpace(cfg.DefaultImage)))
+		default:
+			imageStoreDir = filepath.Join(".", "data", "images")
+		}
+	}
+
 	if err := os.MkdirAll(cfg.RuntimeStateDir, 0o755); err != nil {
 		return nil, err
 	}
 	if err := os.MkdirAll(cfg.RuntimeSnapshotDir, 0o755); err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(imageStoreDir, 0o755); err != nil {
 		return nil, err
 	}
 
@@ -156,6 +174,8 @@ func New(cfg config.Config) (*Manager, error) {
 		cloudLocalDS:      strings.TrimSpace(cfg.CloudLocalDSBinary),
 		stateDir:          strings.TrimSpace(cfg.RuntimeStateDir),
 		snapshotDir:       strings.TrimSpace(cfg.RuntimeSnapshotDir),
+		imageStoreDir:     imageStoreDir,
+		sourceImageURL:    strings.TrimSpace(cfg.BaseSourceImageURL),
 		baseDomain:        strings.TrimSpace(cfg.BaseDomain),
 		hostID:            strings.TrimSpace(cfg.HostID),
 		hostRegion:        strings.TrimSpace(cfg.HostRegion),
@@ -168,8 +188,15 @@ func New(cfg config.Config) (*Manager, error) {
 		guestSSHPublicKey: publicKey,
 		sshClientBinary:   strings.TrimSpace(cfg.SSHClientBinary),
 		selfBinary:        selfBinary,
-		now:               time.Now,
-		listHostAddrs:     listHostInterfaceAddrs,
+		imageBuildInputs: imageBuildInputs{
+			NodeVersion:      strings.TrimSpace(cfg.ImageNodeVersion),
+			GoVersion:        strings.TrimSpace(cfg.ImageGoVersion),
+			CodexVersion:     strings.TrimSpace(cfg.ImageCodexVersion),
+			ClaudeInstallURL: strings.TrimSpace(cfg.ImageClaudeInstallURL),
+			SourceImageURL:   strings.TrimSpace(cfg.BaseSourceImageURL),
+		},
+		now:           time.Now,
+		listHostAddrs: listHostInterfaceAddrs,
 	}
 	manager.waitForGuest = manager.waitForGuestSSH
 	manager.shutdownGuest = manager.requestGuestShutdown
@@ -189,11 +216,29 @@ func New(cfg config.Config) (*Manager, error) {
 	if manager.defaultGuestUser == "" {
 		manager.defaultGuestUser = "ubuntu"
 	}
+	if manager.sourceImageURL == "" {
+		manager.sourceImageURL = "https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img"
+	}
 	if manager.hostID == "" {
 		manager.hostID = "local-host"
 	}
 	if manager.hostRegion == "" {
 		manager.hostRegion = "local"
+	}
+	if manager.imageBuildInputs.NodeVersion == "" {
+		manager.imageBuildInputs.NodeVersion = "latest-lts"
+	}
+	if manager.imageBuildInputs.GoVersion == "" {
+		manager.imageBuildInputs.GoVersion = "latest"
+	}
+	if manager.imageBuildInputs.CodexVersion == "" {
+		manager.imageBuildInputs.CodexVersion = "latest"
+	}
+	if manager.imageBuildInputs.ClaudeInstallURL == "" {
+		manager.imageBuildInputs.ClaudeInstallURL = "https://claude.ai/install.sh"
+	}
+	if manager.imageBuildInputs.SourceImageURL == "" {
+		manager.imageBuildInputs.SourceImageURL = manager.sourceImageURL
 	}
 
 	return manager, nil
@@ -273,71 +318,10 @@ func (m *Manager) CreateMachine(ctx context.Context, req machineruntime.CreateMa
 	if snapshotName := strings.TrimSpace(req.Snapshot); snapshotName != "" {
 		return m.restoreMachineFromSnapshot(ctx, snapshotName, req)
 	}
-	baseImage := strings.TrimSpace(req.Image)
-	if baseImage == "" {
-		return machineruntime.Machine{}, fmt.Errorf("machine image is required")
-	}
-
-	machineDir := m.machineDir(name)
-	if _, err := os.Stat(machineDir); err == nil {
-		return machineruntime.Machine{}, fmt.Errorf("machine %q already exists", name)
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return machineruntime.Machine{}, err
-	}
-	if err := os.MkdirAll(machineDir, 0o755); err != nil {
-		return machineruntime.Machine{}, err
-	}
-
-	m.networkMu.Lock()
-	networkLocked := true
-	defer func() {
-		if networkLocked {
-			m.networkMu.Unlock()
-		}
-	}()
-
-	meta, err := m.prepareMetadata(name, req)
-	if err != nil {
-		_ = os.RemoveAll(machineDir)
-		return machineruntime.Machine{}, err
-	}
-	if err := m.storeMetadata(meta); err != nil {
-		_ = os.RemoveAll(machineDir)
-		return machineruntime.Machine{}, err
-	}
-
-	if err := m.createOverlayDisk(ctx, baseImage, meta.DiskPath, meta.Disk); err != nil {
-		_ = os.RemoveAll(machineDir)
-		return machineruntime.Machine{}, err
-	}
-	if err := m.writeSeedImage(ctx, meta); err != nil {
-		_ = os.RemoveAll(machineDir)
-		return machineruntime.Machine{}, err
-	}
-	if err := m.createNamespaceNetwork(ctx, meta); err != nil {
-		_ = os.RemoveAll(machineDir)
-		return machineruntime.Machine{}, err
-	}
-	if err := m.startVM(ctx, &meta); err != nil {
-		_ = m.cleanupMachine(context.Background(), meta)
-		return machineruntime.Machine{}, err
-	}
-	m.networkMu.Unlock()
-	networkLocked = false
-	if err := m.startAppForwarder(ctx, &meta); err != nil {
-		_ = m.cleanupMachine(context.Background(), meta)
-		return machineruntime.Machine{}, err
-	}
-	if err := m.startSSHForwarder(ctx, &meta); err != nil {
-		_ = m.cleanupMachine(context.Background(), meta)
-		return machineruntime.Machine{}, err
-	}
-	if err := m.waitForGuest(ctx, meta); err != nil {
-		_ = m.cleanupMachine(context.Background(), meta)
-		return machineruntime.Machine{}, err
-	}
-
-	return m.machineFromMetadata(meta), nil
+	liveMachine, _, err := m.createMachineFromBaseImage(ctx, req, func(meta metadata) string {
+		return machineBootUserData(meta, m.baseDomain, m.guestSSHPublicKey, m.hostID, m.hostRegion)
+	}, machineReadinessCommand())
+	return liveMachine, err
 }
 
 func (m *Manager) StartMachine(ctx context.Context, name string) (machineruntime.Machine, error) {
@@ -642,26 +626,7 @@ func (m *Manager) resizeDisk(ctx context.Context, diskPath, size string) error {
 }
 
 func (m *Manager) writeSeedImage(ctx context.Context, meta metadata) error {
-	userData := cloudInitUserData(meta, m.baseDomain, m.guestSSHPublicKey, m.hostID, m.hostRegion)
-	metaData := fmt.Sprintf("instance-id: fascinate-%s\nlocal-hostname: %s\n", meta.Name, meta.Name)
-	networkConfig := cloudInitNetworkConfig(meta.IPv4, meta.MACAddress, m.guestPrefix, m.bridgePrefix.Addr())
-
-	dir := m.machineDir(meta.Name)
-	userDataPath := filepath.Join(dir, "user-data")
-	metaDataPath := filepath.Join(dir, "meta-data")
-	networkPath := filepath.Join(dir, "network-config")
-	if err := os.WriteFile(userDataPath, []byte(userData), 0o600); err != nil {
-		return err
-	}
-	if err := os.WriteFile(metaDataPath, []byte(metaData), 0o600); err != nil {
-		return err
-	}
-	if err := os.WriteFile(networkPath, []byte(networkConfig), 0o600); err != nil {
-		return err
-	}
-
-	_, err := m.run(ctx, m.cloudLocalDS, "--network-config", networkPath, meta.SeedPath, userDataPath, metaDataPath)
-	return err
+	return m.writeSeedImageWithUserData(ctx, meta, machineBootUserData(meta, m.baseDomain, m.guestSSHPublicKey, m.hostID, m.hostRegion))
 }
 
 func (m *Manager) createTapDevice(ctx context.Context, tapName string) error {
@@ -827,16 +792,7 @@ func (m *Manager) waitForGuestSSH(ctx context.Context, meta metadata) error {
 }
 
 func guestReadinessCommand() string {
-	return strings.Join([]string{
-		"test -f /var/lib/cloud/instance/boot-finished",
-		"claude --version >/dev/null 2>&1",
-		"codex --version >/dev/null 2>&1",
-		"gh --version >/dev/null 2>&1",
-		"node --version >/dev/null 2>&1",
-		"go version >/dev/null 2>&1",
-		"docker --version >/dev/null 2>&1",
-		"systemctl is-active --quiet docker",
-	}, " && ")
+	return machineReadinessCommand()
 }
 
 func (m *Manager) runGuestCommand(ctx context.Context, meta metadata, command string) error {
@@ -1008,195 +964,7 @@ func managedEnvProfileScript() string {
 }
 
 func cloudInitUserData(meta metadata, baseDomain, publicKey, hostID, hostRegion string) string {
-	envFile, envShell, envJSON, profileScript := bootstrapManagedEnvFiles(meta, baseDomain, hostID, hostRegion)
-	bootstrapScript := fmt.Sprintf(`#!/usr/bin/env bash
-set -euo pipefail
-
-export DEBIAN_FRONTEND=noninteractive
-
-resolve_node_version() {
-  local requested="${FASCINATE_NODE_VERSION:-latest}"
-
-  case "${requested}" in
-    ""|latest)
-      curl -fsSL https://nodejs.org/dist/index.json | python3 -c 'import json, sys; releases = json.load(sys.stdin); print(releases[0]["version"])'
-      ;;
-    latest-lts)
-      curl -fsSL https://nodejs.org/dist/index.json | python3 -c 'import json, sys; releases = json.load(sys.stdin); print(next(release["version"] for release in releases if release.get("lts")))'
-      ;;
-    v*)
-      printf "%%s\n" "${requested}"
-      ;;
-    *)
-      printf "v%%s\n" "${requested}"
-      ;;
-  esac
-}
-
-resolve_go_version() {
-  local requested="${FASCINATE_GO_VERSION:-latest}"
-
-  case "${requested}" in
-    ""|latest)
-      curl -fsSL https://go.dev/dl/?mode=json | python3 -c 'import json, sys; releases = json.load(sys.stdin); print(releases[0]["version"].removeprefix("go"))'
-      ;;
-    go*)
-      printf "%%s\n" "${requested#go}"
-      ;;
-    *)
-      printf "%%s\n" "${requested}"
-      ;;
-  esac
-}
-
-node_arch() {
-  case "$(dpkg --print-architecture)" in
-    amd64) printf "%%s\n" "x64" ;;
-    arm64) printf "%%s\n" "arm64" ;;
-    *)
-      printf "unsupported node architecture: %%s\n" "$(dpkg --print-architecture)" >&2
-      exit 1
-      ;;
-  esac
-}
-
-go_arch() {
-  case "$(dpkg --print-architecture)" in
-    amd64) printf "%%s\n" "amd64" ;;
-    arm64) printf "%%s\n" "arm64" ;;
-    *)
-      printf "unsupported go architecture: %%s\n" "$(dpkg --print-architecture)" >&2
-      exit 1
-      ;;
-  esac
-}
-
-install_node() {
-  local version="$1"
-  local arch="$2"
-  local file="node-${version}-linux-${arch}.tar.xz"
-  local base_url="https://nodejs.org/dist/${version}"
-
-  curl -fsSLO "${base_url}/${file}"
-  curl -fsSL "${base_url}/SHASUMS256.txt" -o SHASUMS256.txt
-  grep " ${file}$" SHASUMS256.txt | sha256sum -c -
-
-  rm -rf /usr/local/lib/nodejs
-  mkdir -p /usr/local/lib/nodejs
-  tar -xJf "${file}" -C /usr/local/lib/nodejs
-
-  ln -sf "/usr/local/lib/nodejs/node-${version}-linux-${arch}/bin/node" /usr/local/bin/node
-  ln -sf "/usr/local/lib/nodejs/node-${version}-linux-${arch}/bin/npm" /usr/local/bin/npm
-  ln -sf "/usr/local/lib/nodejs/node-${version}-linux-${arch}/bin/npx" /usr/local/bin/npx
-  ln -sf "/usr/local/lib/nodejs/node-${version}-linux-${arch}/bin/corepack" /usr/local/bin/corepack
-  npm config set prefix /usr/local >/dev/null 2>&1 || true
-  corepack enable >/dev/null 2>&1 || true
-
-  rm -f "${file}" SHASUMS256.txt
-}
-
-install_go() {
-  local version="$1"
-  local arch="$2"
-  local file="go${version}.linux-${arch}.tar.gz"
-  local checksum=""
-
-  curl -fsSLo "${file}" "https://dl.google.com/go/${file}"
-  checksum="$(curl -fsSL "https://go.dev/dl/?mode=json&include=all" | python3 -c 'import json, sys; target = sys.argv[1]; releases = json.load(sys.stdin); print(next(entry["sha256"] for release in releases for entry in release.get("files", []) if entry.get("filename") == target))' "${file}")"
-  printf "%%s  %%s\n" "${checksum}" "${file}" | sha256sum -c -
-
-  rm -rf /usr/local/go
-  tar -C /usr/local -xzf "${file}"
-  ln -sf /usr/local/go/bin/go /usr/local/bin/go
-  ln -sf /usr/local/go/bin/gofmt /usr/local/bin/gofmt
-
-  rm -f "${file}"
-}
-
-apt-get update
-apt-get upgrade -y
-apt-get install -y build-essential ca-certificates curl docker.io file fzf gh git gnupg jq lsb-release make openssh-client procps python-is-python3 python3 python3-pip python3-venv ripgrep rsync sqlite3 tmux unzip wget xz-utils zip
-
-NODE_RESOLVED_VERSION="$(resolve_node_version)"
-GO_RESOLVED_VERSION="$(resolve_go_version)"
-install_node "${NODE_RESOLVED_VERSION}" "$(node_arch)"
-install_go "${GO_RESOLVED_VERSION}" "$(go_arch)"
-npm install -g --force npm@latest @anthropic-ai/claude-code @openai/codex@latest
-
-mkdir -p /etc/systemd/system/docker.service.d
-cat >/etc/systemd/system/docker.service.d/10-fascinate.conf <<'EOF_DOCKER'
-[Service]
-Environment=DOCKER_RAMDISK=true
-EOF_DOCKER
-
-systemctl daemon-reload
-systemctl enable --now docker
-usermod -aG docker %s || true
-
-mkdir -p /etc/fascinate /etc/claude-code
-mkdir -p /root/.claude /root/.codex
-mkdir -p /home/%s/.claude /home/%s/.codex
-mkdir -p /etc/skel/.claude /etc/skel/.codex
-chown %s:%s /home/%s/.claude /home/%s/.codex || true
-
-cat >/etc/fascinate/env <<'EOF_ENV'
-%sEOF_ENV
-
-cat >/etc/fascinate/env.sh <<'EOF_ENV_SH'
-%sEOF_ENV_SH
-
-cat >/etc/fascinate/env.json <<'EOF_ENV_JSON'
-%sEOF_ENV_JSON
-
-cat >/etc/profile.d/fascinate-env.sh <<'EOF_PROFILE'
-%sEOF_PROFILE
-
-chmod 0644 /etc/fascinate/env /etc/fascinate/env.sh /etc/fascinate/env.json /etc/profile.d/fascinate-env.sh
-
-cat >/etc/fascinate/AGENTS.md <<'EOF_AGENTS'
-%s
-EOF_AGENTS
-
-chmod 0644 /etc/fascinate/AGENTS.md
-
-ln -sfn /etc/fascinate/AGENTS.md /etc/claude-code/CLAUDE.md
-ln -sfn /etc/fascinate/AGENTS.md /root/AGENTS.md
-ln -sfn /etc/fascinate/AGENTS.md /root/.claude/CLAUDE.md
-ln -sfn /etc/fascinate/AGENTS.md /root/.codex/AGENTS.md
-ln -sfn /etc/fascinate/AGENTS.md /home/%s/AGENTS.md
-ln -sfn /etc/fascinate/AGENTS.md /home/%s/.claude/CLAUDE.md
-ln -sfn /etc/fascinate/AGENTS.md /home/%s/.codex/AGENTS.md
-ln -sfn /etc/fascinate/AGENTS.md /etc/skel/AGENTS.md
-ln -sfn /etc/fascinate/AGENTS.md /etc/skel/.claude/CLAUDE.md
-ln -sfn /etc/fascinate/AGENTS.md /etc/skel/.codex/AGENTS.md
-
-chown -h %s:%s /home/%s/AGENTS.md /home/%s/.claude/CLAUDE.md /home/%s/.codex/AGENTS.md || true
-apt-get clean
-rm -rf /var/lib/apt/lists/*
-`, meta.GuestUser, meta.GuestUser, meta.GuestUser, meta.GuestUser, meta.GuestUser, meta.GuestUser, meta.GuestUser, envFile, envShell, envJSON, profileScript, toolauth.ClaudeMachineInstructions(meta.Name, baseDomain, meta.PrimaryPort), meta.GuestUser, meta.GuestUser, meta.GuestUser, meta.GuestUser, meta.GuestUser, meta.GuestUser, meta.GuestUser, meta.GuestUser)
-
-	return fmt.Sprintf(`#cloud-config
-preserve_hostname: false
-hostname: %s
-users:
-  - default
-  - name: %s
-    shell: /bin/bash
-    sudo: ALL=(ALL) NOPASSWD:ALL
-    groups: [adm, sudo]
-    ssh_authorized_keys:
-      - %s
-ssh_pwauth: false
-disable_root: true
-runcmd:
-  - [bash, /usr/local/sbin/fascinate-firstboot.sh]
-write_files:
-  - path: /usr/local/sbin/fascinate-firstboot.sh
-    permissions: "0755"
-    owner: root:root
-    content: |
-%s
-`, meta.Name, meta.GuestUser, strings.TrimSpace(publicKey), indentBlock(bootstrapScript, "      "))
+	return machineBootUserData(meta, baseDomain, publicKey, hostID, hostRegion)
 }
 
 func cloudInitNetworkConfig(ipv4, macAddress string, guestPrefix netip.Prefix, gateway netip.Addr) string {

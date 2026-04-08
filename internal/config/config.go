@@ -35,6 +35,12 @@ type Config struct {
 	GuestSSHKeyPath         string
 	GuestSSHUser            string
 	DefaultImage            string
+	ImageStoreDir           string
+	BaseSourceImageURL      string
+	ImageNodeVersion        string
+	ImageGoVersion          string
+	ImageCodexVersion       string
+	ImageClaudeInstallURL   string
 	DefaultMachineCPU       string
 	DefaultMachineRAM       string
 	DefaultMachineDisk      string
@@ -81,9 +87,13 @@ func Load() Config {
 	if dbPath == "" {
 		dbPath = filepath.Join(dataDir, "fascinate.db")
 	}
+	imageStoreDir := getenv("FASCINATE_IMAGE_STORE_DIR", "")
+	if imageStoreDir == "" {
+		imageStoreDir = filepath.Join(dataDir, "images")
+	}
 	defaultImage := getenv("FASCINATE_DEFAULT_IMAGE", "")
 	if defaultImage == "" {
-		defaultImage = filepath.Join(dataDir, "images", "fascinate-base.raw")
+		defaultImage = filepath.Join(imageStoreDir, "current", "fascinate-base.raw")
 	}
 	runtimeBinary := getenv("FASCINATE_RUNTIME_BINARY", "")
 	if runtimeBinary == "" {
@@ -137,6 +147,12 @@ func Load() Config {
 		GuestSSHKeyPath:         guestSSHKeyPath,
 		GuestSSHUser:            getenv("FASCINATE_GUEST_SSH_USER", "ubuntu"),
 		DefaultImage:            defaultImage,
+		ImageStoreDir:           imageStoreDir,
+		BaseSourceImageURL:      getenv("FASCINATE_BASE_SOURCE_IMAGE_URL", "https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img"),
+		ImageNodeVersion:        getenv("FASCINATE_IMAGE_NODE_VERSION", "latest-lts"),
+		ImageGoVersion:          getenv("FASCINATE_IMAGE_GO_VERSION", "latest"),
+		ImageCodexVersion:       getenv("FASCINATE_IMAGE_CODEX_VERSION", "latest"),
+		ImageClaudeInstallURL:   getenv("FASCINATE_IMAGE_CLAUDE_INSTALL_URL", "https://claude.ai/install.sh"),
 		DefaultMachineCPU:       getenv("FASCINATE_DEFAULT_MACHINE_CPU", "1"),
 		DefaultMachineRAM:       getenv("FASCINATE_DEFAULT_MACHINE_RAM", "2GiB"),
 		DefaultMachineDisk:      getenv("FASCINATE_DEFAULT_MACHINE_DISK", "20GiB"),

@@ -123,10 +123,10 @@ When Fascinate creates a fresh VM, it generates a seed image that tells the gues
 
 - hostname
 - SSH configuration
-- initial first-boot setup
+- machine-specific first-boot finalization
 - network setup
 
-This is how a new VM turns from "raw Ubuntu image" into "developer machine with tools installed."
+This is how a new VM turns from "shared promoted Fascinate image" into "this specific developer machine with the right identity, env vars, and guest instructions."
 
 ### Network Namespace
 
@@ -649,7 +649,7 @@ VM creation can take time:
 
 - disk creation
 - cloud-init bootstrapping
-- package installation and tool install during first boot
+- booting and verifying the promoted image
 - guest SSH readiness checks
 
 So the control plane persists intent first and finishes in the background.
@@ -665,7 +665,7 @@ For a non-snapshot create, the runtime:
 5. creates the machine's network namespace and devices
 6. starts `cloud-hypervisor` inside that namespace
 7. starts host-side app and SSH forwarders
-8. waits until the guest is reachable and developer tools are installed
+8. waits until the guest is reachable and the prebaked toolchain is present
 
 That final readiness check is stronger than "SSH is open". It checks for things like:
 
@@ -869,7 +869,7 @@ Fresh boot uses:
 
 - overlay disk backed by base image
 - cloud-init seed image
-- first-boot package and tool installation
+- machine-specific first-boot finalization only
 
 ### Snapshot restore
 

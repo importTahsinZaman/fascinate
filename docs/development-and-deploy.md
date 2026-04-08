@@ -143,6 +143,31 @@ Important:
 - restarting `fascinate` drops active browser shell attachments because terminal sessions live in-process today
 - persistent shells inside the guest still survive because they run under `tmux`
 
+### Host image lifecycle
+
+Fresh machine creation now depends on a promoted Fascinate guest image rather than per-machine toolchain installation during guest boot.
+
+Build, validate, and promote a candidate image on the host with:
+
+```bash
+sudo ./ops/cloudhypervisor/build-base-image.sh --version 20260407-01
+sudo ./ops/cloudhypervisor/validate-base-image.sh --version 20260407-01
+sudo ./ops/cloudhypervisor/promote-base-image.sh --version 20260407-01
+sudo ./ops/cloudhypervisor/base-image-status.sh
+```
+
+If a promoted image is bad, roll back the stable `current` reference:
+
+```bash
+sudo ./ops/cloudhypervisor/rollback-base-image.sh --version 20260406-03
+```
+
+For an automated host-side exercise of build, validate, promote, and rollback together:
+
+```bash
+sudo ./ops/host/smoke-images.sh
+```
+
 ### Public CLI publish
 
 Use the CLI publish path when you need `curl -fsSL https://fascinate.dev/install.sh | bash` to install a newly released CLI version:

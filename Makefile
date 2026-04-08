@@ -3,7 +3,7 @@ BINARY ?= fascinate
 PNPM ?= pnpm
 FASCINATE_DEV_PROXY_TARGET ?= http://127.0.0.1:8080
 
-.PHONY: fmt test build run web-install web-dev web-dev-mock web-build web-test verify-ops smoke-host smoke-snapshots smoke-tool-auth stress-host benchmark-host
+.PHONY: fmt test build run web-install web-dev web-dev-mock web-build web-test verify-ops smoke-host smoke-snapshots smoke-tool-auth smoke-images stress-host benchmark-host
 
 fmt:
 	gofmt -w cmd internal
@@ -54,12 +54,18 @@ verify-ops:
 	bash -n ops/host/stress.sh
 	bash -n ops/host/smoke-snapshots.sh
 	bash -n ops/host/smoke-tool-auth.sh
+	bash -n ops/host/smoke-images.sh
 	bash -n ops/host/verify.sh
 	bash -n ops/host/write-caddyfile.sh
 	bash -n ops/host/deploy-web.sh
 	bash -n ops/host/install-control-plane.sh
 	bash -n ops/host/reset-runtime-state.sh
+	bash -n ops/cloudhypervisor/lib.sh
 	bash -n ops/cloudhypervisor/build-base-image.sh
+	bash -n ops/cloudhypervisor/validate-base-image.sh
+	bash -n ops/cloudhypervisor/promote-base-image.sh
+	bash -n ops/cloudhypervisor/rollback-base-image.sh
+	bash -n ops/cloudhypervisor/base-image-status.sh
 	bash -n install.sh
 
 smoke-host:
@@ -70,6 +76,9 @@ smoke-snapshots:
 
 smoke-tool-auth:
 	bash ops/host/smoke-tool-auth.sh
+
+smoke-images:
+	bash ops/host/smoke-images.sh
 
 stress-host:
 	bash ops/host/stress.sh

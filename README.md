@@ -18,7 +18,7 @@ This repo now contains:
 - a packaged full-release installer under [`ops/host/install-control-plane.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/install-control-plane.sh)
 - a packaged no-restart web installer under [`ops/host/deploy-web.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/deploy-web.sh)
 - a Caddy config writer under [`ops/host/write-caddyfile.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/write-caddyfile.sh)
-- a VM base image builder under [`ops/cloudhypervisor/build-base-image.sh`](/Users/tahsin/Desktop/vmcloud/ops/cloudhypervisor/build-base-image.sh)
+- versioned VM image lifecycle wrappers under [`ops/cloudhypervisor/`](/Users/tahsin/Desktop/vmcloud/ops/cloudhypervisor)
 - a Go control plane under [`cmd/fascinate/main.go`](/Users/tahsin/Desktop/vmcloud/cmd/fascinate/main.go)
 - SQLite migrations for product, auth, host, and workspace state
 - a first-class host registry and local-host heartbeat model
@@ -133,10 +133,15 @@ There is no user-facing stop/start control. To free active compute without keepi
 - [`ops/host/stress.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/stress.sh): validates realistic app, local DB, Docker, restart, snapshot, restore, fork, divergence, and cleanup behavior
 - [`ops/host/diagnostics.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/diagnostics.sh): queries host, budget, machine, snapshot, tool-auth, terminal-session, event, and installed-release diagnostics from a configured host
 - [`ops/host/smoke-tool-auth.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/smoke-tool-auth.sh): targeted persistence harness for Claude, Codex, and GitHub auth across later VMs
+- [`ops/host/smoke-images.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/smoke-images.sh): exercises build, validate, promote, and rollback for versioned Fascinate images
 - [`ops/host/smoke-snapshots.sh`](/Users/tahsin/Desktop/vmcloud/ops/host/smoke-snapshots.sh): validates saved snapshots, create-from-snapshot, and true fork flows
 - [`docs/stress-matrix.md`](/Users/tahsin/Desktop/vmcloud/docs/stress-matrix.md): expectation matrix and operator guidance for live validation
 - [`docs/development-and-deploy.md`](/Users/tahsin/Desktop/vmcloud/docs/development-and-deploy.md): local UI development loop and deploy workflow guidance
-- [`ops/cloudhypervisor/build-base-image.sh`](/Users/tahsin/Desktop/vmcloud/ops/cloudhypervisor/build-base-image.sh): builds an agent-ready qcow2 guest image
+- [`ops/cloudhypervisor/build-base-image.sh`](/Users/tahsin/Desktop/vmcloud/ops/cloudhypervisor/build-base-image.sh): builds a versioned Fascinate image candidate
+- [`ops/cloudhypervisor/validate-base-image.sh`](/Users/tahsin/Desktop/vmcloud/ops/cloudhypervisor/validate-base-image.sh): boots and validates a candidate or release image
+- [`ops/cloudhypervisor/promote-base-image.sh`](/Users/tahsin/Desktop/vmcloud/ops/cloudhypervisor/promote-base-image.sh): advances the stable `current` image reference
+- [`ops/cloudhypervisor/rollback-base-image.sh`](/Users/tahsin/Desktop/vmcloud/ops/cloudhypervisor/rollback-base-image.sh): repoints `current` back to a previous promoted image
+- [`ops/cloudhypervisor/base-image-status.sh`](/Users/tahsin/Desktop/vmcloud/ops/cloudhypervisor/base-image-status.sh): prints current, previous, candidate, and release image state
 - [`ops/systemd/fascinate.service`](/Users/tahsin/Desktop/vmcloud/ops/systemd/fascinate.service): example systemd unit
 - [`cmd/fascinate/main.go`](/Users/tahsin/Desktop/vmcloud/cmd/fascinate/main.go): entrypoint
 - [`internal/browserauth/service.go`](/Users/tahsin/Desktop/vmcloud/internal/browserauth/service.go): browser auth and session lifecycle
@@ -239,6 +244,12 @@ Run the automated tool-auth persistence harness when you are changing tool-auth 
 sudo ./ops/host/smoke-tool-auth.sh
 ```
 
+Run the prebaked-image smoke path when validating image build, validation, promotion, and rollback behavior:
+
+```bash
+sudo ./ops/host/smoke-images.sh
+```
+
 Run the snapshot smoke path when validating saved snapshots and true fork semantics:
 
 ```bash
@@ -268,13 +279,22 @@ Notes:
 - guest NAT/forwarding rules are created lazily when the first VM boots
 - it does not manage DNS or Cloudflare for you
 
-Build the default agent-ready guest image:
+Build, validate, and promote a fresh-create image:
 
 ```bash
-sudo ./ops/cloudhypervisor/build-base-image.sh
+sudo ./ops/cloudhypervisor/build-base-image.sh --version 20260407-01
+sudo ./ops/cloudhypervisor/validate-base-image.sh --version 20260407-01
+sudo ./ops/cloudhypervisor/promote-base-image.sh --version 20260407-01
+sudo ./ops/cloudhypervisor/base-image-status.sh
 ```
 
-The base image builder only prepares the raw Ubuntu cloud image. Fascinate installs the developer toolchain, Claude Code, Codex CLI, and GitHub CLI during VM first boot.
+If a promoted image is bad, roll the `current` reference back without reintroducing first-boot provisioning:
+
+```bash
+sudo ./ops/cloudhypervisor/rollback-base-image.sh --version 20260406-03
+```
+
+Fresh machine creation now boots from the promoted Fascinate image at `FASCINATE_DEFAULT_IMAGE` and only performs machine-specific finalization on first boot. The heavy toolchain work moves into the image build itself, and snapshots remain restore semantics rather than fresh-create templates.
 
 If you want host admin SSH on port `2220`, move it explicitly:
 
@@ -375,7 +395,13 @@ export FASCINATE_CLOUD_LOCALDS_BINARY=cloud-localds
 export FASCINATE_SSH_CLIENT_BINARY=ssh
 export FASCINATE_GUEST_SSH_KEY_PATH=./data/guest_ssh_ed25519
 export FASCINATE_GUEST_SSH_USER=ubuntu
-export FASCINATE_DEFAULT_IMAGE=./data/images/fascinate-base.raw
+export FASCINATE_IMAGE_STORE_DIR=./data/images
+export FASCINATE_DEFAULT_IMAGE=./data/images/current/fascinate-base.raw
+export FASCINATE_BASE_SOURCE_IMAGE_URL=https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img
+export FASCINATE_IMAGE_NODE_VERSION=latest-lts
+export FASCINATE_IMAGE_GO_VERSION=latest
+export FASCINATE_IMAGE_CODEX_VERSION=latest
+export FASCINATE_IMAGE_CLAUDE_INSTALL_URL=https://claude.ai/install.sh
 export FASCINATE_DEFAULT_MACHINE_CPU=1
 export FASCINATE_DEFAULT_MACHINE_RAM=2GiB
 export FASCINATE_DEFAULT_MACHINE_DISK=20GiB
@@ -393,9 +419,6 @@ export FASCINATE_DEFAULT_PRIMARY_PORT=3000
 export FASCINATE_TOOL_AUTH_DIR=./data/tool-auth
 export FASCINATE_TOOL_AUTH_KEY_PATH=./data/tool_auth.key
 export FASCINATE_TOOL_AUTH_SYNC_INTERVAL=2m
-export FASCINATE_NODE_VERSION=latest
-export FASCINATE_GO_VERSION=latest
-export FASCINATE_NPM_VERSION=latest
 export FASCINATE_HOST_ID=local-host
 export FASCINATE_HOST_NAME=local-host
 export FASCINATE_HOST_REGION=local
@@ -429,13 +452,15 @@ Open the browser command center at [https://fascinate.dev/app](https://fascinate
 
 If your host Caddy config forwards wildcard subdomains to `FASCINATE_HTTP_ADDR`, requests for `https://<machine>.fascinate.dev` are proxied to that machine's primary port. If nothing is listening yet, Fascinate serves a status page that points users back to the browser command center.
 
-New machines built from `fascinate-base` come with:
-- Ubuntu 24.04 packages upgraded to the latest versions available in the current Ubuntu repositories during VM first boot
+Fresh machines boot from the promoted Fascinate image referenced by `FASCINATE_DEFAULT_IMAGE`.
+
+That image is versioned, validated, and promoted ahead of time, and the VM boot path only finalizes machine identity, managed env vars, and guest instructions.
+
+The default promoted image includes:
 - Docker
-- Node.js and Go installed from upstream releases during VM first boot (`FASCINATE_NODE_VERSION=latest` and `FASCINATE_GO_VERSION=latest` by default)
-- npm upgraded from the upstream registry during VM first boot
+- Node.js and Go from the configured image build inputs
 - Python 3, git, jq, ripgrep, sqlite3, tmux, fzf, curl, wget, unzip, zip, rsync, and common build tooling
-- Claude Code available as `claude`
+- Claude Code available as `claude`, installed during image build via the native `https://claude.ai/install.sh` flow
 - Codex CLI available as `codex`
 - GitHub CLI available as `gh`
 
@@ -564,6 +589,7 @@ exit
 Fascinate snapshots are immutable per-user full-VM artifacts.
 
 Current behavior:
+- fresh create boots from the currently promoted Fascinate image and runs only machine-specific first-boot finalization
 - `snapshot save <machine> <name>` captures disk, memory, and device state
 - `create <name> --from-snapshot <snapshot>` restores a new VM directly from a saved snapshot
 - `fork <source> <target>` performs a true fork by taking an implicit snapshot and restoring it into the target VM

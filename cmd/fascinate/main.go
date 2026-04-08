@@ -62,6 +62,10 @@ func main() {
 		if err := runServe(ctx, cfg); err != nil {
 			log.Fatal(err)
 		}
+	case "image":
+		if err := runImage(ctx, cfg, os.Args[2:]); err != nil {
+			log.Fatal(err)
+		}
 	case "migrate":
 		if err := app.RunMigrations(ctx, cfg); err != nil {
 			log.Fatal(err)
@@ -81,7 +85,7 @@ func main() {
 
 func requiresServerConfig(command string) bool {
 	switch strings.TrimSpace(command) {
-	case "serve", "migrate", "runtime-machines", "netns-forward":
+	case "serve", "image", "migrate", "runtime-machines", "netns-forward":
 		return true
 	default:
 		return false
@@ -138,4 +142,96 @@ func runNetNSForward(args []string) error {
 		Target:    *target,
 		PortFile:  *portFile,
 	})
+}
+
+func runImage(ctx context.Context, cfg config.Config, args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: fascinate image <build|validate|promote|rollback|status> [flags]")
+	}
+
+	manager, err := cloudhypervisor.New(cfg)
+	if err != nil {
+		return err
+	}
+
+	switch args[0] {
+	case "build":
+		flags := flag.NewFlagSet("image build", flag.ContinueOnError)
+		version := flags.String("version", "", "candidate image version (defaults to UTC timestamp)")
+		if err := flags.Parse(args[1:]); err != nil {
+			return err
+		}
+		result, err := manager.BuildImage(ctx, *version)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("built candidate image %s\nartifact: %s\nmanifest: %s\n", result.Version, result.ImagePath, result.ManifestPath)
+		return nil
+	case "validate":
+		flags := flag.NewFlagSet("image validate", flag.ContinueOnError)
+		version := flags.String("version", "", "candidate or release image version")
+		if err := flags.Parse(args[1:]); err != nil {
+			return err
+		}
+		if strings.TrimSpace(*version) == "" {
+			return fmt.Errorf("usage: fascinate image validate --version <version>")
+		}
+		result, err := manager.ValidateImage(ctx, *version)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("validated image %s\nartifact: %s\nmanifest: %s\n", result.Version, result.ImagePath, result.ManifestPath)
+		return nil
+	case "promote":
+		flags := flag.NewFlagSet("image promote", flag.ContinueOnError)
+		version := flags.String("version", "", "validated candidate image version")
+		if err := flags.Parse(args[1:]); err != nil {
+			return err
+		}
+		if strings.TrimSpace(*version) == "" {
+			return fmt.Errorf("usage: fascinate image promote --version <version>")
+		}
+		result, err := manager.PromoteImage(ctx, *version)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("promoted image %s\nartifact: %s\nmanifest: %s\n", result.Version, result.ImagePath, result.ManifestPath)
+		return nil
+	case "rollback":
+		flags := flag.NewFlagSet("image rollback", flag.ContinueOnError)
+		version := flags.String("version", "", "release image version (defaults to previous)")
+		if err := flags.Parse(args[1:]); err != nil {
+			return err
+		}
+		result, err := manager.RollbackImage(ctx, *version)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("rolled back to image %s\nartifact: %s\nmanifest: %s\n", result.Version, result.ImagePath, result.ManifestPath)
+		return nil
+	case "status":
+		status, err := manager.ImageStatus(ctx)
+		if err != nil {
+			return err
+		}
+		if status.Current != nil {
+			fmt.Printf("current\t%s\t%s\n", status.Current.Version, status.Current.ImagePath)
+		} else {
+			fmt.Println("current\t<none>")
+		}
+		if status.Previous != nil {
+			fmt.Printf("previous\t%s\t%s\n", status.Previous.Version, status.Previous.ImagePath)
+		} else {
+			fmt.Println("previous\t<none>")
+		}
+		for _, manifest := range status.Candidates {
+			fmt.Printf("candidate\t%s\t%s\n", manifest.Version, manifest.ImagePath)
+		}
+		for _, manifest := range status.Releases {
+			fmt.Printf("release\t%s\t%s\n", manifest.Version, manifest.ImagePath)
+		}
+		return nil
+	default:
+		return fmt.Errorf("unknown image command %q", args[0])
+	}
 }

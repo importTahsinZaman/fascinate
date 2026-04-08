@@ -31,7 +31,7 @@ write_env_file() {
   local public_assets_dir
   public_assets_dir="${FASCINATE_PUBLIC_ASSETS_DIR:-${INSTALL_DIR}/public}"
 
-  mkdir -p "${CONFIG_DIR}" "${DATA_DIR}" "${DATA_DIR}/images" "${DATA_DIR}/machines" "${DATA_DIR}/snapshots" "${public_assets_dir}" "${public_assets_dir}/cli"
+  mkdir -p "${CONFIG_DIR}" "${DATA_DIR}" "${DATA_DIR}/images" "${DATA_DIR}/images/cache" "${DATA_DIR}/images/candidates" "${DATA_DIR}/images/releases" "${DATA_DIR}/machines" "${DATA_DIR}/snapshots" "${public_assets_dir}" "${public_assets_dir}/cli"
 
   cat >"${ENV_FILE}" <<EOF_ENV
 FASCINATE_HTTP_ADDR=$(quote_env_value "${FASCINATE_HTTP_ADDR:-127.0.0.1:8080}")
@@ -53,7 +53,13 @@ FASCINATE_CLOUD_LOCALDS_BINARY=$(quote_env_value "${FASCINATE_CLOUD_LOCALDS_BINA
 FASCINATE_SSH_CLIENT_BINARY=$(quote_env_value "${FASCINATE_SSH_CLIENT_BINARY:-ssh}")
 FASCINATE_GUEST_SSH_KEY_PATH=$(quote_env_value "${FASCINATE_GUEST_SSH_KEY_PATH:-${DATA_DIR}/guest_ssh_ed25519}")
 FASCINATE_GUEST_SSH_USER=$(quote_env_value "${FASCINATE_GUEST_SSH_USER:-ubuntu}")
-FASCINATE_DEFAULT_IMAGE=$(quote_env_value "${FASCINATE_DEFAULT_IMAGE:-${DATA_DIR}/images/fascinate-base.raw}")
+FASCINATE_IMAGE_STORE_DIR=$(quote_env_value "${FASCINATE_IMAGE_STORE_DIR:-${DATA_DIR}/images}")
+FASCINATE_DEFAULT_IMAGE=$(quote_env_value "${FASCINATE_DEFAULT_IMAGE:-${DATA_DIR}/images/current/fascinate-base.raw}")
+FASCINATE_BASE_SOURCE_IMAGE_URL=$(quote_env_value "${FASCINATE_BASE_SOURCE_IMAGE_URL:-https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img}")
+FASCINATE_IMAGE_NODE_VERSION=$(quote_env_value "${FASCINATE_IMAGE_NODE_VERSION:-latest-lts}")
+FASCINATE_IMAGE_GO_VERSION=$(quote_env_value "${FASCINATE_IMAGE_GO_VERSION:-latest}")
+FASCINATE_IMAGE_CODEX_VERSION=$(quote_env_value "${FASCINATE_IMAGE_CODEX_VERSION:-latest}")
+FASCINATE_IMAGE_CLAUDE_INSTALL_URL=$(quote_env_value "${FASCINATE_IMAGE_CLAUDE_INSTALL_URL:-https://claude.ai/install.sh}")
 FASCINATE_DEFAULT_MACHINE_CPU=$(quote_env_value "${FASCINATE_DEFAULT_MACHINE_CPU:-1}")
 FASCINATE_DEFAULT_MACHINE_RAM=$(quote_env_value "${FASCINATE_DEFAULT_MACHINE_RAM:-2GiB}")
 FASCINATE_DEFAULT_MACHINE_DISK=$(quote_env_value "${FASCINATE_DEFAULT_MACHINE_DISK:-20GiB}")

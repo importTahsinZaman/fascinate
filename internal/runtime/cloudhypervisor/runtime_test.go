@@ -236,6 +236,9 @@ func TestNewUsesVMDefaults(t *testing.T) {
 	if manager.defaultGuestUser != "ubuntu" {
 		t.Fatalf("unexpected guest user %q", manager.defaultGuestUser)
 	}
+	if manager.imageStoreDir != filepath.Join(dataDir, "images") {
+		t.Fatalf("expected image store dir %q, got %q", filepath.Join(dataDir, "images"), manager.imageStoreDir)
+	}
 }
 
 func TestTapDeviceNameIsStableAndHashed(t *testing.T) {
@@ -295,7 +298,7 @@ func TestNamespacePeerVethNameIsStableAndAvoidsPrefixCollisions(t *testing.T) {
 	}
 }
 
-func TestCloudInitUserDataInstallsCanonicalAgentDocs(t *testing.T) {
+func TestCloudInitUserDataFinalizesMachineSpecificState(t *testing.T) {
 	t.Parallel()
 
 	userData := cloudInitUserData(metadata{
@@ -316,9 +319,8 @@ func TestCloudInitUserDataInstallsCanonicalAgentDocs(t *testing.T) {
 		"/root/.codex/AGENTS.md",
 		"/home/ubuntu/.claude/CLAUDE.md",
 		"/home/ubuntu/.codex/AGENTS.md",
-		"chown ubuntu:ubuntu /home/ubuntu/.claude /home/ubuntu/.codex || true",
-		"@openai/codex@latest",
-		"apt-get install -y build-essential ca-certificates curl docker.io file fzf gh git",
+		"/etc/profile.d/fascinate-paths.sh",
+		"chown -R ubuntu:ubuntu /home/ubuntu/.claude /home/ubuntu/.codex /home/ubuntu/.config /home/ubuntu/.local",
 		"https://tic-tac-toe.fascinate.dev",
 		"*.fascinate.dev",
 		"add *.fascinate.dev to allowedDevOrigins",
@@ -334,6 +336,16 @@ func TestCloudInitUserDataInstallsCanonicalAgentDocs(t *testing.T) {
 			t.Fatalf("expected cloud-init user-data to contain %q", snippet)
 		}
 	}
+	for _, snippet := range []string{
+		"apt-get install -y",
+		"apt-get upgrade -y",
+		"npm install -g --force",
+		"curl -fsSL https://claude.ai/install.sh | bash",
+	} {
+		if strings.Contains(userData, snippet) {
+			t.Fatalf("expected machine boot user-data to omit build-time provisioning snippet %q", snippet)
+		}
+	}
 }
 
 func TestGuestReadinessCommandRequiresBundledToolVersions(t *testing.T) {
@@ -342,6 +354,7 @@ func TestGuestReadinessCommandRequiresBundledToolVersions(t *testing.T) {
 	command := guestReadinessCommand()
 	for _, snippet := range []string{
 		"test -f /var/lib/cloud/instance/boot-finished",
+		"test -f " + shellQuote(guestImageManifestPath),
 		"claude --version >/dev/null 2>&1",
 		"codex --version >/dev/null 2>&1",
 		"gh --version >/dev/null 2>&1",
@@ -352,6 +365,30 @@ func TestGuestReadinessCommandRequiresBundledToolVersions(t *testing.T) {
 	} {
 		if !strings.Contains(command, snippet) {
 			t.Fatalf("expected guest readiness command to contain %q, got %q", snippet, command)
+		}
+	}
+}
+
+func TestImageProvisioningScriptUsesNativeClaudeInstaller(t *testing.T) {
+	t.Parallel()
+
+	script := imageProvisioningScript("ubuntu", imageBuildInputs{
+		NodeVersion:      "20.19.0",
+		GoVersion:        "1.24.2",
+		CodexVersion:     "0.1.0",
+		ClaudeInstallURL: "https://claude.ai/install.sh",
+		SourceImageURL:   "https://example.com/base.img",
+	}, "20260407-000000")
+
+	for _, snippet := range []string{
+		`local install_url='https://claude.ai/install.sh'`,
+		`curl -fsSL '"${install_url}"' | bash`,
+		`npm install -g --force "@openai/codex@${CODEX_RESOLVED_VERSION}"`,
+		`"claude_install_url": "https://claude.ai/install.sh"`,
+		`"source_image_url": "https://example.com/base.img"`,
+	} {
+		if !strings.Contains(script, snippet) {
+			t.Fatalf("expected image provisioning script to contain %q", snippet)
 		}
 	}
 }

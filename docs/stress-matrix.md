@@ -15,6 +15,7 @@ This document defines the current Fascinate product expectations and maps each e
 | Local workloads | A VM can run a public app server, a local database process, and Docker containers at the same time | `ops/host/stress.sh` |
 | Heavier SQL workload | A VM can serve a live app backed by a Dockerized PostgreSQL workload with meaningful row volume and benchmark traffic | Manual live SQL workload validation |
 | Service restart | Restarting `fascinate` does not kill running VMs or break routing/forwarders | `ops/host/smoke.sh`, `ops/host/stress.sh` |
+| Prebaked image lifecycle | Operators can build, validate, promote, and roll back versioned Fascinate images, and fresh create follows the promoted `current` image reference | `internal/runtime/cloudhypervisor/runtime_test.go`, `ops/host/smoke-images.sh` |
 | Snapshot save | Saving a snapshot from a running VM succeeds and records snapshot artifacts durably | `ops/host/smoke-snapshots.sh`, `ops/host/stress.sh` |
 | Create from snapshot | A VM created from a saved snapshot restores the captured machine state instead of booting from source files alone | `ops/host/smoke-snapshots.sh`, `ops/host/stress.sh` |
 | True fork | Forking a running VM produces a live independent copy with the captured app/process/container state already running | `ops/host/smoke-snapshots.sh`, `ops/host/stress.sh` |
@@ -31,6 +32,7 @@ This document defines the current Fascinate product expectations and maps each e
 ## Live Validation Entry Points
 
 - Basic lifecycle smoke: `sudo ./ops/host/smoke.sh`
+- Prebaked-image smoke: `sudo ./ops/host/smoke-images.sh`
 - Snapshot and fork smoke: `sudo ./ops/host/smoke-snapshots.sh`
 - Tool-auth persistence harness: `sudo ./ops/host/smoke-tool-auth.sh`
 - Full workload stress pass: `sudo ./ops/host/stress.sh`
@@ -47,6 +49,7 @@ This document defines the current Fascinate product expectations and maps each e
 
 - If a machine is `RUNNING` but the app URL is wrong, inspect machine diagnostics first to distinguish forwarder failure from guest workload failure.
 - If a snapshot or fork fails, inspect both snapshot diagnostics and owner events; failure stage and error details should be recorded there.
+- If image validation or promotion fails, inspect the image smoke output first and confirm `base-image-status.sh` still points `current` at the expected release.
 - If tool auth does not persist, inspect tool-auth diagnostics and owner events before touching guest files directly.
 - If create/fork/restore starts failing under load, check `shared_cpu_ceiling`, `nominal_active_cpu`, and `shared_cpu_remaining` on hosts before changing per-user budgets.
 - For one-box capacity validation, confirm that a user can exceed their soft CPU entitlement while `host_shared_cpu.remaining` is positive, and that the eventual rejection is reported as shared host CPU pressure rather than a hard user CPU quota.
