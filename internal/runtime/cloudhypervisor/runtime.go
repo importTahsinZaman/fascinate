@@ -263,6 +263,9 @@ func (m *Manager) ListMachines(ctx context.Context) ([]machineruntime.Machine, e
 		if !entry.IsDir() {
 			continue
 		}
+		if strings.HasPrefix(strings.TrimSpace(entry.Name()), ".") {
+			continue
+		}
 
 		meta, err := m.loadMetadata(entry.Name())
 		if err != nil {
