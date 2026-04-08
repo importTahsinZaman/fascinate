@@ -383,7 +383,9 @@ func TestImageProvisioningScriptUsesNativeClaudeInstaller(t *testing.T) {
 	for _, snippet := range []string{
 		`local install_url='https://claude.ai/install.sh'`,
 		`curl -fsSL '"${install_url}"' | bash`,
+		`npm config set prefix /usr/local`,
 		`npm install -g --force "@openai/codex@${CODEX_RESOLVED_VERSION}"`,
+		`command -v codex >/dev/null 2>&1`,
 		`"claude_install_url": "https://claude.ai/install.sh"`,
 		`"source_image_url": "https://example.com/base.img"`,
 	} {

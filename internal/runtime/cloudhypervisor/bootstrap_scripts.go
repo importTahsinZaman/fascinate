@@ -258,7 +258,13 @@ GO_RESOLVED_VERSION="$(resolve_go_version)"
 install_node "${NODE_RESOLVED_VERSION}" "$(node_arch)"
 install_go "${GO_RESOLVED_VERSION}" "$(go_arch)"
 CODEX_RESOLVED_VERSION="$(resolve_codex_version)"
+npm config set prefix /usr/local
 npm install -g --force "@openai/codex@${CODEX_RESOLVED_VERSION}"
+hash -r
+if ! command -v codex >/dev/null 2>&1; then
+  echo "codex install did not produce a codex binary on PATH" >&2
+  exit 1
+fi
 install_claude
 
 mkdir -p /etc/systemd/system/docker.service.d /etc/fascinate /etc/claude-code /etc/profile.d
