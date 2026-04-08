@@ -2,6 +2,7 @@ package cloudhypervisor
 
 import (
 	"context"
+	"crypto/sha1"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -92,7 +93,7 @@ func (m *Manager) BuildImage(ctx context.Context, version string) (ImageBuildRes
 		return ImageBuildResult{}, err
 	}
 
-	buildName := fmt.Sprintf(".image-build-%s-%d", sanitizeImageVersion(version), m.now().UnixNano())
+	buildName := tempImageMachineName("imgbld", version, m.now())
 	req := machineruntime.CreateMachineRequest{
 		MachineID:    buildName,
 		Name:         buildName,
@@ -175,7 +176,7 @@ func (m *Manager) ValidateImage(ctx context.Context, version string) (ImageBuild
 		return ImageBuildResult{}, err
 	}
 
-	validateName := fmt.Sprintf(".image-validate-%s-%d", sanitizeImageVersion(manifest.Version), m.now().UnixNano())
+	validateName := tempImageMachineName("imgval", manifest.Version, m.now())
 	req := machineruntime.CreateMachineRequest{
 		MachineID:    validateName,
 		Name:         validateName,
@@ -265,6 +266,11 @@ func (m *Manager) PromoteImage(_ context.Context, version string) (ImageBuildRes
 		ImagePath:    manifest.ImagePath,
 		ManifestPath: manifest.ManifestPath,
 	}, nil
+}
+
+func tempImageMachineName(prefix, version string, now time.Time) string {
+	sum := sha1.Sum([]byte(strings.TrimSpace(version)))
+	return fmt.Sprintf(".%s-%x-%x", strings.TrimSpace(prefix), sum[:4], now.UTC().Unix())
 }
 
 func (m *Manager) RollbackImage(_ context.Context, version string) (ImageBuildResult, error) {

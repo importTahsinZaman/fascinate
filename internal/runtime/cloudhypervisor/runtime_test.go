@@ -395,6 +395,19 @@ func TestImageProvisioningScriptUsesNativeClaudeInstaller(t *testing.T) {
 	}
 }
 
+func TestTempImageMachineNameKeepsSocketPathsShort(t *testing.T) {
+	t.Parallel()
+
+	name := tempImageMachineName("imgval", "livefix-20260408-034454-with-a-very-long-version-string", time.Unix(1775620153, 0))
+	if !strings.HasPrefix(name, ".imgval-") {
+		t.Fatalf("expected validation name prefix, got %q", name)
+	}
+	socketPath := filepath.Join("/var/lib/fascinate/machines", name, socketFileName)
+	if got := len(socketPath); got >= 100 {
+		t.Fatalf("expected short socket path, got length %d for %q", got, socketPath)
+	}
+}
+
 func TestStopMachineRuntimeRequestsGuestShutdownBeforeForceKill(t *testing.T) {
 	t.Parallel()
 
